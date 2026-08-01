@@ -172,14 +172,20 @@ export function tabsReducer(state: TabsState, action: TabAction): TabsState {
     }
 
     case "ADD_TRANSFERRED_TAB": {
-      const { tab } = action.payload;
+      const { tab, index } = action.payload;
       // 去重检查：如果 tab 已存在则跳过
       if (state.tabs.some((t) => t.id === tab.id)) {
         return state;
       }
+      const newTabs = [...state.tabs];
+      if (typeof index === "number" && index >= 0 && index <= newTabs.length) {
+        newTabs.splice(index, 0, tab);
+      } else {
+        newTabs.push(tab);
+      }
       return {
         ...state,
-        tabs: [...state.tabs, tab],
+        tabs: newTabs,
         activeTabId: tab.id,
       };
     }

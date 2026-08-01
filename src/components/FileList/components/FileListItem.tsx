@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useEffect, useRef } from "react";
 import type { FileEntry } from "@/types/index";
 import { FileThumbnail } from "@/components/FileThumbnail";
 import { Input } from "@/components/ui/input";
@@ -13,6 +13,7 @@ interface FileListItemProps {
   onSubmitRename: () => void;
   onCancelRename: () => void;
   onClick: (e: React.MouseEvent) => void;
+  onNameClick?: (e: React.MouseEvent) => void;
   onDoubleClick: () => void;
   onMove?: (source: string, target: string) => void;
 }
@@ -26,14 +27,24 @@ export const FileListItem = memo(function FileListItem({
   onSubmitRename,
   onCancelRename,
   onClick,
+  onNameClick,
   onDoubleClick,
 }: FileListItemProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!isEditing) return;
+    const frame = requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [isEditing]);
+
   return (
     <div
       className={`flex w-full cursor-default items-center rounded-md p-2 text-sm transition-colors ${
-        isSelected
-          ? "bg-accent/90 ring-primary/30 ring-1"
-          : "hover:bg-accent/60 focus:bg-accent/60"
+        isSelected ? "bg-accent/80 ring-primary/20 ring-1" : "hover:bg-accent/60 focus:bg-accent/60"
       }`}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
@@ -49,6 +60,7 @@ export const FileListItem = memo(function FileListItem({
         />
         {isEditing ? (
           <Input
+            ref={inputRef}
             value={editValue}
             onChange={(e) => onEditValueChange(e.target.value)}
             onBlur={onSubmitRename}
@@ -68,7 +80,19 @@ export const FileListItem = memo(function FileListItem({
             className="h-6 border-blue-400 bg-white/90 px-2 py-0.5 shadow-sm focus-visible:border-blue-500 focus-visible:ring-1 focus-visible:ring-blue-400/50 focus-visible:ring-offset-0 dark:bg-gray-800/90"
           />
         ) : (
-          <span className="truncate">{entry.name}</span>
+          <span
+            className={`cursor-text truncate rounded px-1 ${isSelected ? "bg-primary/10" : ""}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (onNameClick) {
+                onNameClick(e);
+              } else {
+                onClick(e);
+              }
+            }}
+          >
+            {entry.name}
+          </span>
         )}
       </div>
       <div className="text-muted-foreground w-24 shrink-0 px-2 text-right">

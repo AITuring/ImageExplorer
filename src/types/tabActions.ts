@@ -88,6 +88,8 @@ export interface AddTransferredTabAction {
   type: "ADD_TRANSFERRED_TAB";
   payload: {
     tab: import("./tab").Tab;
+    /** 插入位置，不传则添加到末尾 */
+    index?: number;
   };
 }
 

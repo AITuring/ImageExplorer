@@ -1,18 +1,16 @@
 {
-  "smart_categories": "Smart Categories",
   "quick_access": "Quick Access",
   "folders": "Folders",
+  "locations": "Locations",
   "items": {
     "home": "Home",
     "downloads": "Downloads",
     "documents": "Documents",
     "music": "Music",
-    "desktop": "Desktop",
-    "pictures": "Pictures",
-    "videos": "Videos",
-    "archives": "Archives",
-    "developer": "Developer"
+    "desktop": "Desktop"
   },
   "settings": "Settings",
-  "access_denied": "Access denied"
+  "access_denied": "Access denied",
+  "resize": "Resize sidebar",
+  "show": "Show sidebar"
 }

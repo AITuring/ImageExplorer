@@ -14,20 +14,46 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AppContextMenu } from "@/components/AppContextMenu";
-import { TextInputActions, SearchResult, SearchResponse } from "@/types";
+import { TextInputActions, SearchResult, SearchResponse, FileActions, FileEntry } from "@/types";
 import { SmartIcon } from "@/components/SmartIcon";
 import { useViewMode } from "@/stores/viewMode";
 import { useTabs } from "@/hooks/useTabs";
 import { SEARCH_DEBOUNCE_MS, FOCUS_DELAY_MS } from "@/constants/config";
 import { filterHiddenEntries } from "@/utils/file";
 import { useSetting } from "@/hooks/useSetting";
+import { useClipboard } from "@/stores/clipboard";
 
 // 省略号模式: "start" = 前面省略, "end" = 后面省略
 type EllipsisMode = "start" | "end";
 
-export function TopBar() {
+interface TopBarProps {
+  onNavigate?: (path: string, selectFile?: string) => void;
+}
+
+function toSearchFileEntry(result: SearchResult): FileEntry {
+  return {
+    name: result.name,
+    path: result.path,
+    is_dir: result.is_dir,
+    size: 0,
+    modified: null,
+    extension: result.extension ?? null,
+    readonly: false,
+    is_hidden: result.is_hidden ?? result.name.startsWith("."),
+  };
+}
+
+function getParentPath(path: string): string | null {
+  const normalizedPath = path.replace(/\/+$/, "");
+  const separatorIndex = normalizedPath.lastIndexOf("/");
+  if (separatorIndex < 0) return null;
+  return separatorIndex === 0 ? "/" : normalizedPath.slice(0, separatorIndex);
+}
+
+export function TopBar({ onNavigate }: TopBarProps) {
   const { t } = useTranslation();
-  const { activeTab, navigate, goBack, goForward, canGoBack, canGoForward } = useTabs();
+  const { activeTab, navigate, goBack, goForward, canGoBack, canGoForward, addTab } = useTabs();
+  const navigateTo = onNavigate ?? navigate;
   const currentPath = activeTab?.path || "";
 
   const [isEditing, setIsEditing] = useState(false);
@@ -35,6 +61,7 @@ export function TopBar() {
 
   const { viewMode, setViewMode } = useViewMode();
   const [showHiddenFiles] = useSetting<boolean>("show_hidden_files", false);
+  const clipboard = useClipboard();
 
   // 搜索状态
   const [searchQuery, setSearchQuery] = useState("");
@@ -48,7 +75,10 @@ export function TopBar() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [showResults, setShowResults] = useState(false);
-  const searchInputRef = useRef<HTMLInputElement>(null);
+  const [selectedSearchPaths, setSelectedSearchPaths] = useState<string[]>([]);
+  const [editingSearchPath, setEditingSearchPath] = useState<string | null>(null);
+  const [editingSearchValue, setEditingSearchValue] = useState("");
+  const searchInputRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchVersionRef = useRef(0); // 用于取消旧请求
   const isComposingRef = useRef(false); // 标记正在使用输入法
@@ -141,23 +171,163 @@ export function TopBar() {
     }, SEARCH_DEBOUNCE_MS);
   };
 
+  const closeSearchResults = useCallback(() => {
+    setSearchQuery("");
+    setShowResults(false);
+    setSearchResults([]);
+    setSelectedSearchPaths([]);
+    setEditingSearchPath(null);
+  }, []);
+
   const handleResultClick = (result: SearchResult) => {
     if (result.is_dir) {
-      navigate(result.path);
+      navigateTo(result.path);
     } else {
       // 导航到文件所在目录，并选中该文件
       const lastSlash = result.path.lastIndexOf("/");
       const parentPath = lastSlash > 0 ? result.path.substring(0, lastSlash) : "/";
-      navigate(parentPath, result.path);
+      navigateTo(parentPath, result.path);
     }
-    setSearchQuery("");
-    setShowResults(false);
-    setSearchResults([]);
+    closeSearchResults();
   };
+
+  const refreshSearchResults = useCallback(() => {
+    if (!searchQuery.trim()) return;
+    searchVersionRef.current += 1;
+    setIsSearching(true);
+    void handleSearch(searchQuery, searchVersionRef.current);
+  }, [handleSearch, searchQuery]);
+
+  const handleSearchRowClick = (result: SearchResult, event: React.MouseEvent) => {
+    const isMultiSelect = event.metaKey || event.ctrlKey;
+    setSelectedSearchPaths((current) => {
+      if (!isMultiSelect) return [result.path];
+      return current.includes(result.path)
+        ? current.filter((path) => path !== result.path)
+        : [...current, result.path];
+    });
+
+    if (!isMultiSelect) handleResultClick(result);
+  };
+
+  const handleSearchRowContextMenu = (result: SearchResult) => {
+    setSelectedSearchPaths((current) => (current.includes(result.path) ? current : [result.path]));
+  };
+
+  const handleSearchRename = useCallback((entry: FileEntry) => {
+    setEditingSearchPath(entry.path);
+    setEditingSearchValue(entry.name);
+  }, []);
+
+  const submitSearchRename = useCallback(async () => {
+    if (!editingSearchPath) return;
+    const newName = editingSearchValue.trim();
+    const oldEntry = visibleSearchResults.find((result) => result.path === editingSearchPath);
+    setEditingSearchPath(null);
+    if (!newName || !oldEntry || newName === oldEntry.name) return;
+
+    try {
+      await invoke("rename", { path: editingSearchPath, newName });
+      refreshSearchResults();
+    } catch (error) {
+      console.error("Failed to rename search result:", error);
+      alert(t("file_list.error_rename", { error: String(error) }));
+    }
+  }, [editingSearchPath, editingSearchValue, refreshSearchResults, t, visibleSearchResults]);
+
+  const searchFileActions: FileActions = useMemo(
+    () => ({
+      onOpen: (entry) => {
+        if (entry.is_dir) {
+          navigateTo(entry.path);
+        } else {
+          invoke("open_file", { path: entry.path }).catch((error) =>
+            console.error("Failed to open search result:", error)
+          );
+        }
+        closeSearchResults();
+      },
+      onOpenInNewTab: (entry) => {
+        if (entry.is_dir) {
+          addTab(entry.path);
+          closeSearchResults();
+        }
+      },
+      onCopy: (entries) => clipboard.copy(entries.map((entry) => entry.path)),
+      onCut: (entries) => clipboard.cut(entries.map((entry) => entry.path)),
+      onPaste: async () => {
+        if (!clipboard.hasPending()) return;
+        try {
+          const paths = [...clipboard.paths];
+          if (clipboard.operation === "copy") {
+            await invoke("start_copy_operation", { paths, destDir: currentPath });
+          } else if (clipboard.operation === "cut") {
+            await invoke("start_move_operation", { paths, destDir: currentPath });
+            clipboard.clear();
+          }
+        } catch (error) {
+          console.error("Failed to paste from search results:", error);
+          alert(t("file_list.error_paste", { error: String(error) }));
+        }
+      },
+      onCopyPath: async (entry) => {
+        try {
+          await navigator.clipboard.writeText(entry.path);
+        } catch (error) {
+          console.error("Failed to copy search result path:", error);
+        }
+      },
+      onDelete: async (entries) => {
+        try {
+          await invoke("start_delete_operation", {
+            paths: entries.map((entry) => entry.path),
+          });
+          refreshSearchResults();
+        } catch (error) {
+          console.error("Failed to delete search result:", error);
+          alert(t("file_list.error_delete", { error: String(error) }));
+        }
+      },
+      onRename: handleSearchRename,
+      onGoToLocation: (entry) => {
+        const fallbackParentPath = getParentPath(entry.path);
+        if (fallbackParentPath) {
+          navigateTo(fallbackParentPath, entry.path);
+          closeSearchResults();
+        }
+      },
+      currentPath,
+    }),
+    [
+      addTab,
+      clipboard,
+      closeSearchResults,
+      currentPath,
+      handleSearchRename,
+      navigateTo,
+      refreshSearchResults,
+      t,
+    ]
+  );
+
+  const selectedSearchEntries = useMemo(
+    () =>
+      visibleSearchResults
+        .filter((result) => selectedSearchPaths.includes(result.path))
+        .map(toSearchFileEntry),
+    [selectedSearchPaths, visibleSearchResults]
+  );
 
   // 点击外部关闭搜索结果
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as Element | null;
+      if (
+        target instanceof Element &&
+        target.closest("[data-context-menu-content], [data-radix-menu-content]")
+      ) {
+        return;
+      }
       if (searchInputRef.current && !searchInputRef.current.contains(e.target as Node)) {
         setShowResults(false);
       }
@@ -171,7 +341,7 @@ export function TopBar() {
   const handleSubmit = () => {
     setIsEditing(false);
     if (editValue && editValue !== currentPath) {
-      navigate(editValue);
+      navigateTo(editValue);
     }
   };
 
@@ -221,15 +391,16 @@ export function TopBar() {
     },
     onSelectAll: () => {
       setTimeout(() => {
-        searchInputRef.current?.focus();
-        searchInputRef.current?.select();
+        const input = searchInputRef.current?.querySelector("input");
+        input?.focus();
+        input?.select();
       }, 0);
     },
   };
 
   return (
     <header
-      className="border-border/50 bg-background/60 flex h-12 shrink-0 items-center gap-3 border-b px-4 backdrop-blur-xl"
+      className="border-border/50 bg-background/60 relative z-40 flex h-12 shrink-0 items-center gap-3 border-b px-4 backdrop-blur-xl"
       onContextMenu={(e) => e.preventDefault()}
     >
       {/* 导航按钮 */}
@@ -307,7 +478,7 @@ export function TopBar() {
                           className="hover:bg-accent shrink-0 rounded px-1 py-0.5 whitespace-nowrap transition-colors"
                           onClick={(e) => {
                             e.stopPropagation();
-                            navigate(path);
+                            navigateTo(path);
                           }}
                         >
                           {segment}
@@ -405,7 +576,7 @@ export function TopBar() {
 
         {/* 搜索结果下拉框 */}
         {showResults && (
-          <div className="bg-popover text-popover-foreground fixed top-12 right-4 z-50 w-[500px] overflow-hidden rounded-md border shadow-md">
+          <div className="bg-popover text-popover-foreground absolute top-full right-0 z-[100] mt-2 w-[min(500px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border shadow-xl">
             {isSearching ? (
               <div className="text-muted-foreground flex items-center justify-center p-4 text-sm">
                 {t("search.searching")}
@@ -416,33 +587,87 @@ export function TopBar() {
                   <span>{t("search.results_label")}</span>
                 </div>
                 <ul className="max-h-[60vh] overflow-y-auto py-1">
-                  {visibleSearchResults.map((result) => (
-                    <li key={result.path}>
-                      <button
-                        className="hover:bg-accent flex w-full items-center gap-2 px-3 py-2 text-left text-sm"
-                        onClick={() => handleResultClick(result)}
-                        title={result.path}
-                      >
-                        <SmartIcon
-                          icon={result.is_dir ? Folder : File}
-                          className={
-                            result.is_dir
-                              ? "h-4 w-4 shrink-0 text-blue-500"
-                              : "text-muted-foreground h-4 w-4 shrink-0"
-                          }
-                          sysIcon={
-                            result.is_dir
-                              ? { type: "folder" }
-                              : { type: "ext", value: result.extension || "" }
-                          }
-                        />
-                        <span className="flex-1 truncate">{result.name}</span>
-                        <span className="text-muted-foreground max-w-[200px] shrink-0 truncate text-xs opacity-50">
-                          {result.path}
-                        </span>
-                      </button>
-                    </li>
-                  ))}
+                  {visibleSearchResults.map((result) => {
+                    const entry = toSearchFileEntry(result);
+                    const isSelected = selectedSearchPaths.includes(result.path);
+                    const isEditing = editingSearchPath === result.path;
+
+                    return (
+                      <li key={result.path}>
+                        <AppContextMenu
+                          type={result.is_dir ? "folder" : "file"}
+                          entry={entry}
+                          selectedEntries={selectedSearchEntries}
+                          fileActions={searchFileActions}
+                          asChild
+                        >
+                          <div
+                            className={`flex min-w-0 items-center gap-2 px-3 py-2 text-sm ${
+                              isSelected ? "bg-accent" : "hover:bg-accent"
+                            }`}
+                            onContextMenu={() => handleSearchRowContextMenu(result)}
+                          >
+                            {isEditing ? (
+                              <>
+                                <SmartIcon
+                                  icon={result.is_dir ? Folder : File}
+                                  className="text-muted-foreground h-4 w-4 shrink-0"
+                                  sysIcon={
+                                    result.is_dir
+                                      ? { type: "folder" }
+                                      : { type: "ext", value: result.extension || "" }
+                                  }
+                                />
+                                <input
+                                  value={editingSearchValue}
+                                  onChange={(event) => setEditingSearchValue(event.target.value)}
+                                  onBlur={() => void submitSearchRename()}
+                                  onKeyDown={(event) => {
+                                    event.stopPropagation();
+                                    if (event.key === "Enter") {
+                                      event.preventDefault();
+                                      void submitSearchRename();
+                                    } else if (event.key === "Escape") {
+                                      event.preventDefault();
+                                      setEditingSearchPath(null);
+                                    }
+                                  }}
+                                  className="bg-background min-w-0 flex-1 rounded border px-1.5 py-0.5 outline-none focus-visible:ring-1"
+                                  autoFocus
+                                  aria-label={t("context_menu.rename")}
+                                />
+                              </>
+                            ) : (
+                              <button
+                                type="button"
+                                className="focus-visible:ring-primary/60 flex min-w-0 flex-1 items-center gap-2 text-left outline-none focus-visible:ring-2"
+                                onClick={(event) => handleSearchRowClick(result, event)}
+                                title={result.path}
+                              >
+                                <SmartIcon
+                                  icon={result.is_dir ? Folder : File}
+                                  className={
+                                    result.is_dir
+                                      ? "h-4 w-4 shrink-0 text-blue-500"
+                                      : "text-muted-foreground h-4 w-4 shrink-0"
+                                  }
+                                  sysIcon={
+                                    result.is_dir
+                                      ? { type: "folder" }
+                                      : { type: "ext", value: result.extension || "" }
+                                  }
+                                />
+                                <span className="min-w-0 flex-1 truncate">{result.name}</span>
+                                <span className="text-muted-foreground max-w-[42%] min-w-0 shrink truncate text-xs opacity-60">
+                                  {result.path}
+                                </span>
+                              </button>
+                            )}
+                          </div>
+                        </AppContextMenu>
+                      </li>
+                    );
+                  })}
                 </ul>
               </>
             ) : (

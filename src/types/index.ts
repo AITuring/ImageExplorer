@@ -71,6 +71,12 @@ export interface FolderItem {
   children?: FolderItem[];
 }
 
+export interface MountedVolume {
+  name: string;
+  path: string;
+  readonly: boolean;
+}
+
 // UI 组件相关类型
 export interface SysIcon {
   type: "path" | "ext" | "folder" | "sfsymbol";
@@ -104,6 +110,7 @@ export interface TextInputActions {
 
 export interface FileActions {
   onOpen: (entry: FileEntry) => void;
+  onOpenInNewTab?: (entry: FileEntry) => void;
   onCopy: (entries: FileEntry[]) => void;
   onCut: (entries: FileEntry[]) => void;
   onPaste: () => void;

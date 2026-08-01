@@ -6,6 +6,7 @@ import { FileEntry, FileOperationSnapshot } from "@/types";
 import { useClipboard } from "@/stores/clipboard";
 import { openWithService } from "@/lib/openWith";
 import { isTerminalOperationStatus } from "@/hooks/useOperationCenter";
+import { invalidateCache } from "@/lib/entriesCache";
 
 interface UseFileOperationsOptions {
   currentPath: string;
@@ -37,7 +38,10 @@ export function useFileOperations({
     const setup = async () => {
       unlisten = await listen<FileOperationSnapshot>("file-operation-updated", (event) => {
         if (!cancelled && isTerminalOperationStatus(event.payload.status)) {
-          onRefreshRef.current();
+          // 多窗口共享同一个文件系统操作，但每个 WebView 都有自己的目录缓存。
+          // 完成事件到达时先清掉当前窗口缓存，再重新读取真实目录。
+          invalidateCache(currentPath);
+          void onRefreshRef.current();
         }
       });
     };
@@ -47,7 +51,7 @@ export function useFileOperations({
       cancelled = true;
       unlisten?.();
     };
-  }, []);
+  }, [currentPath]);
 
   const handleOpen = useCallback(
     (entry: FileEntry) => {
@@ -173,12 +177,15 @@ export function useFileOperations({
             paths: [sourcePath],
             destDir: targetPath,
           });
+          // 目标窗口先立即获取一次最新状态；操作完成事件会再次刷新，
+          // 源窗口则通过全局目录变化事件同步移除已移动项目。
+          void onRefresh();
         } catch (error) {
           console.error("Failed to enqueue move operation:", error);
           alert(t("file_list.error_rename", { error: String(error) }));
         }
       },
-      [t]
+      [onRefresh, t]
     ),
   };
 }

@@ -4,6 +4,7 @@ import type { FileEntry } from "@/types/index";
 import { FileThumbnail } from "@/components/FileThumbnail";
 import { AppContextMenu } from "@/components/AppContextMenu";
 import type { FileActions } from "@/types";
+import { FILE_DRAG_MIME, readFileDragData, serializeFileDragData } from "@/lib/dragData";
 
 /** 网格项尺寸 */
 const ITEM_SIZE = 180;
@@ -41,7 +42,7 @@ const GalleryItem = memo(function GalleryItem({
   return (
     <div
       className={`group flex cursor-default flex-col items-center overflow-hidden rounded-lg transition-colors ${
-        isSelected ? "bg-accent ring-primary/50 ring-2" : "hover:bg-accent/50"
+        isSelected ? "bg-accent/80 ring-primary/20 ring-1" : "hover:bg-accent/50"
       }`}
       style={{ width: ITEM_SIZE, height: ITEM_SIZE }}
       onClick={onClick}
@@ -143,10 +144,10 @@ export function FileGalleryView({
                       key={entry.path}
                       draggable
                       onDragStart={(e) => {
-                        e.dataTransfer.setData(
-                          "application/json",
-                          JSON.stringify({ path: entry.path })
-                        );
+                        const serialized = serializeFileDragData([entry.path]);
+                        e.dataTransfer.setData(FILE_DRAG_MIME, serialized);
+                        e.dataTransfer.setData("application/json", serialized);
+                        e.dataTransfer.setData("text/plain", serialized);
                         e.dataTransfer.effectAllowed = "move";
                       }}
                       onDragOver={(e) => {
@@ -158,9 +159,11 @@ export function FileGalleryView({
                         if (!entry.is_dir) return;
                         e.preventDefault();
                         try {
-                          const data = JSON.parse(e.dataTransfer.getData("application/json"));
-                          if (data?.path && data.path !== entry.path) {
-                            handleMove(data.path, entry.path);
+                          const data = readFileDragData(e.dataTransfer);
+                          if (data) {
+                            data.paths
+                              .filter((path) => path !== entry.path)
+                              .forEach((path) => handleMove(path, entry.path));
                           }
                         } catch {
                           // ignore invalid drag data

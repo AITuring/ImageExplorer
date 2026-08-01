@@ -5,9 +5,35 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useTabs } from "@/hooks/useTabs";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { listen } from "@tauri-apps/api/event";
 import { TabItem } from "./TabItem";
 import { TabContextMenu } from "./TabContextMenu";
 import { NewTabButton } from "./NewTabButton";
+
+const TAB_DRAG_MIME = "application/x-imageexplorer-tab";
+const TAB_DRAG_FALLBACK_MIME = "text/plain";
+
+interface TabDragData {
+  kind: "tab";
+  tab: import("@/types/tabs").Tab;
+  fromWindowId: string;
+  index: number;
+}
+
+function readTabDragData(dataTransfer: DataTransfer): TabDragData | null {
+  const raw = dataTransfer.getData(TAB_DRAG_MIME) || dataTransfer.getData(TAB_DRAG_FALLBACK_MIME);
+  if (!raw) return null;
+
+  try {
+    const data = JSON.parse(raw) as Partial<TabDragData>;
+    if (data.kind !== "tab" || !data.tab || !data.fromWindowId || typeof data.index !== "number") {
+      return null;
+    }
+    return data as TabDragData;
+  } catch {
+    return null;
+  }
+}
 
 export function TabBar() {
   const {
@@ -20,6 +46,7 @@ export function TabBar() {
     closeOtherTabs,
     closeTabsToRight,
     addTab,
+    addTransferredTab,
     duplicateTab,
     reorderTabs,
   } = useTabs();
@@ -31,6 +58,23 @@ export function TabBar() {
   const [hiddenTabId, setHiddenTabId] = useState<string | null>(null);
   // 标记 handleDrop 是否执行了有意义的操作（真实排序或跨窗口传输）
   const dropHandledRef = useRef(false);
+  const acceptedTransferIdsRef = useRef(new Set<string>());
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    const setup = async () => {
+      unlisten = await listen<{ tabId: string; fromWindowId: string }>(
+        "tab-transfer-complete",
+        (event) => {
+          if (event.payload.fromWindowId === getCurrentWebviewWindow().label) {
+            acceptedTransferIdsRef.current.add(event.payload.tabId);
+          }
+        }
+      );
+    };
+    setup().catch((error) => console.error("Failed to listen for tab transfer completion:", error));
+    return () => unlisten?.();
+  }, []);
 
   const handleNewTab = () => {
     // 新建标签页默认打开主目录
@@ -61,7 +105,10 @@ export function TabBar() {
         index,
       };
 
-      e.dataTransfer.setData("application/hyperexplorer-drag-data", JSON.stringify(dragData));
+      const serialized = JSON.stringify({ kind: "tab", ...dragData });
+      // text/plain 是跨 WebView/窗口时最稳定的回退格式。
+      e.dataTransfer.setData(TAB_DRAG_MIME, serialized);
+      e.dataTransfer.setData(TAB_DRAG_FALLBACK_MIME, serialized);
       setDragIndex(index);
       dropHandledRef.current = false; // 重置标记
     },
@@ -121,6 +168,13 @@ export function TabBar() {
           const stillExists = currentTabs.some((t) => t.id === tab.id);
 
           if (stillExists) {
+            if (acceptedTransferIdsRef.current.delete(tab.id)) {
+              // 目标窗口已经完成接收，源窗口由统一的 transfer-complete 监听负责关闭。
+              setHiddenTabId(null);
+              setDragIndex(null);
+              setDragOverIndex(null);
+              return;
+            }
             const { windowManager } = await import("@/lib/windowManager");
             // 始终检查 drop 位置是否在已有窗口上（解决重叠窗口的场景）
             const targetWindowId = await windowManager.findWindowAtPosition(screenX, screenY);
@@ -130,11 +184,20 @@ export function TabBar() {
               console.log("[TabBar] Transferring tab to existing window:", targetWindowId);
               await windowManager.transferTab(tab, targetWindowId, screenX, screenY);
               removeTab(tab.id);
-            } else if (isOutOfBounds && tabs.length > 1) {
-              // 拖到空白区域，创建新窗口（只有多 Tab 时才允许）
+            } else if (isOutOfBounds) {
+              // 拖到空白区域，创建新窗口；单 Tab 窗口也支持脱离。
               console.log("[TabBar] Creating new window at screen position");
-              await windowManager.createWindow({ tab, x: screenX - 500, y: screenY });
-              removeTab(tab.id);
+              try {
+                await windowManager.createWindow({ tab, x: screenX - 500, y: screenY });
+                removeTab(tab.id);
+              } catch (error) {
+                console.error("[TabBar] Failed to create detached tab window:", error);
+                const restoreEl = tabDomRefs.current.get(tab.id);
+                if (restoreEl) {
+                  restoreEl.style.opacity = "";
+                  restoreEl.style.pointerEvents = "";
+                }
+              }
             } else {
               // 取消拖拽，恢复 Tab 显示
               console.log("[TabBar] Drag cancelled, restoring tab");
@@ -165,11 +228,11 @@ export function TabBar() {
       e.preventDefault();
       e.stopPropagation(); // 防止冒泡到容器
 
-      const dataStr = e.dataTransfer.getData("application/hyperexplorer-drag-data");
-      if (!dataStr) return;
+      const data = readTabDragData(e.dataTransfer);
+      if (!data) return;
 
       try {
-        const { tab, fromWindowId, index: fromIndex } = JSON.parse(dataStr);
+        const { tab, fromWindowId, index: fromIndex } = data;
 
         // 使用 Tauri 的实际窗口 label
         const currentWindowId = getCurrentWebviewWindow().label;
@@ -182,8 +245,8 @@ export function TabBar() {
           }
           // fromIndex === toIndex: no-op，不标记 → handleDragEnd 会检查跨窗口
         } else {
-          // 跨窗口移动：在当前窗口添加 Tab
-          addTab(tab.path, undefined, toIndex);
+          // 跨窗口移动：保留完整历史记录和原始 Tab ID。
+          addTransferredTab(tab, toIndex);
           dropHandledRef.current = true; // 跨窗口传输，标记为已处理
 
           // 通知源窗口关闭 Tab
@@ -200,7 +263,7 @@ export function TabBar() {
       setDragIndex(null);
       setDragOverIndex(null);
     },
-    [reorderTabs, addTab]
+    [reorderTabs, addTransferredTab]
   );
 
   // 复制路径

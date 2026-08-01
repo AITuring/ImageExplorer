@@ -234,6 +234,20 @@ impl OperationManager {
 
             match result {
                 Ok(()) => {
+                    // 目录监听器按 WebView 注册，跨窗口拖拽时不能只依赖
+                    // 单个窗口的 notify watcher；把受影响的目录变化广播给
+                    // 所有窗口，让源窗口和目标窗口都立即失效并刷新缓存。
+                    if matches!(job.kind, OperationKind::Move | OperationKind::Delete) {
+                        if let Some(parent) = Path::new(path).parent() {
+                            let parent = parent.to_string_lossy().to_string();
+                            let _ = app.emit("dir-change", &parent);
+                        }
+                    }
+                    if matches!(job.kind, OperationKind::Copy | OperationKind::Move) {
+                        if let Some(destination) = job.destination.as_deref() {
+                            let _ = app.emit("dir-change", destination);
+                        }
+                    }
                     self.update(app, &job.id, |snapshot| {
                         snapshot.completed_items += 1;
                         snapshot.completed_bytes =

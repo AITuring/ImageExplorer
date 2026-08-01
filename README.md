@@ -10,15 +10,17 @@ ImageExplorer brings the best of Windows Explorer to macOS: an editable address 
 
 ## Features
 
-- **Editable Address Bar** — Navigate by typing paths, copy/paste, breadcrumb clicking
+- **Editable Address Bar** — Navigate by typing paths, copy/paste with Cmd+C/Cmd+V, breadcrumb clicking
 - **Folder Tree Sidebar** — Windows-style collapsible tree with lazy loading
-- **Everything-Style Search** — Millisecond-level full-disk search powered by SQLite FTS5 + Rust
-- **Smart Categories** — Quick filters for images, videos, documents, audio, archives, and code files
+- **Mounted Volumes** — Shows mounted USB, external, and network volumes in the sidebar Locations section and refreshes after mount/unmount
+- **Resizable Sidebar** — Drag the sidebar divider to adjust its width, drag it to the edge to hide it, and use the attached edge handle to click or drag it back open; the setting is remembered
+- **Everything-Style Search** — Millisecond-level full-disk search powered by SQLite FTS5 + Rust, with an anchored result panel that stays above the file content and supports Finder-like selection, context-menu actions, and inline rename
 - **Finder-Like Thumbnails** — Native thumbnail previews in icon/list views, with progressive loading and caching for large folders
-- **Multi-Tab & Multi-Window** — Drag tabs between windows, per-tab navigation history
+- **Finder-Like Selection & Rename** — Subtle native-style selection states; in icon/list views, click a selected filename to rename it inline (Enter confirms, Escape cancels)
+- **Multi-Tab & Multi-Window** — Drag tabs between windows while preserving their navigation history; detached tabs open with their current folder and history; move files and folders into another window or its current folder, with source and destination views refreshed after completion
 - **Cmd+X Cut** — Native cut support, no more Cmd+C → Cmd+Option+V
 - **QuickLook Preview** — Press Space to preview files (text, images, video, audio, PDF, HEIC, DNG, PSD), with native macOS thumbnail fallback for unsupported formats
-- **Context Menus** — Windows-style right-click with 20+ actions: "New File", "Open in Terminal", "Copy Path", etc.
+- **Context Menus** — Windows-style right-click with 20+ actions: "New File", "Open in New Tab" for folders, "Open in Terminal", "Copy Path", etc.
 - **Dark Mode** — Light / Dark / System theme
 - **i18n** — English and Simplified Chinese
 

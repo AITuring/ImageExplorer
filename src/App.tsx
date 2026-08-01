@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 import { Loader2 } from "lucide-react";
 import { Sidebar } from "@/components/Sidebar";
 import { TopBar } from "@/components/TopBar";
@@ -36,6 +37,19 @@ function App() {
 
   const { activeTab, tabs, initTabs, navigate, addTransferredTab, setHomePath, closeTab } =
     useTabs();
+  const [fileToSelect, setFileToSelect] = useState<string | null>(null);
+
+  const handleNavigate = useCallback(
+    (path: string, selectFile?: string) => {
+      setFileToSelect(selectFile ?? null);
+      navigate(path, selectFile);
+    },
+    [navigate]
+  );
+
+  useEffect(() => {
+    setFileToSelect(null);
+  }, [activeTab?.id]);
 
   // 监听跨窗口 Tab 移动完成事件（关闭源 Tab 或窗口）
   useEffect(() => {
@@ -182,6 +196,7 @@ function App() {
 
         // 2. 立即解除 Loading 状态，让用户看到界面
         setIsInitializing(false);
+        void emit("window-ready", { windowId: windowManager.getWindowId() });
 
         // 3. 后台预加载图标（不阻塞 UI）
         preloadCriticalIcons(homePath).catch((e) => console.error(e));
@@ -194,6 +209,7 @@ function App() {
         console.error("Failed to initialize app:", e);
         initTabs("/");
         setIsInitializing(false);
+        void emit("window-ready", { windowId: windowManager.getWindowId() });
       }
     }
     init();
@@ -230,17 +246,21 @@ function App() {
           <TabBar />
 
           {/* 顶部导航栏 */}
-          <TopBar />
+          <TopBar onNavigate={handleNavigate} />
 
           {/* 主内容区 */}
           <div className="flex flex-1 overflow-hidden">
             {/* 左侧边栏 */}
-            <Sidebar onNavigate={(path) => navigate(path)} />
+            <Sidebar onNavigate={handleNavigate} />
 
             {/* 文件列表 */}
             <main className="flex-1 overflow-auto">
               {activeTab?.path ? (
-                <FileList currentPath={activeTab.path} onNavigate={navigate} fileToSelect={null} />
+                <FileList
+                  currentPath={activeTab.path}
+                  onNavigate={handleNavigate}
+                  fileToSelect={fileToSelect}
+                />
               ) : (
                 <div className="flex h-full items-center justify-center">
                   {/* Optional: Add a spinner here if desired, or just blank until init */}

@@ -14,6 +14,7 @@ import {
   ArrowUpRight,
   Clipboard,
   Copy,
+  FolderPlus,
   Link,
   Pencil,
   Scissors,
@@ -49,6 +50,15 @@ export function FileMenuContent({ entry, selectedEntries, actions }: FileMenuCon
         label={t("context_menu.open")}
         onClick={() => actions.onOpen(entry)}
       />
+
+      {entry.is_dir && actions.onOpenInNewTab && (
+        <MenuItem
+          sysIcon={{ type: "sfsymbol", value: "plus.square.on.square" }}
+          fallbackIcon={FolderPlus}
+          label={t("context_menu.open_in_new_tab")}
+          onClick={() => actions.onOpenInNewTab?.(entry)}
+        />
+      )}
 
       {actions.onGoToLocation && (
         <MenuItem

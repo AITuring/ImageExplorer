@@ -319,6 +319,115 @@ pub fn get_home_dir() -> Result<String, String> {
         .ok_or_else(|| "Could not determine home directory".to_string())
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct MountedVolume {
+    pub name: String,
+    pub path: String,
+    pub readonly: bool,
+}
+
+#[cfg(target_os = "macos")]
+fn mounted_volumes_from_foundation() -> Vec<MountedVolume> {
+    use objc2_foundation::{NSFileManager, NSVolumeEnumerationOptions};
+
+    let file_manager = unsafe { NSFileManager::defaultManager() };
+    let Some(urls) = (unsafe {
+        file_manager.mountedVolumeURLsIncludingResourceValuesForKeys_options(
+            None,
+            NSVolumeEnumerationOptions(0),
+        )
+    }) else {
+        return Vec::new();
+    };
+
+    let mut volumes = Vec::new();
+    for index in 0..urls.count() {
+        let url = unsafe { urls.objectAtIndex(index) };
+        let Some(path) = (unsafe { url.path() }) else {
+            continue;
+        };
+        let path = path.to_string();
+
+        // The root volume has no useful basename here. External, removable,
+        // and network volumes are exposed under /Volumes and are what Finder
+        // shows as separate locations.
+        let Some(name) = path.strip_prefix("/Volumes/") else {
+            continue;
+        };
+        if name.is_empty() || name.contains('/') {
+            continue;
+        }
+
+        let readonly = fs::metadata(&path)
+            .map(|metadata| metadata.permissions().readonly())
+            .unwrap_or(false);
+        volumes.push(MountedVolume {
+            name: name.to_string(),
+            path,
+            readonly,
+        });
+    }
+
+    volumes.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+    volumes
+}
+
+#[cfg(target_os = "macos")]
+fn mounted_volumes_from_mount_directory() -> Result<Vec<MountedVolume>, String> {
+    let mut volumes = Vec::new();
+    let read_dir = match fs::read_dir("/Volumes") {
+        Ok(read_dir) => read_dir,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(volumes),
+        Err(error) => return Err(format!("Failed to read mounted volumes: {}", error)),
+    };
+
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        let metadata = match fs::metadata(&path) {
+            Ok(metadata) if metadata.is_dir() => metadata,
+            _ => continue,
+        };
+
+        let Some(name) = path
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+        else {
+            continue;
+        };
+
+        volumes.push(MountedVolume {
+            name,
+            path: path.to_string_lossy().to_string(),
+            readonly: metadata.permissions().readonly(),
+        });
+    }
+
+    volumes.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+    Ok(volumes)
+}
+
+/// Return currently mounted external volumes on macOS.
+///
+/// Finder exposes these volumes in its Locations section. `/Volumes` is the
+/// stable mount point for removable and network volumes on macOS, so this is
+/// kept as a dedicated command instead of treating mounts as normal entries.
+#[tauri::command]
+pub fn get_mounted_volumes() -> Result<Vec<MountedVolume>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let native_volumes = mounted_volumes_from_foundation();
+        if !native_volumes.is_empty() {
+            return Ok(native_volumes);
+        }
+        mounted_volumes_from_mount_directory()
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(Vec::new())
+    }
+}
+
 #[tauri::command]
 pub fn get_parent_dir(path: String) -> Result<Option<String>, String> {
     let p = Path::new(&path);

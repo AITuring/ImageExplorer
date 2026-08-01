@@ -5,6 +5,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { AppContextMenu } from "@/components/AppContextMenu";
 import { FileEntry, FileActions } from "@/types";
 import { useViewMode } from "@/stores/viewMode";
+import { useTabs } from "@/hooks/useTabs";
 import { QuickLook } from "@/components/QuickLook";
 import { SMART_FOLDER_PREFIX } from "@/constants/config";
 import { invoke } from "@tauri-apps/api/core";
@@ -21,6 +22,7 @@ import { FileGridItem } from "./components/FileGridItem";
 import { FileColumnView } from "./components/FileColumnView";
 import { FileGalleryView } from "./components/FileGalleryView";
 import { BatchRenameDialog } from "@/components/BatchRenameDialog";
+import { FILE_DRAG_MIME, readFileDragData, serializeFileDragData } from "@/lib/dragData";
 
 /** 列表视图固定行高 */
 const LIST_ITEM_HEIGHT = 40;
@@ -45,7 +47,11 @@ function makeDragHandlers(
 ) {
   return {
     onDragStart: (e: React.DragEvent) => {
-      e.dataTransfer.setData("application/json", JSON.stringify({ path: entry.path }));
+      const serialized = serializeFileDragData([entry.path]);
+      e.dataTransfer.setData(FILE_DRAG_MIME, serialized);
+      e.dataTransfer.setData("application/json", serialized);
+      // 跨 WebView/窗口时 text/plain 的可用性最好。
+      e.dataTransfer.setData("text/plain", serialized);
       e.dataTransfer.effectAllowed = "move";
     },
     onDragOver: (e: React.DragEvent) => {
@@ -76,13 +82,11 @@ function makeDragHandlers(
       } else {
         e.currentTarget.classList.remove("bg-primary/20", "rounded-md");
       }
-      try {
-        const data = JSON.parse(e.dataTransfer.getData("application/json"));
-        if (data && data.path && data.path !== entry.path) {
-          handleMove(data.path, entry.path);
-        }
-      } catch (err) {
-        console.error("Failed to parse drag data", err);
+      const data = readFileDragData(e.dataTransfer);
+      if (data) {
+        data.paths
+          .filter((path) => path !== entry.path)
+          .forEach((path) => handleMove(path, entry.path));
       }
     },
   };
@@ -91,6 +95,7 @@ function makeDragHandlers(
 export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProps) {
   const { t } = useTranslation();
   const { viewMode } = useViewMode();
+  const { addTab } = useTabs();
 
   // 1. 数据加载
   const { entries, showHiddenFiles, loading, error, loadEntries } = useFileEntries(currentPath);
@@ -152,6 +157,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   // 6. 批量重命名
   const [batchRenameFiles, setBatchRenameFiles] = useState<FileEntry[]>([]);
   const [showBatchRename, setShowBatchRename] = useState(false);
+  const [isFileDragOver, setIsFileDragOver] = useState(false);
 
   // 7. 快速预览
   const { quickLookEntry, setQuickLookEntry, useNativeQuickLook } = useQuickLook({
@@ -307,6 +313,20 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     }
   };
 
+  // Finder 风格：点击未选中的文件名先选中，点击已选中文件名进入重命名。
+  const handleNameClick = (entry: FileEntry, index: number, e: React.MouseEvent) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey) {
+      handleClick(entry, index, e);
+      return;
+    }
+
+    if (selectedPaths.includes(entry.path) && !entry.readonly) {
+      handleStartRename(entry);
+    } else {
+      selectSingle(entry.path, index);
+    }
+  };
+
   // 跳转到位置
   const handleGoToLocation = async (entry: FileEntry) => {
     try {
@@ -325,9 +345,48 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     [sortedEntries, selectedPaths]
   );
 
+  const handleFileContainerDragOver = useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      if (e.defaultPrevented) {
+        setIsFileDragOver(false);
+        return;
+      }
+      if (currentPath.startsWith(SMART_FOLDER_PREFIX)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      setIsFileDragOver(true);
+    },
+    [currentPath]
+  );
+
+  const handleFileContainerDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsFileDragOver(false);
+    }
+  }, []);
+
+  const handleFileContainerDrop = useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      if (currentPath.startsWith(SMART_FOLDER_PREFIX)) return;
+      const data = readFileDragData(e.dataTransfer);
+      if (!data) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      setIsFileDragOver(false);
+      data.paths
+        .filter((path) => path !== currentPath)
+        .forEach((path) => handleMove(path, currentPath));
+    },
+    [currentPath, handleMove]
+  );
+
   // 文件操作对象
   const fileActions: FileActions = {
     onOpen: handleOpen,
+    onOpenInNewTab: (entry) => {
+      if (entry.is_dir) addTab(entry.path);
+    },
     onCopy: handleCopy,
     onCut: handleCut,
     onPaste: handlePaste,
@@ -384,7 +443,15 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
           currentPath,
         }}
       >
-        <div className="bg-background/60 h-full overflow-hidden p-4" tabIndex={0}>
+        <div
+          className={`bg-background/60 h-full overflow-hidden p-4 transition-colors ${
+            isFileDragOver ? "ring-primary/30 ring-2 ring-inset" : ""
+          }`}
+          tabIndex={0}
+          onDragOver={handleFileContainerDragOver}
+          onDragLeave={handleFileContainerDragLeave}
+          onDrop={handleFileContainerDrop}
+        >
           {viewMode === "column" ? (
             <FileColumnView
               currentPath={currentPath}
@@ -460,6 +527,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                             onSubmitRename={handleSubmitRename}
                             onCancelRename={handleCancelRename}
                             onClick={(e) => handleClick(entry, virtualItem.index, e)}
+                            onNameClick={(e) => handleNameClick(entry, virtualItem.index, e)}
                             onDoubleClick={() => handleOpen(entry)}
                           />
                         </AppContextMenu>
@@ -523,6 +591,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                                     onSubmitRename={handleSubmitRename}
                                     onCancelRename={handleCancelRename}
                                     onClick={(e) => handleClick(entry, globalIndex, e)}
+                                    onNameClick={(e) => handleNameClick(entry, globalIndex, e)}
                                     onDoubleClick={() => handleOpen(entry)}
                                   />
                                 </AppContextMenu>

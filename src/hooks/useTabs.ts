@@ -54,8 +54,8 @@ export function useTabs() {
 
   /** 添加从其他窗口传输过来的 Tab */
   const addTransferredTab = useCallback(
-    (tab: import("@/types/tab").Tab) => {
-      dispatch({ type: "ADD_TRANSFERRED_TAB", payload: { tab } });
+    (tab: import("@/types/tab").Tab, index?: number) => {
+      dispatch({ type: "ADD_TRANSFERRED_TAB", payload: { tab, index } });
     },
     [dispatch]
   );

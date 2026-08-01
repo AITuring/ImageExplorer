@@ -8,6 +8,19 @@ const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
 export function useOperationCenter() {
   const [operationsById, setOperationsById] = useState<Record<string, FileOperationSnapshot>>({});
 
+  const removeCompletedOperation = useCallback((operationId: string) => {
+    setOperationsById((current) => {
+      if (!current[operationId]) return current;
+      const next = { ...current };
+      delete next[operationId];
+      return next;
+    });
+
+    void invoke("clear_file_operation", { operationId }).catch((error) => {
+      console.error("Failed to clear completed operation:", error);
+    });
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
@@ -17,12 +30,23 @@ export function useOperationCenter() {
         const snapshots = await invoke<FileOperationSnapshot[]>("get_file_operations");
         if (!cancelled) {
           setOperationsById(
-            Object.fromEntries(snapshots.map((snapshot) => [snapshot.id, snapshot]))
+            Object.fromEntries(
+              snapshots
+                .filter((snapshot) => snapshot.status !== "completed")
+                .map((snapshot) => [snapshot.id, snapshot])
+            )
           );
+          snapshots
+            .filter((snapshot) => snapshot.status === "completed")
+            .forEach((snapshot) => removeCompletedOperation(snapshot.id));
         }
 
         unlisten = await listen<FileOperationSnapshot>("file-operation-updated", (event) => {
           if (cancelled) return;
+          if (event.payload.status === "completed") {
+            removeCompletedOperation(event.payload.id);
+            return;
+          }
           setOperationsById((current) => ({
             ...current,
             [event.payload.id]: event.payload,
@@ -38,7 +62,7 @@ export function useOperationCenter() {
       cancelled = true;
       unlisten?.();
     };
-  }, []);
+  }, [removeCompletedOperation]);
 
   const operations = useMemo(
     () =>

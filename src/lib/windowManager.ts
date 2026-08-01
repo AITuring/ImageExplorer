@@ -49,12 +49,25 @@ class WindowManager {
   // 获取从 URL 传递的初始 Tab
   getInitialTab(): Tab | null {
     const params = new URLSearchParams(window.location.search);
-    const tabJson = params.get("tab");
-    if (tabJson) {
+    const rawTab = params.get("tab");
+    if (rawTab) {
+      // URLSearchParams 已经解码了一层；兼容旧版本留下的二次编码参数。
+      const candidates = [rawTab];
       try {
-        return JSON.parse(decodeURIComponent(tabJson));
+        candidates.push(decodeURIComponent(rawTab));
       } catch {
-        return null;
+        // 保留原始值继续尝试解析。
+      }
+
+      for (const candidate of candidates) {
+        try {
+          const tab = JSON.parse(candidate) as Tab;
+          if (tab && typeof tab.path === "string" && Array.isArray(tab.history)) {
+            return tab;
+          }
+        } catch {
+          // 尝试下一个编码层级。
+        }
       }
     }
     return null;
@@ -97,15 +110,24 @@ class WindowManager {
     const newWindowId = `window-${nanoid(6)}`;
     const params = new URLSearchParams({ windowId: newWindowId });
 
-    if (options?.path) {
-      params.set("path", options.path);
+    // 始终传递独立路径作为兜底，避免 Tab JSON 在跨窗口 URL 中解析失败时出现空白窗口。
+    const initialPath = options?.path || options?.tab?.path;
+    if (initialPath) {
+      params.set("path", initialPath);
     }
     if (options?.tab) {
-      params.set("tab", encodeURIComponent(JSON.stringify(options.tab)));
+      // URLSearchParams 会负责编码，读取端会先拿到可直接 JSON.parse 的字符串。
+      params.set("tab", JSON.stringify(options.tab));
     }
 
-    const webview = new WebviewWindow(newWindowId, {
-      url: `index.html?${params.toString()}`,
+    // 使用当前窗口的完整应用 URL，避免动态 WebView 在开发环境中把相对
+    // `index.html` 解析到错误的 origin，最终只显示透明空窗口。
+    const appUrl = new URL(window.location.href);
+    appUrl.search = params.toString();
+    appUrl.hash = "";
+
+    const windowOptions = {
+      url: appUrl.toString(),
       title: "HyperExplorer",
       width: 1000,
       height: 700,
@@ -116,9 +138,53 @@ class WindowManager {
       transparent: true,
       titleBarStyle: "overlay",
       hiddenTitle: true,
-    });
+      // Keep HTML5 drag/drop available in dynamically-created windows.
+      dragDropEnabled: false,
+    } as const;
 
-    return webview;
+    // 等待新窗口完成 React 初始化。仅收到 Tauri 的 created 事件还不够，
+    // 因为 WebView 可能已经创建但页面脚本仍加载失败，最终只显示透明空窗口。
+    return new Promise((resolve, reject) => {
+      let webview: WebviewWindow | undefined;
+      let unlistenReady: UnlistenFn | undefined;
+      let cancelTimeout = () => {};
+
+      const cleanup = () => {
+        unlistenReady?.();
+        cancelTimeout();
+      };
+
+      const fail = async (error: Error) => {
+        cleanup();
+        try {
+          await webview?.close();
+        } catch {
+          // 窗口可能在 WebView 初始化前就创建失败。
+        }
+        reject(error);
+      };
+
+      void listen<{ windowId: string }>("window-ready", (event) => {
+        if (event.payload.windowId !== newWindowId || !webview) return;
+        cleanup();
+        resolve(webview);
+      })
+        .then((unlisten) => {
+          unlistenReady = unlisten;
+          webview = new WebviewWindow(newWindowId, windowOptions);
+          void webview.once("tauri://error", (event) => {
+            void fail(new Error(`Failed to create window: ${String(event.payload)}`));
+          });
+
+          const timeout = setTimeout(() => {
+            void fail(new Error("Timed out waiting for the new window to finish loading"));
+          }, 15_000);
+          cancelTimeout = () => clearTimeout(timeout);
+        })
+        .catch((error) => {
+          void fail(new Error(`Failed to listen for new window readiness: ${String(error)}`));
+        });
+    });
   }
 
   // 发送 Tab 到另一个窗口（或创建新窗口）

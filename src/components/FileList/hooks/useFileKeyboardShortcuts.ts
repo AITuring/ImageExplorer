@@ -22,6 +22,16 @@ interface UseFileKeyboardShortcutsOptions {
   handleNewFolder: () => Promise<void>;
 }
 
+function isTextInputTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
+    target.isContentEditable
+  );
+}
+
 export function useFileKeyboardShortcuts(options: UseFileKeyboardShortcutsOptions) {
   const clipboard = useClipboard();
 
@@ -56,6 +66,10 @@ export function useFileKeyboardShortcuts(options: UseFileKeyboardShortcutsOption
 
       // 如果在编辑状态，不处理快捷键
       if (editingPath) return;
+
+      // 让地址栏、搜索框以及重命名输入框保留浏览器原生的复制、粘贴、
+      // 全选等行为，避免文件列表的全局快捷键抢走 Cmd+C/Cmd+V。
+      if (isTextInputTarget(e.target)) return;
 
       // Cmd+A 全选
       if ((e.metaKey || e.ctrlKey) && e.key === "a") {

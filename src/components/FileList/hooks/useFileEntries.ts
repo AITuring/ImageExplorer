@@ -20,6 +20,7 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loadRequestRef = useRef(0);
   const [showHiddenFiles] = useSetting<boolean>("show_hidden_files", false);
 
   const entries = useMemo(
@@ -30,6 +31,7 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
   // 加载目录内容
   const loadEntries = useCallback(
     async (showLoading = true) => {
+      const requestId = ++loadRequestRef.current;
       if (showLoading) setLoading(true);
       setError(null);
       try {
@@ -40,13 +42,16 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
         } else {
           result = await invoke<FileEntry[]>("get_entries", { path: currentPath });
         }
+        // 跨窗口移动可能让旧请求在新请求之后返回；只接受最后一次加载结果，
+        // 避免旧目录快照把已经完成的移动重新画回列表。
+        if (requestId !== loadRequestRef.current) return;
         setAllEntries(result);
         // 缓存完整结果，显示偏好只在渲染边界应用
         setCachedEntries(currentPath, result);
       } catch (e) {
-        setError(String(e));
+        if (requestId === loadRequestRef.current) setError(String(e));
       } finally {
-        if (showLoading) setLoading(false);
+        if (showLoading && requestId === loadRequestRef.current) setLoading(false);
       }
     },
     [currentPath]
