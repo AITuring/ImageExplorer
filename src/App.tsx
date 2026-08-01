@@ -13,6 +13,7 @@ import { useTranslation } from "react-i18next";
 import { useTabs } from "@/hooks/useTabs";
 import { useTabShortcuts } from "@/hooks/useTabShortcuts";
 import { windowManager } from "@/lib/windowManager";
+import { OperationCenter } from "@/components/OperationCenter";
 
 function App() {
   const [isInitializing, setIsInitializing] = useState(true);
@@ -207,6 +208,7 @@ function App() {
     >
       {/* 索引加载遮罩 */}
       <IndexingOverlay />
+      <OperationCenter />
 
       {isInitializing ? (
         <div className="flex h-full items-center justify-center">

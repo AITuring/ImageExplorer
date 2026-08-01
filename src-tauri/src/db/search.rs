@@ -47,7 +47,9 @@ impl SearchEngine {
         // 清理 FTS5 特殊字符，防止注入
         let sanitized: String = query
             .chars()
-            .filter(|c| c.is_alphanumeric() || c.is_whitespace() || *c == '_' || *c == '-' || *c == '.')
+            .filter(|c| {
+                c.is_alphanumeric() || c.is_whitespace() || *c == '_' || *c == '-' || *c == '.'
+            })
             .collect();
         if sanitized.is_empty() {
             return vec![];
@@ -79,18 +81,21 @@ impl SearchEngine {
         };
 
         let results = stmt
-            .query_map(rusqlite::params![fts_query, limit as i64, query_lower], |row| {
-                Ok(SearchResult {
-                    name: row.get(0)?,
-                    name_lower: row.get(1)?,
-                    path: row.get(2)?,
-                    is_dir: row.get::<_, i32>(3)? != 0,
-                    size: row.get(4)?,
-                    modified: row.get(5)?,
-                    extension: row.get(6)?,
-                    is_hidden: row.get::<_, String>(1)?.starts_with('.'),
-                })
-            })
+            .query_map(
+                rusqlite::params![fts_query, limit as i64, query_lower],
+                |row| {
+                    Ok(SearchResult {
+                        name: row.get(0)?,
+                        name_lower: row.get(1)?,
+                        path: row.get(2)?,
+                        is_dir: row.get::<_, i32>(3)? != 0,
+                        size: row.get(4)?,
+                        modified: row.get(5)?,
+                        extension: row.get(6)?,
+                        is_hidden: row.get::<_, String>(1)?.starts_with('.'),
+                    })
+                },
+            )
             .ok();
 
         match results {

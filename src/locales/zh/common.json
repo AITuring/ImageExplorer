@@ -24,5 +24,19 @@
     "background": "后台运行中...",
     "scanning": "正在扫描文件...",
     "indexed": "已索引 {{count}} 个文件"
+  },
+  "operations": {
+    "title": "文件操作",
+    "kind_copy": "复制",
+    "kind_move": "移动",
+    "kind_delete": "移到废纸篓",
+    "status_queued": "排队中",
+    "status_running": "处理中",
+    "status_completed": "已完成",
+    "status_failed": "部分失败",
+    "status_cancelled": "已取消",
+    "cancel": "取消操作",
+    "clear": "清除此记录",
+    "clear_completed": "清除已完成"
   }
 }

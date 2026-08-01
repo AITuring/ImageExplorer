@@ -1,0 +1,420 @@
+use crate::commands::fs::{copy_file, delete_to_trash, move_file};
+use serde::Serialize;
+use std::collections::{HashMap, VecDeque};
+use std::fs;
+use std::path::Path;
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, Mutex,
+};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Emitter, State};
+
+static NEXT_OPERATION_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OperationKind {
+    Copy,
+    Move,
+    Delete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OperationStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OperationSnapshot {
+    pub id: String,
+    pub kind: OperationKind,
+    pub status: OperationStatus,
+    pub total_items: usize,
+    pub completed_items: usize,
+    pub failed_items: usize,
+    pub total_bytes: u64,
+    pub completed_bytes: u64,
+    pub current_item: Option<String>,
+    pub errors: Vec<String>,
+    pub cancel_requested: bool,
+    pub started_at: u64,
+    pub finished_at: Option<u64>,
+}
+
+struct OperationRecord {
+    snapshot: OperationSnapshot,
+    cancel_requested: Arc<AtomicBool>,
+}
+
+struct OperationJob {
+    id: String,
+    kind: OperationKind,
+    paths: Vec<String>,
+    destination: Option<String>,
+}
+
+#[derive(Clone, Default)]
+pub struct OperationManager {
+    records: Arc<Mutex<HashMap<String, OperationRecord>>>,
+    queue: Arc<Mutex<VecDeque<OperationJob>>>,
+    worker_running: Arc<AtomicBool>,
+}
+
+fn now_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn new_operation_id() -> String {
+    let sequence = NEXT_OPERATION_ID.fetch_add(1, Ordering::Relaxed);
+    format!("op-{}-{}", now_seconds(), sequence)
+}
+
+fn source_bytes(paths: &[String]) -> u64 {
+    paths
+        .iter()
+        .filter_map(|path| fs::metadata(path).ok())
+        .map(|metadata| metadata.len())
+        .sum()
+}
+
+impl OperationManager {
+    pub fn start(
+        &self,
+        app: AppHandle,
+        kind: OperationKind,
+        paths: Vec<String>,
+        destination: Option<String>,
+    ) -> Result<String, String> {
+        if paths.is_empty() {
+            return Err("No files were selected".to_string());
+        }
+
+        if matches!(kind, OperationKind::Copy | OperationKind::Move)
+            && destination.as_deref().unwrap_or_default().is_empty()
+        {
+            return Err("A destination directory is required".to_string());
+        }
+
+        let id = new_operation_id();
+        let cancel_requested = Arc::new(AtomicBool::new(false));
+        let snapshot = OperationSnapshot {
+            id: id.clone(),
+            kind,
+            status: OperationStatus::Queued,
+            total_items: paths.len(),
+            completed_items: 0,
+            failed_items: 0,
+            total_bytes: source_bytes(&paths),
+            completed_bytes: 0,
+            current_item: None,
+            errors: Vec::new(),
+            cancel_requested: false,
+            started_at: now_seconds(),
+            finished_at: None,
+        };
+
+        {
+            let mut records = self.records.lock().map_err(|e| e.to_string())?;
+            records.insert(
+                id.clone(),
+                OperationRecord {
+                    snapshot: snapshot.clone(),
+                    cancel_requested,
+                },
+            );
+        }
+        self.emit(&app, &snapshot);
+
+        {
+            let mut queue = self.queue.lock().map_err(|e| e.to_string())?;
+            queue.push_back(OperationJob {
+                id: id.clone(),
+                kind,
+                paths,
+                destination,
+            });
+        }
+
+        self.ensure_worker(app);
+        Ok(id)
+    }
+
+    fn ensure_worker(&self, app: AppHandle) {
+        if self
+            .worker_running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
+        let manager = self.clone();
+        tauri::async_runtime::spawn_blocking(move || manager.worker_loop(app));
+    }
+
+    fn worker_loop(&self, app: AppHandle) {
+        loop {
+            let job = self
+                .queue
+                .lock()
+                .ok()
+                .and_then(|mut queue| queue.pop_front());
+
+            if let Some(job) = job {
+                self.run_job(&app, job);
+                continue;
+            }
+
+            // Close the small race between observing an empty queue and
+            // marking the worker idle. A producer that enqueues during this
+            // window will be picked up here instead of being stranded.
+            self.worker_running.store(false, Ordering::Release);
+            let has_pending = self
+                .queue
+                .lock()
+                .map(|queue| !queue.is_empty())
+                .unwrap_or(false);
+            if has_pending
+                && self
+                    .worker_running
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            {
+                continue;
+            }
+            return;
+        }
+    }
+
+    fn run_job(&self, app: &AppHandle, job: OperationJob) {
+        let Some(cancel_requested) = self.cancel_flag(&job.id) else {
+            return;
+        };
+
+        if cancel_requested.load(Ordering::Acquire) {
+            self.finish(app, &job.id, OperationStatus::Cancelled);
+            return;
+        }
+
+        self.update(app, &job.id, |snapshot| {
+            snapshot.status = OperationStatus::Running;
+        });
+
+        for path in &job.paths {
+            if cancel_requested.load(Ordering::Acquire) {
+                self.finish(app, &job.id, OperationStatus::Cancelled);
+                return;
+            }
+
+            self.update(app, &job.id, |snapshot| {
+                snapshot.current_item = Some(path.clone());
+            });
+
+            let item_bytes = fs::metadata(Path::new(path))
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            let result = match job.kind {
+                OperationKind::Copy => {
+                    copy_file(path.clone(), job.destination.clone().unwrap_or_default()).map(|_| ())
+                }
+                OperationKind::Move => {
+                    move_file(path.clone(), job.destination.clone().unwrap_or_default()).map(|_| ())
+                }
+                OperationKind::Delete => delete_to_trash(path.clone()),
+            };
+
+            match result {
+                Ok(()) => {
+                    self.update(app, &job.id, |snapshot| {
+                        snapshot.completed_items += 1;
+                        snapshot.completed_bytes =
+                            snapshot.completed_bytes.saturating_add(item_bytes);
+                        snapshot.current_item = None;
+                    });
+                }
+                Err(error) => {
+                    self.update(app, &job.id, |snapshot| {
+                        snapshot.failed_items += 1;
+                        snapshot.errors.push(format!("{}: {}", path, error));
+                        snapshot.current_item = None;
+                    });
+                }
+            }
+        }
+
+        let status = self
+            .records
+            .lock()
+            .ok()
+            .and_then(|records| {
+                records
+                    .get(&job.id)
+                    .map(|record| record.snapshot.failed_items)
+            })
+            .map(|failed| {
+                if failed > 0 {
+                    OperationStatus::Failed
+                } else {
+                    OperationStatus::Completed
+                }
+            })
+            .unwrap_or(OperationStatus::Failed);
+        self.finish(app, &job.id, status);
+    }
+
+    fn cancel_flag(&self, id: &str) -> Option<Arc<AtomicBool>> {
+        self.records.lock().ok().and_then(|records| {
+            records
+                .get(id)
+                .map(|record| record.cancel_requested.clone())
+        })
+    }
+
+    fn update<F>(&self, app: &AppHandle, id: &str, update: F)
+    where
+        F: FnOnce(&mut OperationSnapshot),
+    {
+        let snapshot = {
+            let Ok(mut records) = self.records.lock() else {
+                return;
+            };
+            let Some(record) = records.get_mut(id) else {
+                return;
+            };
+            update(&mut record.snapshot);
+            record.snapshot.cancel_requested = record.cancel_requested.load(Ordering::Acquire);
+            record.snapshot.clone()
+        };
+        self.emit(app, &snapshot);
+    }
+
+    fn finish(&self, app: &AppHandle, id: &str, status: OperationStatus) {
+        self.update(app, id, |snapshot| {
+            snapshot.status = status;
+            snapshot.current_item = None;
+            snapshot.finished_at = Some(now_seconds());
+        });
+    }
+
+    fn emit(&self, app: &AppHandle, snapshot: &OperationSnapshot) {
+        let _ = app.emit("file-operation-updated", snapshot);
+    }
+
+    pub fn snapshots(&self) -> Vec<OperationSnapshot> {
+        let mut snapshots = self
+            .records
+            .lock()
+            .map(|records| {
+                records
+                    .values()
+                    .map(|record| record.snapshot.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        snapshots.sort_by_key(|snapshot| std::cmp::Reverse(snapshot.started_at));
+        snapshots
+    }
+
+    pub fn cancel(&self, app: &AppHandle, id: &str) -> Result<(), String> {
+        let snapshot = {
+            let mut records = self.records.lock().map_err(|e| e.to_string())?;
+            let Some(record) = records.get_mut(id) else {
+                return Err("Operation not found".to_string());
+            };
+            if matches!(
+                record.snapshot.status,
+                OperationStatus::Completed | OperationStatus::Failed | OperationStatus::Cancelled
+            ) {
+                return Ok(());
+            }
+            record.cancel_requested.store(true, Ordering::Release);
+            record.snapshot.cancel_requested = true;
+            if record.snapshot.status == OperationStatus::Queued {
+                record.snapshot.status = OperationStatus::Cancelled;
+                record.snapshot.finished_at = Some(now_seconds());
+            }
+            record.snapshot.clone()
+        };
+        self.emit(app, &snapshot);
+        Ok(())
+    }
+
+    pub fn clear(&self, id: &str) -> Result<(), String> {
+        let mut records = self.records.lock().map_err(|e| e.to_string())?;
+        if records
+            .get(id)
+            .map(|record| {
+                matches!(
+                    record.snapshot.status,
+                    OperationStatus::Completed
+                        | OperationStatus::Failed
+                        | OperationStatus::Cancelled
+                )
+            })
+            .unwrap_or(false)
+        {
+            records.remove(id);
+        }
+        Ok(())
+    }
+}
+
+#[tauri::command]
+pub fn start_copy_operation(
+    app: AppHandle,
+    manager: State<'_, OperationManager>,
+    paths: Vec<String>,
+    dest_dir: String,
+) -> Result<String, String> {
+    manager.start(app, OperationKind::Copy, paths, Some(dest_dir))
+}
+
+#[tauri::command]
+pub fn start_move_operation(
+    app: AppHandle,
+    manager: State<'_, OperationManager>,
+    paths: Vec<String>,
+    dest_dir: String,
+) -> Result<String, String> {
+    manager.start(app, OperationKind::Move, paths, Some(dest_dir))
+}
+
+#[tauri::command]
+pub fn start_delete_operation(
+    app: AppHandle,
+    manager: State<'_, OperationManager>,
+    paths: Vec<String>,
+) -> Result<String, String> {
+    manager.start(app, OperationKind::Delete, paths, None)
+}
+
+#[tauri::command]
+pub fn get_file_operations(manager: State<'_, OperationManager>) -> Vec<OperationSnapshot> {
+    manager.snapshots()
+}
+
+#[tauri::command]
+pub fn cancel_file_operation(
+    app: AppHandle,
+    manager: State<'_, OperationManager>,
+    operation_id: String,
+) -> Result<(), String> {
+    manager.cancel(&app, &operation_id)
+}
+
+#[tauri::command]
+pub fn clear_file_operation(
+    manager: State<'_, OperationManager>,
+    operation_id: String,
+) -> Result<(), String> {
+    manager.clear(&operation_id)
+}

@@ -46,6 +46,25 @@ export interface SearchResponse {
   results: SearchResult[];
 }
 
+export type FileOperationKind = "copy" | "move" | "delete";
+export type FileOperationStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+export interface FileOperationSnapshot {
+  id: string;
+  kind: FileOperationKind;
+  status: FileOperationStatus;
+  total_items: number;
+  completed_items: number;
+  failed_items: number;
+  total_bytes: number;
+  completed_bytes: number;
+  current_item: string | null;
+  errors: string[];
+  cancel_requested: boolean;
+  started_at: number;
+  finished_at: number | null;
+}
+
 export interface FolderItem {
   name: string;
   path: string;

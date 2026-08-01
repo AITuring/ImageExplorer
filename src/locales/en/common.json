@@ -24,5 +24,19 @@
     "background": "Running in background...",
     "scanning": "Scanning files...",
     "indexed": "Indexed {{count}} files"
+  },
+  "operations": {
+    "title": "File Operations",
+    "kind_copy": "Copy",
+    "kind_move": "Move",
+    "kind_delete": "Move to Trash",
+    "status_queued": "Queued",
+    "status_running": "In progress",
+    "status_completed": "Completed",
+    "status_failed": "Partially failed",
+    "status_cancelled": "Cancelled",
+    "cancel": "Cancel operation",
+    "clear": "Clear record",
+    "clear_completed": "Clear completed"
   }
 }

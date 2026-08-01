@@ -7,6 +7,7 @@ mod config;
 mod db;
 mod index;
 mod menu;
+mod operations;
 
 use commands::apps::{
     close_native_quick_look, get_app_icon, get_file_thumbnail, get_file_type_icon,
@@ -22,6 +23,10 @@ use commands::search::{get_smart_files, search_files};
 use commands::watcher::{stop_watching, unwatch_directory, watch_directory, WatcherState};
 use db::{Database, IndexBuilder, IndexUpdater, SearchEngine};
 use index::{create_shared_index, IndexedFile, SharedIndex};
+use operations::{
+    cancel_file_operation, clear_file_operation, get_file_operations, start_copy_operation,
+    start_delete_operation, start_move_operation, OperationManager,
+};
 use serde::Serialize;
 use std::process::Child;
 use std::sync::{Arc, Mutex};
@@ -343,6 +348,7 @@ pub fn run() {
     // Watcher 停止信号管理
     let stop_senders: WatcherStopSenders = Arc::new(Mutex::new(Vec::new()));
     let stop_senders_for_exit = stop_senders.clone();
+    let operation_manager = OperationManager::default();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
@@ -353,6 +359,7 @@ pub fn run() {
         .manage(Mutex::new(None::<Child>))
         .manage(shared_index.clone())
         .manage(shared_database.clone())
+        .manage(operation_manager)
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
 
@@ -464,7 +471,13 @@ pub fn run() {
             read_text_file,
             read_image_base64,
             read_image_dimensions,
-            batch_rename
+            batch_rename,
+            start_copy_operation,
+            start_move_operation,
+            start_delete_operation,
+            get_file_operations,
+            cancel_file_operation,
+            clear_file_operation
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

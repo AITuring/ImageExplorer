@@ -1,9 +1,11 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
-import { FileEntry } from "@/types";
+import { FileEntry, FileOperationSnapshot } from "@/types";
 import { useClipboard } from "@/stores/clipboard";
 import { openWithService } from "@/lib/openWith";
+import { isTerminalOperationStatus } from "@/hooks/useOperationCenter";
 
 interface UseFileOperationsOptions {
   currentPath: string;
@@ -20,6 +22,32 @@ export function useFileOperations({
 }: UseFileOperationsOptions) {
   const { t } = useTranslation();
   const clipboard = useClipboard();
+  const onRefreshRef = useRef(onRefresh);
+
+  useEffect(() => {
+    onRefreshRef.current = onRefresh;
+  }, [onRefresh]);
+
+  // 刷新当前目录只在后台任务结束时触发，避免队列中的每个进度事件都
+  // 重新加载目录数据。
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    const setup = async () => {
+      unlisten = await listen<FileOperationSnapshot>("file-operation-updated", (event) => {
+        if (!cancelled && isTerminalOperationStatus(event.payload.status)) {
+          onRefreshRef.current();
+        }
+      });
+    };
+
+    setup().catch((error) => console.error("Failed to listen for file operations:", error));
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   const handleOpen = useCallback(
     (entry: FileEntry) => {
@@ -55,49 +83,35 @@ export function useFileOperations({
   const handlePaste = useCallback(async () => {
     if (!clipboard.hasPending()) return;
 
-    const errors: string[] = [];
-    let successCount = 0;
+    const paths = [...clipboard.paths];
+    const operation = clipboard.operation;
 
-    for (const src of clipboard.paths) {
-      try {
-        if (clipboard.operation === "copy") {
-          await invoke("copy_file", { src, destDir: currentPath });
-        } else if (clipboard.operation === "cut") {
-          await invoke("move_file", { src, destDir: currentPath });
-        }
-        successCount++;
-      } catch (e) {
-        errors.push(String(e));
+    try {
+      if (operation === "copy") {
+        await invoke<string>("start_copy_operation", { paths, destDir: currentPath });
+      } else if (operation === "cut") {
+        await invoke<string>("start_move_operation", { paths, destDir: currentPath });
+        // 剪切语义只应消费一次；实际结果会在进度中心中显示。
+        clipboard.clear();
       }
+    } catch (error) {
+      console.error("Failed to enqueue paste operation:", error);
+      alert(t("file_list.error_paste", { error: String(error) }));
     }
-
-    if (clipboard.operation === "cut") {
-      clipboard.clear();
-    }
-    onRefresh();
-
-    if (errors.length > 0) {
-      alert(
-        t("file_list.error_paste", {
-          error: `${successCount} succeeded, ${errors.length} failed: ${errors[0]}`,
-        })
-      );
-    }
-  }, [clipboard, currentPath, onRefresh, t]);
+  }, [clipboard, currentPath, t]);
 
   const handleDelete = useCallback(
     async (entries: FileEntry[]) => {
       try {
-        for (const entry of entries) {
-          await invoke("delete_to_trash", { path: entry.path });
-        }
-        onRefresh();
-      } catch (e) {
-        console.error("Failed to delete:", e);
-        alert(t("file_list.error_delete", { error: String(e) }));
+        await invoke<string>("start_delete_operation", {
+          paths: entries.map((entry) => entry.path),
+        });
+      } catch (error) {
+        console.error("Failed to enqueue delete operation:", error);
+        alert(t("file_list.error_delete", { error: String(error) }));
       }
     },
-    [onRefresh, t]
+    [t]
   );
 
   const handleCopyPath = useCallback(async (entry: FileEntry) => {
@@ -155,14 +169,16 @@ export function useFileOperations({
     handleMove: useCallback(
       async (sourcePath: string, targetPath: string) => {
         try {
-          await invoke("move_file", { src: sourcePath, destDir: targetPath });
-          onRefresh();
-        } catch (e) {
-          console.error("Failed to move file:", e);
-          alert(t("file_list.error_rename", { error: String(e) })); // Reusing rename error for simplicity or add generic error
+          await invoke<string>("start_move_operation", {
+            paths: [sourcePath],
+            destDir: targetPath,
+          });
+        } catch (error) {
+          console.error("Failed to enqueue move operation:", error);
+          alert(t("file_list.error_rename", { error: String(error) }));
         }
       },
-      [onRefresh, t]
+      [t]
     ),
   };
 }
