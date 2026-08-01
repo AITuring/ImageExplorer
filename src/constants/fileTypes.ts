@@ -26,7 +26,22 @@ export const TEXT_EXTENSIONS = [
   "rtf",
 ];
 
-export const IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "ico"];
+export const IMAGE_EXTENSIONS = [
+  "jpg",
+  "jpeg",
+  "png",
+  "gif",
+  "webp",
+  "svg",
+  "bmp",
+  "ico",
+  "tif",
+  "tiff",
+  "heic",
+  "heif",
+  "dng",
+  "psd",
+];
 
 // 浏览器原生支持的图片格式（移除 heic, tiff 等需要特殊解码的格式）
 export const BROWSER_SUPPORTED_IMAGES = ["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "ico"];

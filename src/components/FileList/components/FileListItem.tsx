@@ -1,7 +1,6 @@
 import { memo } from "react";
-import { Folder, File } from "lucide-react";
-import { FileEntry } from "@/types";
-import { SmartIcon } from "@/components/SmartIcon";
+import type { FileEntry } from "@/types/index";
+import { FileThumbnail } from "@/components/FileThumbnail";
 import { Input } from "@/components/ui/input";
 import { formatFileSize, formatDate } from "@/utils/format";
 
@@ -31,18 +30,21 @@ export const FileListItem = memo(function FileListItem({
 }: FileListItemProps) {
   return (
     <div
-      className={`hover:bg-accent focus:bg-accent flex w-full cursor-default items-center rounded-md p-2 text-sm transition-colors ${
-        isSelected ? "bg-accent" : ""
+      className={`flex w-full cursor-default items-center rounded-md p-2 text-sm transition-colors ${
+        isSelected
+          ? "bg-accent/90 ring-primary/30 ring-1"
+          : "hover:bg-accent/60 focus:bg-accent/60"
       }`}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
     >
       <div className="flex min-w-0 flex-1 items-center gap-3">
-        <SmartIcon
-          icon={entry.is_dir ? Folder : File}
-          className={entry.is_dir ? "h-5 w-5 text-blue-500" : "text-muted-foreground h-5 w-5"}
-          sysIcon={
-            entry.is_dir ? { type: "folder" } : { type: "ext", value: entry.extension || "" }
+        <FileThumbnail
+          entry={entry}
+          size={24}
+          className="h-6 w-6 shrink-0 rounded object-contain"
+          fallbackClassName={
+            entry.is_dir ? "h-5 w-5 text-blue-500" : "text-muted-foreground h-5 w-5"
           }
         />
         {isEditing ? (

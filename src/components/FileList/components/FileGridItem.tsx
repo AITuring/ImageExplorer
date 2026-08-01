@@ -1,7 +1,6 @@
 import { memo } from "react";
-import { Folder, File } from "lucide-react";
-import { FileEntry } from "@/types";
-import { SmartIcon } from "@/components/SmartIcon";
+import type { FileEntry } from "@/types/index";
+import { FileThumbnail } from "@/components/FileThumbnail";
 import { Input } from "@/components/ui/input";
 
 interface FileGridItemProps {
@@ -30,18 +29,21 @@ export const FileGridItem = memo(function FileGridItem({
 }: FileGridItemProps) {
   return (
     <div
-      className={`group hover:bg-accent flex cursor-default flex-col items-center rounded-lg p-3 transition-colors ${
-        isSelected ? "bg-accent" : ""
+      className={`group flex cursor-default flex-col items-center rounded-lg p-3 transition-colors ${
+        isSelected
+          ? "bg-accent/90 ring-primary/40 shadow-sm ring-2"
+          : "hover:bg-accent/60 hover:ring-border/60 ring-1 ring-transparent"
       }`}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
     >
-      <div className="mb-2 flex h-16 w-16 items-center justify-center overflow-hidden">
-        <SmartIcon
-          icon={entry.is_dir ? Folder : File}
-          className={entry.is_dir ? "h-14 w-14 text-blue-500" : "text-muted-foreground h-14 w-14"}
-          sysIcon={
-            entry.is_dir ? { type: "folder" } : { type: "ext", value: entry.extension || "" }
+      <div className="mb-2 flex h-20 w-20 items-center justify-center overflow-hidden">
+        <FileThumbnail
+          entry={entry}
+          size={80}
+          className="h-20 w-20 rounded-md object-contain"
+          fallbackClassName={
+            entry.is_dir ? "h-16 w-16 text-blue-500" : "text-muted-foreground h-16 w-16"
           }
         />
       </div>

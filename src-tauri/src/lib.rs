@@ -9,13 +9,13 @@ mod index;
 mod menu;
 
 use commands::apps::{
-    get_app_icon, get_file_type_icon, get_installed_apps, get_recommended_apps, get_sf_symbol,
-    get_terminal_apps, open_in_terminal_with, open_with,
+    get_app_icon, get_file_thumbnail, get_file_type_icon, get_installed_apps,
+    get_recommended_apps, get_sf_symbol, get_terminal_apps, open_in_terminal_with, open_with,
 };
 use commands::fs::{
     batch_rename, check_full_disk_access, copy_file, create_directory, create_file,
     delete_to_trash, exists, get_entries, get_home_dir, get_parent_dir, move_file, open_file,
-    open_in_terminal, open_url, read_image_base64, read_text_file, rename,
+    open_in_terminal, open_url, read_image_base64, read_image_dimensions, read_text_file, rename,
 };
 use commands::search::{get_smart_files, search_files};
 use commands::watcher::{stop_watching, unwatch_directory, watch_directory, WatcherState};
@@ -449,12 +449,14 @@ pub fn run() {
             get_terminal_apps,
             get_recommended_apps,
             get_app_icon,
+            get_file_thumbnail,
             get_file_type_icon,
             open_with,
             open_in_terminal_with,
             get_sf_symbol,
             read_text_file,
             read_image_base64,
+            read_image_dimensions,
             batch_rename
         ])
         .build(tauri::generate_context!())

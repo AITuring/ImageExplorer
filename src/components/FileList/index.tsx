@@ -25,9 +25,9 @@ import { BatchRenameDialog } from "@/components/BatchRenameDialog";
 /** 列表视图固定行高 */
 const LIST_ITEM_HEIGHT = 40;
 /** 网格视图固定行高 */
-const GRID_ROW_HEIGHT = 120;
+const GRID_ROW_HEIGHT = 150;
 /** 网格项最小宽度 */
-const GRID_ITEM_MIN_WIDTH = 100;
+const GRID_ITEM_MIN_WIDTH = 132;
 /** 网格间距 */
 const GRID_GAP = 16;
 
@@ -182,6 +182,18 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   // === 虚拟滚动 ===
   const listScrollRef = useRef<HTMLDivElement>(null);
   const gridScrollRef = useRef<HTMLDivElement>(null);
+  const galleryScrollRef = useRef<HTMLDivElement>(null);
+  const scrollPositionsRef = useRef<Record<string, number>>({});
+
+  const getScrollContainer = useCallback(
+    (mode: typeof viewMode) => {
+      if (mode === "list") return listScrollRef.current;
+      if (mode === "gallery") return galleryScrollRef.current;
+      if (mode === "icon") return gridScrollRef.current;
+      return null;
+    },
+    [viewMode]
+  );
 
   // 计算网格每行列数
   const gridColumnsRef = useRef(6);
@@ -215,7 +227,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     count: sortedEntries.length,
     getScrollElement: () => listScrollRef.current,
     estimateSize: () => LIST_ITEM_HEIGHT,
-    overscan: 10,
+    overscan: 6,
   });
 
   // 网格虚拟化（按行）
@@ -223,8 +235,39 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     count: gridRowCount,
     getScrollElement: () => gridScrollRef.current,
     estimateSize: () => GRID_ROW_HEIGHT,
-    overscan: 5,
+    overscan: 4,
   });
+
+  useEffect(() => {
+    const locationKey = `${viewMode}:${currentPath}`;
+    return () => {
+      const scrollContainer = getScrollContainer(viewMode);
+      if (scrollContainer) {
+        scrollPositionsRef.current[locationKey] = scrollContainer.scrollTop;
+      }
+    };
+  }, [currentPath, getScrollContainer, viewMode]);
+
+  useEffect(() => {
+    if (loading || fileToSelect) {
+      return;
+    }
+
+    const savedScrollTop = scrollPositionsRef.current[`${viewMode}:${currentPath}`];
+    if (savedScrollTop === undefined) {
+      return;
+    }
+
+    const restoreScroll = () => {
+      const scrollContainer = getScrollContainer(viewMode);
+      if (scrollContainer) {
+        scrollContainer.scrollTop = savedScrollTop;
+      }
+    };
+
+    const animationId = window.requestAnimationFrame(restoreScroll);
+    return () => window.cancelAnimationFrame(animationId);
+  }, [currentPath, fileToSelect, getScrollContainer, loading, viewMode]);
 
   // 8. 自动选中和滚动
   useEffect(() => {
@@ -364,6 +407,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
               onClick={(entry, index, e) => handleClick(entry, index, e)}
               onDoubleClick={handleOpen}
               handleMove={handleMove}
+              scrollContainerRef={galleryScrollRef}
             />
           ) : viewMode === "list" ? (
             <>

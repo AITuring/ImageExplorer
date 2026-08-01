@@ -1,12 +1,12 @@
-# HyperExplorer
+# ImageExplorer
 
 一款现代化、高性能的 macOS 文件管理器 — 基于 Rust 和 React 构建。
 
 [English](./README.md) | [中文](./README.zh-CN.md)
 
-HyperExplorer 将 Windows 资源管理器的高效逻辑带到 macOS：可编辑地址栏、常驻文件夹树、Everything 级极速搜索，同时保持原生 macOS 设计风格。
+ImageExplorer 将 Windows 资源管理器的高效逻辑带到 macOS：可编辑地址栏、常驻文件夹树、Everything 级极速搜索，同时保持原生 macOS 设计风格。
 
-![HyperExplorer Screenshot](./docs/screenshot.png)
+![ImageExplorer Screenshot](./docs/screenshot.png)
 
 ## 功能特性
 
@@ -14,9 +14,10 @@ HyperExplorer 将 Windows 资源管理器的高效逻辑带到 macOS：可编辑
 - **文件夹树状图** — Windows 风格可折叠树，懒加载
 - **极速搜索** — SQLite FTS5 + Rust 驱动的毫秒级全盘搜索
 - **智能分类** — 图片、视频、文档、音频、压缩包、代码文件快捷筛选
+- **Finder 风格缩略图** — 图标 / 列表视图支持原生缩略图预览，并带有渐进式加载与缓存，适合大目录浏览
 - **多标签页 & 多窗口** — 标签页可跨窗口拖拽，每个标签页独立导航历史
 - **Cmd+X 剪切** — 原生剪切支持，告别 Cmd+C → Cmd+Option+V
-- **QuickLook 预览** — 按空格键预览文件（文本、图片、视频、音频、PDF）
+- **QuickLook 预览** — 按空格键预览文件（文本、图片、视频、音频、PDF、HEIC、DNG、PSD），并对浏览器不支持的格式回退到 macOS 原生缩略图
 - **右键菜单** — Windows 风格，20+ 操作："新建文件"、"在终端打开"、"复制路径"等
 - **深色模式** — 浅色 / 深色 / 跟随系统
 - **国际化** — 英语、简体中文
@@ -24,7 +25,7 @@ HyperExplorer 将 Windows 资源管理器的高效逻辑带到 macOS：可编辑
 ## 技术栈
 
 | 层级 | 技术 |
-|------|------|
+| ---- | ---- |
 | 桌面框架 | [Tauri 2](https://tauri.app/) |
 | 前端 | React 19 + TypeScript 5.8 |
 | 后端 | Rust (2021 edition) |
@@ -36,6 +37,7 @@ HyperExplorer 将 Windows 资源管理器的高效逻辑带到 macOS：可编辑
 ## 从源码编译
 
 **前置依赖：**
+
 - [Node.js](https://nodejs.org/) (LTS)
 - [pnpm](https://pnpm.io/)
 - [Rust](https://www.rust-lang.org/tools/install)
@@ -43,8 +45,8 @@ HyperExplorer 将 Windows 资源管理器的高效逻辑带到 macOS：可编辑
 
 ```bash
 # 克隆仓库
-git clone git@github.com:callback-io/hyperExplorer.git
-cd hyperExplorer
+git clone git@github.com:callback-io/ImageExplorer.git
+cd ImageExplorer
 
 # 安装依赖
 pnpm install
@@ -61,7 +63,7 @@ pnpm tauri build
 ### 常用命令
 
 | 命令 | 说明 |
-|------|------|
+| ---- | ---- |
 | `pnpm tauri dev` | 启动应用（含热更新） |
 | `pnpm tauri build` | 构建生产版本 |
 | `pnpm dev` | 仅启动前端开发服务器（端口 1420） |
@@ -71,7 +73,7 @@ pnpm tauri build
 
 ### 项目结构
 
-```
+```text
 src/                    # React 前端
 ├── components/         # UI 组件（FileList、Sidebar、TabBar、TopBar 等）
 ├── hooks/              # 自定义 Hooks（useTabs、useSetting、useTheme）
@@ -89,6 +91,7 @@ src-tauri/src/          # Rust 后端
 ### Git Hooks
 
 通过 [Husky](https://typicode.github.io/husky/) + [lint-staged](https://github.com/lint-staged/lint-staged) 实现提交前自动检查：
+
 - `*.{ts,tsx}` → ESLint 修复 + Prettier 格式化
 - `*.{json,css,md}` → Prettier 格式化
 

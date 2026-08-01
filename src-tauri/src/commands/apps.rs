@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
 use std::fs;
-use std::path::Path;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::SystemTime;
 
 // Suppress deprecation warnings is NO LONGER NEEDED as we removed cocoa.
 // #![allow(deprecated)]
@@ -62,6 +65,7 @@ mod icon_utils {
     use base64::{engine::general_purpose, Engine as _};
     use objc2_app_kit::{NSBitmapImageRep, NSImage, NSPNGFileType};
     use objc2_foundation::{NSDictionary, NSSize};
+    use std::path::Path;
 
     /// 将 NSImage 转换为 Base64 PNG
     pub unsafe fn ns_image_to_base64(image: &NSImage, size: f64) -> Option<String> {
@@ -74,6 +78,129 @@ mod icon_utils {
 
         Some(general_purpose::STANDARD.encode(png_data.bytes()))
     }
+
+    /// 将 PNG 文件编码为 Base64
+    pub fn png_file_to_base64(path: &Path) -> Option<String> {
+        let bytes = std::fs::read(path).ok()?;
+        Some(general_purpose::STANDARD.encode(bytes))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn quicklook_thumbnail_path(output_dir: &Path, source_path: &Path) -> Option<PathBuf> {
+    let file_name = source_path.file_name()?.to_string_lossy();
+    let png_path = output_dir.join(format!("{}.png", file_name));
+    if png_path.exists() {
+        return Some(png_path);
+    }
+
+    fs::read_dir(output_dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "png"))
+}
+
+#[cfg(target_os = "macos")]
+fn is_image_for_native_thumbnail(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "jpg"
+                    | "jpeg"
+                    | "png"
+                    | "webp"
+                    | "gif"
+                    | "bmp"
+                    | "tif"
+                    | "tiff"
+                    | "dng"
+                    | "heic"
+                    | "heif"
+                    | "avif"
+                    | "ico"
+            )
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn generate_image_thumbnail_with_sips(path: &Path, size: f64) -> Option<String> {
+    if path.is_dir() || !is_image_for_native_thumbnail(path) {
+        return None;
+    }
+
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    let path_hash = hasher.finish();
+    let temp_root = std::env::temp_dir().join("imageexplorer-sips");
+    let output_dir = temp_root.join(format!("{}-{}", path_hash, size.round() as u32));
+    fs::create_dir_all(&output_dir).ok()?;
+
+    let output_path = output_dir.join("thumb.png");
+    let status = Command::new("/usr/bin/sips")
+        .args([
+            "-s",
+            "format",
+            "png",
+            "-Z",
+            &format!("{}", size.round() as u32),
+            path.to_string_lossy().as_ref(),
+            "--out",
+            output_path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .ok()?;
+
+    if !status.status.success() || !output_path.exists() {
+        let _ = fs::remove_dir_all(&output_dir);
+        return None;
+    }
+
+    let base64 = icon_utils::png_file_to_base64(&output_path);
+    let _ = fs::remove_dir_all(&output_dir);
+    base64
+}
+
+#[cfg(target_os = "macos")]
+fn generate_quicklook_thumbnail(path: &Path, size: f64) -> Option<String> {
+    if path.is_dir() {
+        return None;
+    }
+
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    let path_hash = hasher.finish();
+    let temp_root = std::env::temp_dir().join("imageexplorer-quicklook");
+    let cache_hint = format!("{}-{}", path_hash, size.round() as u32);
+    let output_dir = temp_root.join(cache_hint);
+
+    let _ = fs::remove_dir_all(&output_dir);
+    fs::create_dir_all(&output_dir).ok()?;
+
+    let status = Command::new("/usr/bin/qlmanage")
+        .args([
+            "-t",
+            "-s",
+            &format!("{}", size.round() as u32),
+            "-o",
+            output_dir.to_string_lossy().as_ref(),
+            path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .ok()?;
+
+    if !status.status.success() {
+        let _ = fs::remove_dir_all(&output_dir);
+        return None;
+    }
+
+    let thumbnail_path = quicklook_thumbnail_path(&output_dir, path)?;
+    let base64 = icon_utils::png_file_to_base64(&thumbnail_path);
+    let _ = fs::remove_dir_all(&output_dir);
+    base64
 }
 
 /// 扫描指定目录下的应用
@@ -280,6 +407,73 @@ pub async fn get_app_icon(app: tauri::AppHandle, app_path: String) -> Option<Str
             crate::cache::set_icon_cache(cache_key, base64.clone());
         }
 
+        result
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    None
+}
+
+/// 获取指定文件/文件夹的原生缩略图或图标 (Base64)
+#[tauri::command]
+pub async fn get_file_thumbnail(
+    app: tauri::AppHandle,
+    path: String,
+    size: Option<f64>,
+) -> Option<String> {
+    let path_obj = Path::new(&path);
+    let metadata = fs::metadata(path_obj).ok()?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let size_val = size.unwrap_or(128.0).clamp(16.0, 1024.0);
+
+    let cache_key = format!(
+        "file:{}:{}:{}:{}",
+        path,
+        metadata.len(),
+        modified,
+        size_val.round() as u32
+    );
+    if let Some(cached) = crate::cache::get_icon_cache(&cache_key) {
+        return Some(cached);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(base64) = generate_image_thumbnail_with_sips(path_obj, size_val) {
+            crate::cache::set_icon_cache(cache_key, base64.clone());
+            return Some(base64);
+        }
+
+        if let Some(base64) = generate_quicklook_thumbnail(path_obj, size_val) {
+            crate::cache::set_icon_cache(cache_key, base64.clone());
+            return Some(base64);
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path_clone = path.clone();
+
+        let _ = app.run_on_main_thread(move || {
+            use objc2_app_kit::NSWorkspace;
+            use objc2_foundation::NSString;
+
+            let result = unsafe {
+                let workspace = NSWorkspace::sharedWorkspace();
+                let path_ns = NSString::from_str(&path_clone);
+                let icon = workspace.iconForFile(&path_ns);
+                icon_utils::ns_image_to_base64(&icon, size_val)
+            };
+            let _ = tx.send(result);
+        });
+
+        let result = rx.recv().unwrap_or(None);
+        if let Some(ref base64) = result {
+            crate::cache::set_icon_cache(cache_key, base64.clone());
+        }
         result
     }
 

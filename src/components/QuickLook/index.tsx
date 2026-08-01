@@ -1,12 +1,15 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
-import { X, ExternalLink, Folder, File, Loader2 } from "lucide-react";
+import { X, ExternalLink, File, Loader2 } from "lucide-react";
 import { SmartIcon } from "@/components/SmartIcon";
-import { FileEntry } from "@/types";
+import { FileThumbnail } from "@/components/FileThumbnail";
+import { iconCache, loadFileThumbnail } from "@/lib/iconCache";
+import type { FileEntry } from "@/types/index";
 import {
   isTextFile,
+  isImageFile,
   isBrowserSupportedImage,
   isVideoFile,
   isAudioFile,
@@ -21,6 +24,11 @@ interface QuickLookProps {
 
 type PreviewType = "text" | "image" | "video" | "audio" | "pdf" | "icon";
 
+interface ImageDimensions {
+  width: number;
+  height: number;
+}
+
 export function QuickLook({ entry, onClose }: QuickLookProps) {
   const { t } = useTranslation();
 
@@ -28,6 +36,13 @@ export function QuickLook({ entry, onClose }: QuickLookProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fallbackSrc, setFallbackSrc] = useState<string | null>(null);
+  const [useNativeImagePreview, setUseNativeImagePreview] = useState(false);
+  const [imageDimensions, setImageDimensions] = useState<ImageDimensions | null>(null);
+  const [nativePreviewSrc, setNativePreviewSrc] = useState<string | null>(null);
+  const [viewportSize, setViewportSize] = useState(() => ({
+    width: typeof window === "undefined" ? 1440 : window.innerWidth,
+    height: typeof window === "undefined" ? 900 : window.innerHeight,
+  }));
 
   // 缓存 convertFileSrc 结果，避免重复转换
   const fileSrc = useMemo(() => {
@@ -41,7 +56,7 @@ export function QuickLook({ entry, onClose }: QuickLookProps) {
     // 忽略 macOS 的元数据文件 (AppleDouble)
     if (entry.name.startsWith("._")) return "icon";
 
-    if (isBrowserSupportedImage(entry.extension)) return "image";
+    if (isImageFile(entry.extension)) return "image";
     if (isVideoFile(entry.extension)) return "video";
     if (isAudioFile(entry.extension)) return "audio";
     if (isPdfFile(entry.extension)) return "pdf";
@@ -49,12 +64,151 @@ export function QuickLook({ entry, onClose }: QuickLookProps) {
     return "icon";
   }, [entry]);
 
+  const dialogSizeClass = useMemo(() => {
+    if (!entry) {
+      return "h-[min(88vh,48rem)] w-[min(92vw,72rem)]";
+    }
+
+    switch (previewType) {
+      case "image":
+        return "h-[min(92vh,64rem)] w-[min(96vw,96rem)]";
+      case "pdf":
+      case "video":
+        return "h-[min(92vh,64rem)] w-[min(96vw,96rem)]";
+      case "text":
+        return "h-[min(88vh,56rem)] w-[min(92vw,80rem)]";
+      default:
+        return "h-[min(82vh,42rem)] w-[min(88vw,56rem)]";
+    }
+  }, [entry, previewType]);
+
+  const contentPaddingClass =
+    previewType === "image" || previewType === "pdf" || previewType === "video"
+      ? "p-1.5 md:p-2"
+      : "p-8";
+
+  const nativePreviewRequestSize = useMemo(() => {
+    if (previewType !== "image" || !entry) {
+      return 768;
+    }
+
+    const viewportMax = Math.max(viewportSize.width, viewportSize.height);
+    const baseSize = Math.min(1280, Math.max(896, Math.round(viewportMax * 0.72)));
+    const extension = (entry.extension || "").toLowerCase();
+
+    // PSD uses a progressive strategy: tiny first frame, then a noticeably larger background preview.
+    if (extension === "psd") {
+      if (entry.size > 200 * 1024 * 1024) {
+        return 768;
+      }
+      if (entry.size > 80 * 1024 * 1024) {
+        return 896;
+      }
+      return Math.min(1024, baseSize);
+    }
+
+    return baseSize;
+  }, [entry, previewType, viewportSize.height, viewportSize.width]);
+
+  const progressivePreviewRequestSize = useMemo(() => {
+    if (previewType !== "image" || !entry) {
+      return 384;
+    }
+
+    const extension = (entry.extension || "").toLowerCase();
+    if (extension === "psd") {
+      return entry.size > 80 * 1024 * 1024 ? 256 : 320;
+    }
+
+    return 384;
+  }, [entry, previewType]);
+
+  const cachedNativePreview = useMemo(() => {
+    if (!entry) {
+      return null;
+    }
+
+    const prefix = `file:${entry.path}:${entry.modified ?? 0}:${entry.size}:`;
+    let bestMatch: { size: number; src: string } | null = null;
+
+    for (const [cacheKey, value] of Object.entries(iconCache)) {
+      if (!cacheKey.startsWith(prefix) || value === "failed") {
+        continue;
+      }
+
+      const size = Number(cacheKey.slice(prefix.length));
+      if (!Number.isFinite(size)) {
+        continue;
+      }
+
+      if (!bestMatch || size > bestMatch.size) {
+        bestMatch = {
+          size,
+          src: `data:image/png;base64,${value}`,
+        };
+      }
+    }
+
+    return bestMatch;
+  }, [entry]);
+
+  const dialogStyle = useMemo<CSSProperties | undefined>(() => {
+    if (previewType !== "image" || !imageDimensions) {
+      return undefined;
+    }
+
+    const HEADER_HEIGHT = 44;
+    const CONTENT_PADDING_X = 10;
+    const CONTENT_PADDING_Y = 10;
+    const BORDER = 1;
+    const MIN_DIALOG_WIDTH = 240;
+    const MIN_DIALOG_HEIGHT = 220;
+    const maxDialogWidth = Math.max(320, Math.floor(viewportSize.width * 0.96));
+    const maxDialogHeight = Math.max(260, Math.floor(viewportSize.height * 0.92));
+    const maxContentWidth = Math.max(120, maxDialogWidth - CONTENT_PADDING_X - BORDER);
+    const maxContentHeight = Math.max(
+      120,
+      maxDialogHeight - HEADER_HEIGHT - CONTENT_PADDING_Y - BORDER
+    );
+
+    const scale = Math.min(
+      maxContentWidth / imageDimensions.width,
+      maxContentHeight / imageDimensions.height
+    );
+
+    const contentWidth = Math.round(imageDimensions.width * scale);
+    const contentHeight = Math.round(imageDimensions.height * scale);
+
+    return {
+      width: `${Math.min(maxDialogWidth, Math.max(MIN_DIALOG_WIDTH, contentWidth + CONTENT_PADDING_X + BORDER))}px`,
+      height: `${Math.min(
+        maxDialogHeight,
+        Math.max(MIN_DIALOG_HEIGHT, contentHeight + HEADER_HEIGHT + CONTENT_PADDING_Y + BORDER)
+      )}px`,
+    };
+  }, [imageDimensions, previewType, viewportSize.height, viewportSize.width]);
+
   // 当 entry 变化时，重置错误状态
   useEffect(() => {
     setError(null);
     setTextContent(null);
     setFallbackSrc(null);
+    setUseNativeImagePreview(false);
+    setImageDimensions(null);
+    setNativePreviewSrc(null);
   }, [entry]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setViewportSize({
+        width: window.innerWidth,
+        height: window.innerHeight,
+      });
+    };
+
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   // ESC 关闭 + 媒体清理
   useEffect(() => {
@@ -75,6 +229,87 @@ export function QuickLook({ entry, onClose }: QuickLookProps) {
       });
     };
   }, [entry, onClose]);
+
+  useEffect(() => {
+    if (!entry || previewType !== "image") {
+      return;
+    }
+
+    let cancelled = false;
+
+    invoke<ImageDimensions>("read_image_dimensions", { path: entry.path })
+      .then((dimensions) => {
+        if (!cancelled && dimensions.width > 0 && dimensions.height > 0) {
+          setImageDimensions(dimensions);
+        }
+      })
+      .catch(() => {
+        // Keep browser onLoad as a fallback for supported images.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [entry, previewType]);
+
+  useEffect(() => {
+    if (
+      !entry ||
+      previewType !== "image" ||
+      (isBrowserSupportedImage(entry.extension) && !useNativeImagePreview)
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    const progressiveCacheKey = `file:${entry.path}:${entry.modified ?? 0}:${entry.size}:${progressivePreviewRequestSize}`;
+    const fullCacheKey = `file:${entry.path}:${entry.modified ?? 0}:${entry.size}:${nativePreviewRequestSize}`;
+
+    if (cachedNativePreview?.src) {
+      setNativePreviewSrc(cachedNativePreview.src);
+    }
+
+    const applyPreview = (base64: string | null) => {
+      if (!cancelled && base64) {
+        setNativePreviewSrc(`data:image/png;base64,${base64}`);
+      }
+    };
+
+    const loadFullPreview = () => {
+      if (cachedNativePreview && cachedNativePreview.size >= nativePreviewRequestSize) {
+        return Promise.resolve();
+      }
+
+      return loadFileThumbnail(fullCacheKey, entry.path, nativePreviewRequestSize).then(applyPreview);
+    };
+
+    const shouldLoadProgressive =
+      !cachedNativePreview || cachedNativePreview.size < progressivePreviewRequestSize;
+
+    if (shouldLoadProgressive) {
+      loadFileThumbnail(progressiveCacheKey, entry.path, progressivePreviewRequestSize)
+        .then(applyPreview)
+        .finally(() => {
+          void loadFullPreview();
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void loadFullPreview();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    cachedNativePreview,
+    entry,
+    nativePreviewRequestSize,
+    previewType,
+    progressivePreviewRequestSize,
+    useNativeImagePreview,
+  ]);
 
   useEffect(() => {
     // 只有文本文件才需要加载内容
@@ -147,41 +382,86 @@ export function QuickLook({ entry, onClose }: QuickLookProps) {
     switch (previewType) {
       case "image":
         return (
-          <div className="flex h-full w-full items-center justify-center p-4">
-            <img
-              key={entry.path}
-              src={fallbackSrc || fileSrc || ""}
-              alt={entry.name}
-              className="max-h-full max-w-full rounded-lg object-contain shadow-lg"
-              onError={() => {
-                // 如果已经是 fallback 加载失败，或者是 asset 协议加载失败且没有 fallback
-                if (fallbackSrc) {
-                  setError(t("common.quick_look.error", "Failed to load image"));
-                  return;
-                }
+          <div className="flex h-full w-full items-center justify-center">
+            {useNativeImagePreview || !isBrowserSupportedImage(entry.extension) ? (
+              nativePreviewSrc ? (
+                <img
+                  key={`${entry.path}:${nativePreviewSrc}`}
+                  src={nativePreviewSrc}
+                  alt={entry.name}
+                  className="h-full w-full rounded-lg object-contain shadow-lg"
+                  onLoad={(event) => {
+                    const img = event.currentTarget;
+                    if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+                      setImageDimensions({
+                        width: img.naturalWidth,
+                        height: img.naturalHeight,
+                      });
+                    }
+                  }}
+                />
+              ) : (
+                <FileThumbnail
+                  entry={entry}
+                  size={320}
+                  requestSizeOverride={progressivePreviewRequestSize}
+                  className="h-full w-full rounded-lg object-contain shadow-lg"
+                  fallbackClassName="text-muted-foreground h-40 w-40"
+                  onImageLoad={(image) => {
+                    if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+                      setImageDimensions({
+                        width: image.naturalWidth,
+                        height: image.naturalHeight,
+                      });
+                    }
+                  }}
+                />
+              )
+            ) : (
+              <img
+                key={entry.path}
+                src={fallbackSrc || fileSrc || ""}
+                alt={entry.name}
+                className="h-full w-full rounded-lg object-contain shadow-lg"
+                onLoad={(event) => {
+                  const img = event.currentTarget;
+                  if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+                    setImageDimensions({
+                      width: img.naturalWidth,
+                      height: img.naturalHeight,
+                    });
+                  }
+                }}
+                onError={() => {
+                  if (fallbackSrc) {
+                    setUseNativeImagePreview(true);
+                    setError(null);
+                    return;
+                  }
 
-                // 尝试使用 base64 读取
-                invoke<string>("read_image_base64", { path: entry.path })
-                  .then((base64) => {
-                    setFallbackSrc(base64);
-                    setError(null); // 清除可能出现的错误
-                  })
-                  .catch(() => {
-                    setError(t("common.quick_look.error", "Failed to load image"));
-                  });
-              }}
-            />
+                  invoke<string>("read_image_base64", { path: entry.path })
+                    .then((base64) => {
+                      setFallbackSrc(base64);
+                      setError(null);
+                    })
+                    .catch(() => {
+                      setUseNativeImagePreview(true);
+                      setError(null);
+                    });
+                }}
+              />
+            )}
           </div>
         );
 
       case "video":
         return (
-          <div className="flex h-full w-full items-center justify-center p-4">
+          <div className="flex h-full w-full items-center justify-center">
             <video
               key={entry.path}
               src={fileSrc || ""}
               controls
-              className="max-h-full max-w-full rounded-lg shadow-lg"
+              className="h-full w-full rounded-lg object-contain shadow-lg"
               onError={(e) => {
                 console.error("Video load error:", e);
                 setError(t("common.quick_look.error") || "Failed to load video");
@@ -219,7 +499,7 @@ export function QuickLook({ entry, onClose }: QuickLookProps) {
 
       case "pdf":
         return (
-          <div className="h-full w-full p-4">
+          <div className="h-full w-full">
             <embed
               key={entry.path}
               src={fileSrc || ""}
@@ -245,13 +525,12 @@ export function QuickLook({ entry, onClose }: QuickLookProps) {
         return (
           <>
             <div className="relative mb-6 flex h-32 w-32 items-center justify-center drop-shadow-2xl">
-              <SmartIcon
-                icon={entry.is_dir ? Folder : File}
-                className={
+              <FileThumbnail
+                entry={entry}
+                size={128}
+                className="h-32 w-32 rounded-xl object-contain"
+                fallbackClassName={
                   entry.is_dir ? "h-32 w-32 text-blue-500" : "text-muted-foreground h-32 w-32"
-                }
-                sysIcon={
-                  entry.is_dir ? { type: "folder" } : { type: "ext", value: entry.extension || "" }
                 }
               />
             </div>
@@ -285,11 +564,12 @@ export function QuickLook({ entry, onClose }: QuickLookProps) {
       onClick={onClose}
     >
       <div
-        className="bg-background/80 text-foreground animate-in fade-in zoom-in-95 relative flex h-[400px] w-[600px] flex-col overflow-hidden rounded-xl border shadow-2xl backdrop-blur-md transition-all duration-200"
+        className={`bg-background/80 text-foreground animate-in fade-in zoom-in-95 relative flex ${dialogSizeClass} flex-col overflow-hidden rounded-lg border border-black/8 shadow-xl backdrop-blur-md transition-all duration-200`}
+        style={dialogStyle}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Title Bar */}
-        <div className="bg-muted/30 flex items-center justify-between border-b px-4 py-3">
+        <div className="bg-muted/25 flex items-center justify-between border-b border-black/6 px-3 py-2">
           <div className="flex gap-2">
             <button
               onClick={onClose}
@@ -309,7 +589,9 @@ export function QuickLook({ entry, onClose }: QuickLookProps) {
         </div>
 
         {/* Content */}
-        <div className="flex w-full flex-1 flex-col items-center justify-center overflow-hidden p-8">
+        <div
+          className={`flex w-full flex-1 flex-col items-center justify-center overflow-hidden ${contentPaddingClass}`}
+        >
           {renderPreview()}
         </div>
       </div>

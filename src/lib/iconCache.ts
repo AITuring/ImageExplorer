@@ -6,6 +6,11 @@ export const iconCache: Record<string, string> = {};
 
 // 正在加载的图标集合，避免重复请求
 export const loadingIcons = new Set<string>();
+const pendingLoads = new Map<string, Promise<string | null>>();
+const queuedThumbnailTasks = new Map<string, () => void>();
+const queuedTaskKeys: string[] = [];
+const MAX_CONCURRENT_THUMBNAILS = 6;
+let activeThumbnailLoads = 0;
 
 // 全局刷新回调列表
 const refreshCallbacks = new Set<() => void>();
@@ -19,6 +24,65 @@ export function registerIconRefresh(callback: () => void) {
 // 触发全局图标刷新
 export function triggerIconRefresh() {
   refreshCallbacks.forEach((callback) => callback());
+}
+
+function bumpQueuedTask(cacheKey: string) {
+  const index = queuedTaskKeys.indexOf(cacheKey);
+  if (index >= 0) {
+    queuedTaskKeys.splice(index, 1);
+    queuedTaskKeys.unshift(cacheKey);
+  }
+}
+
+function runNextThumbnailTask() {
+  while (activeThumbnailLoads < MAX_CONCURRENT_THUMBNAILS && queuedTaskKeys.length > 0) {
+    const cacheKey = queuedTaskKeys.shift();
+    if (!cacheKey) {
+      return;
+    }
+
+    const task = queuedThumbnailTasks.get(cacheKey);
+    if (!task) {
+      continue;
+    }
+
+    queuedThumbnailTasks.delete(cacheKey);
+    activeThumbnailLoads += 1;
+    task();
+  }
+}
+
+export function loadFileThumbnail(
+  cacheKey: string,
+  path: string,
+  size: number
+): Promise<string | null> {
+  if (pendingLoads.has(cacheKey)) {
+    bumpQueuedTask(cacheKey);
+    return pendingLoads.get(cacheKey)!;
+  }
+
+  const task = new Promise<string | null>((resolve) => {
+    queuedThumbnailTasks.set(cacheKey, () => {
+      invoke<string | null>("get_file_thumbnail", { path, size })
+        .catch((error) => {
+          console.error(`Failed to load file thumbnail: ${path}`, error);
+          return null;
+        })
+        .then(resolve)
+        .finally(() => {
+          activeThumbnailLoads = Math.max(0, activeThumbnailLoads - 1);
+          pendingLoads.delete(cacheKey);
+          runNextThumbnailTask();
+        });
+    });
+
+    queuedTaskKeys.unshift(cacheKey);
+    runNextThumbnailTask();
+  });
+
+  pendingLoads.set(cacheKey, task);
+  return task;
 }
 
 // 预加载图标的辅助函数

@@ -3,6 +3,12 @@ use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
 
+#[derive(Serialize)]
+pub struct ImageDimensions {
+    pub width: u32,
+    pub height: u32,
+}
+
 /// 受保护的目录列表（macOS）
 #[cfg(target_os = "macos")]
 const PROTECTED_DIRS: &[&str] = &[
@@ -274,6 +280,63 @@ pub fn read_image_base64(path: String) -> Result<String, String> {
 
     // Return data URL
     Ok(format!("data:{};base64,{}", mime_type, base64_str))
+}
+
+#[cfg(target_os = "macos")]
+fn parse_sips_u32(output: &str, key: &str) -> Option<u32> {
+    output.lines().find_map(|line| {
+        let trimmed = line.trim();
+        if !trimmed.starts_with(key) {
+            return None;
+        }
+
+        trimmed
+            .split_once(':')
+            .and_then(|(_, value)| value.trim().parse::<u32>().ok())
+    })
+}
+
+#[tauri::command]
+pub fn read_image_dimensions(path: String) -> Result<ImageDimensions, String> {
+    let path_obj = Path::new(&path);
+    if !path_obj.exists() {
+        return Err("File does not exist".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("/usr/bin/sips")
+            .args(["-g", "pixelWidth", "-g", "pixelHeight", "-g", "orientation", &path])
+            .output()
+            .map_err(|e| e.to_string())?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(if stderr.is_empty() {
+                "Failed to read image dimensions".to_string()
+            } else {
+                stderr
+            });
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut width = parse_sips_u32(&stdout, "pixelWidth")
+            .ok_or_else(|| "Failed to parse image width".to_string())?;
+        let mut height = parse_sips_u32(&stdout, "pixelHeight")
+            .ok_or_else(|| "Failed to parse image height".to_string())?;
+        let orientation = parse_sips_u32(&stdout, "orientation").unwrap_or(1);
+
+        if matches!(orientation, 5..=8) {
+            std::mem::swap(&mut width, &mut height);
+        }
+
+        return Ok(ImageDimensions { width, height });
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Reading image dimensions is only supported on macOS".to_string())
+    }
 }
 
 #[tauri::command]
