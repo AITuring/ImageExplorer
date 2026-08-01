@@ -1,6 +1,9 @@
 import { memo, useEffect, useRef } from "react";
 import type { FileEntry } from "@/types/index";
 import { FileThumbnail } from "@/components/FileThumbnail";
+import { FocusPointOverlay } from "@/components/FocusPointOverlay";
+import { getContainedFocusPointPosition } from "@/lib/focusPoint";
+import type { PhotoAnalysisRecord } from "@/lib/photoAnalysis";
 import { Input } from "@/components/ui/input";
 
 interface FileGridItemProps {
@@ -15,6 +18,8 @@ interface FileGridItemProps {
   onNameClick?: (e: React.MouseEvent) => void;
   onDoubleClick: () => void;
   onMove?: (source: string, target: string) => void;
+  photoAnalysis?: PhotoAnalysisRecord;
+  photoGroupColor?: string;
 }
 
 export const FileGridItem = memo(function FileGridItem({
@@ -28,8 +33,21 @@ export const FileGridItem = memo(function FileGridItem({
   onClick,
   onNameClick,
   onDoubleClick,
+  photoAnalysis,
+  photoGroupColor,
 }: FileGridItemProps) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const thumbnailSize = 80;
+  const focusPosition =
+    photoAnalysis?.focusPoint && photoAnalysis.imageWidth > 0 && photoAnalysis.imageHeight > 0
+      ? getContainedFocusPointPosition({
+          point: photoAnalysis.focusPoint,
+          containerWidth: thumbnailSize,
+          containerHeight: thumbnailSize,
+          imageWidth: photoAnalysis.imageWidth,
+          imageHeight: photoAnalysis.imageHeight,
+        })
+      : null;
 
   useEffect(() => {
     if (!isEditing) return;
@@ -47,18 +65,22 @@ export const FileGridItem = memo(function FileGridItem({
           ? "bg-accent/80 ring-primary/20 ring-1"
           : "hover:bg-accent/60 hover:ring-border/60 ring-1 ring-transparent"
       }`}
+      style={!isSelected && photoGroupColor ? { backgroundColor: photoGroupColor } : undefined}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
     >
-      <div className="mb-2 flex h-20 w-20 items-center justify-center overflow-hidden">
+      <div className="relative mb-2 flex h-20 w-20 items-center justify-center overflow-hidden">
         <FileThumbnail
           entry={entry}
-          size={80}
+          size={thumbnailSize}
           className="h-20 w-20 rounded-md object-contain"
           fallbackClassName={
             entry.is_dir ? "h-16 w-16 text-blue-500" : "text-muted-foreground h-16 w-16"
           }
         />
+        {focusPosition && (
+          <FocusPointOverlay point={photoAnalysis?.focusPoint} position={focusPosition} />
+        )}
       </div>
       {isEditing ? (
         <Input

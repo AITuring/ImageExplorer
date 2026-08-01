@@ -57,7 +57,8 @@ function runNextThumbnailTask() {
 export function loadFileThumbnail(
   cacheKey: string,
   path: string,
-  size: number
+  size: number,
+  allowIconFallback = true
 ): Promise<string | null> {
   if (pendingLoads.has(cacheKey)) {
     bumpQueuedTask(cacheKey);
@@ -66,7 +67,11 @@ export function loadFileThumbnail(
 
   const task = new Promise<string | null>((resolve) => {
     queuedThumbnailTasks.set(cacheKey, () => {
-      invoke<string | null>("get_file_thumbnail", { path, size })
+      invoke<string | null>("get_file_thumbnail", {
+        path,
+        size,
+        ...(allowIconFallback ? {} : { allowIconFallback: false }),
+      })
         .catch((error) => {
           console.error(`Failed to load file thumbnail: ${path}`, error);
           return null;

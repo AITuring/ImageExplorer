@@ -2,11 +2,13 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { FileEntry } from "@/types";
 import { RAW_IMAGE_EXTENSIONS } from "@/constants/fileTypes";
+import { isImageFile } from "@/utils/file";
 
 interface UseQuickLookOptions {
   selectedPath: string | null;
   editingPath: string | null;
   entries: FileEntry[];
+  forceCustomImagePreview?: boolean;
 }
 
 interface UseQuickLookResult {
@@ -49,10 +51,15 @@ function isRawImageEntry(entry: FileEntry) {
   return RAW_EXTENSIONS.has((entry.extension || "").toLowerCase());
 }
 
+function shouldUseCustomImagePreview(entry: FileEntry, forceCustomImagePreview: boolean) {
+  return isRawImageEntry(entry) || (forceCustomImagePreview && isImageFile(entry.extension));
+}
+
 export function useQuickLook({
   selectedPath,
   editingPath,
   entries,
+  forceCustomImagePreview = false,
 }: UseQuickLookOptions): UseQuickLookResult {
   const [quickLookEntry, setQuickLookEntryState] = useState<FileEntry | null>(null);
   const [nativeQuickLookEnabled, setNativeQuickLookEnabled] = useState(true);
@@ -70,7 +77,11 @@ export function useQuickLook({
 
   const setQuickLookEntry = useCallback(
     (entry: FileEntry | null) => {
-      if (isMacOS && nativeQuickLookEnabled && (!entry || !isRawImageEntry(entry))) {
+      const shouldUseAppPreview = entry
+        ? shouldUseCustomImagePreview(entry, forceCustomImagePreview)
+        : false;
+
+      if (isMacOS && nativeQuickLookEnabled && (!entry || !shouldUseAppPreview)) {
         if (!entry) {
           closeNativeQuickLook();
           setQuickLookEntryState(null);
@@ -94,14 +105,14 @@ export function useQuickLook({
         return;
       }
 
-      if (entry && isMacOS && nativeQuickLookEnabled && isRawImageEntry(entry)) {
-        // 从普通文件的系统 Quick Look 切换到 RAW 的应用内预览时，先关闭
-        // 旧窗口，避免两个预览同时解码或遮挡当前预览。
+      if (entry && isMacOS && nativeQuickLookEnabled && shouldUseAppPreview) {
+        // 从系统 Quick Look 切换到应用内图片预览时，先关闭旧窗口，避免
+        // 两个预览同时解码或遮挡当前预览。
         closeNativeQuickLook();
       }
       setQuickLookEntryState(entry);
     },
-    [closeNativeQuickLook, entries, isMacOS, nativeQuickLookEnabled]
+    [closeNativeQuickLook, entries, forceCustomImagePreview, isMacOS, nativeQuickLookEnabled]
   );
 
   // 切换快速预览
@@ -143,8 +154,11 @@ export function useQuickLook({
     quickLookEntry,
     setQuickLookEntry,
     toggleQuickLook,
-    // RAW 文件使用应用内预览，避免 qlmanage 启动和重复解码带来的延迟。
+    // RAW 文件始终使用应用内预览；图标视角下的普通图片也走这里，才能
+    // 在空格预览中复用焦点圈覆盖层。
     useNativeQuickLook:
-      isMacOS && nativeQuickLookEnabled && !(quickLookEntry && isRawImageEntry(quickLookEntry)),
+      isMacOS &&
+      nativeQuickLookEnabled &&
+      !(quickLookEntry && shouldUseCustomImagePreview(quickLookEntry, forceCustomImagePreview)),
   };
 }

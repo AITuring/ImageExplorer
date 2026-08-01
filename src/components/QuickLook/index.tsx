@@ -14,8 +14,10 @@ import { useTranslation } from "react-i18next";
 import { X, ExternalLink, File, Loader2, ChevronLeft, ChevronRight } from "lucide-react";
 import { SmartIcon } from "@/components/SmartIcon";
 import { FileThumbnail } from "@/components/FileThumbnail";
+import { FocusPointOverlay } from "@/components/FocusPointOverlay";
 import { iconCache, loadFileThumbnail } from "@/lib/iconCache";
 import type { FileEntry } from "@/types/index";
+import type { PhotoAnalysisRecord, FocusPoint } from "@/lib/photoAnalysis";
 import {
   isTextFile,
   isImageFile,
@@ -30,6 +32,7 @@ import { RAW_IMAGE_EXTENSIONS } from "@/constants/fileTypes";
 interface QuickLookProps {
   entry: FileEntry | null;
   entries: FileEntry[];
+  photoAnalysis?: ReadonlyMap<string, PhotoAnalysisRecord>;
   onClose: () => void;
   onNavigate: (entry: FileEntry) => void;
 }
@@ -79,6 +82,7 @@ interface ZoomableImagePreviewProps {
   onBrowserImageError: () => void;
   onZoomDisplayChange: (zoom: number) => void;
   onCommittedZoomChange: (zoom: number) => void;
+  focusPoint?: FocusPoint | null;
 }
 
 interface ZoomableImageElementProps {
@@ -89,6 +93,7 @@ interface ZoomableImageElementProps {
   isZooming: boolean;
   onLoad: (image: HTMLImageElement) => void;
   onError?: () => void;
+  focusPoint?: FocusPoint | null;
 }
 
 const ZoomableImageElement = memo(function ZoomableImageElement({
@@ -99,36 +104,43 @@ const ZoomableImageElement = memo(function ZoomableImageElement({
   isZooming,
   onLoad,
   onError,
+  focusPoint,
 }: ZoomableImageElementProps) {
+  const focusPosition = focusPoint ? { left: focusPoint.x * 100, top: focusPoint.y * 100 } : null;
+  const frameStyle: CSSProperties = {
+    ...(fittedImageSize
+      ? {
+          width: `${fittedImageSize.width}px`,
+          height: `${fittedImageSize.height}px`,
+          maxWidth: "none",
+          maxHeight: "none",
+        }
+      : {}),
+    transform: `translateZ(0) scale(${imageZoom})`,
+    transformOrigin: "center center",
+    willChange: "transform",
+    backfaceVisibility: "hidden",
+  };
+
   return (
-    <img
-      key={entry.path}
-      src={src}
-      alt={entry.name}
-      className={`h-full w-full select-none ${isZooming ? "" : "rounded-lg shadow-lg"}`}
-      style={
-        fittedImageSize
-          ? {
-              width: `${fittedImageSize.width}px`,
-              height: `${fittedImageSize.height}px`,
-              maxWidth: "none",
-              maxHeight: "none",
-              transform: `translateZ(0) scale(${imageZoom})`,
-              transformOrigin: "center center",
-              willChange: "transform",
-              backfaceVisibility: "hidden",
-            }
-          : {
-              transform: `translateZ(0) scale(${imageZoom})`,
-              transformOrigin: "center center",
-              willChange: "transform",
-              backfaceVisibility: "hidden",
-            }
-      }
-      draggable={false}
-      onLoad={(event) => onLoad(event.currentTarget)}
-      onError={onError}
-    />
+    <div className="relative shrink-0" style={frameStyle}>
+      <img
+        key={entry.path}
+        src={src}
+        alt={entry.name}
+        className={`${fittedImageSize ? "h-full w-full" : "h-auto max-h-full w-auto max-w-full"} select-none ${isZooming ? "" : "rounded-lg shadow-lg"}`}
+        draggable={false}
+        onLoad={(event) => onLoad(event.currentTarget)}
+        onError={onError}
+      />
+      {focusPoint && focusPosition && (
+        <FocusPointOverlay
+          point={focusPoint}
+          position={focusPosition}
+          inverseScale={1 / imageZoom}
+        />
+      )}
+    </div>
   );
 });
 
@@ -145,6 +157,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
   onBrowserImageError,
   onZoomDisplayChange,
   onCommittedZoomChange,
+  focusPoint,
 }: ZoomableImagePreviewProps) {
   const [previewViewport, setPreviewViewport] = useState({ width: 0, height: 0 });
   const [imageZoom, setImageZoom] = useState(1);
@@ -420,16 +433,32 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
               imageZoom={imageZoom}
               isZooming={isZooming}
               onLoad={onImageLoadDimensions}
+              focusPoint={focusPoint}
             />
           ) : (
-            <FileThumbnail
-              entry={entry}
-              size={320}
-              requestSizeOverride={progressivePreviewRequestSize}
-              className={`h-full w-full object-contain ${isZooming ? "" : "rounded-lg shadow-lg"}`}
-              fallbackClassName="text-muted-foreground h-40 w-40"
-              onImageLoad={onImageLoadDimensions}
-            />
+            <div
+              className="relative shrink-0"
+              style={
+                fittedImageSize
+                  ? { width: `${fittedImageSize.width}px`, height: `${fittedImageSize.height}px` }
+                  : undefined
+              }
+            >
+              <FileThumbnail
+                entry={entry}
+                size={320}
+                requestSizeOverride={progressivePreviewRequestSize}
+                className={`${fittedImageSize ? "h-full w-full" : "h-auto max-h-full w-auto max-w-full"} object-contain ${isZooming ? "" : "rounded-lg shadow-lg"}`}
+                fallbackClassName="text-muted-foreground h-40 w-40"
+                onImageLoad={onImageLoadDimensions}
+              />
+              {focusPoint && fittedImageSize && (
+                <FocusPointOverlay
+                  point={focusPoint}
+                  position={{ left: focusPoint.x * 100, top: focusPoint.y * 100 }}
+                />
+              )}
+            </div>
           )
         ) : (
           <ZoomableImageElement
@@ -440,6 +469,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
             isZooming={isZooming}
             onLoad={onImageLoadDimensions}
             onError={onBrowserImageError}
+            focusPoint={focusPoint}
           />
         )}
       </div>
@@ -447,7 +477,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
   );
 });
 
-export function QuickLook({ entry, entries, onClose, onNavigate }: QuickLookProps) {
+export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }: QuickLookProps) {
   const { t } = useTranslation();
 
   const [textContent, setTextContent] = useState<string | null>(null);
@@ -921,6 +951,7 @@ export function QuickLook({ entry, entries, onClose, onNavigate }: QuickLookProp
             onBrowserImageError={handleBrowserImageError}
             onZoomDisplayChange={updateZoomIndicator}
             onCommittedZoomChange={setCommittedZoom}
+            focusPoint={photoAnalysis?.get(entry.path)?.focusPoint ?? null}
           />
         );
 

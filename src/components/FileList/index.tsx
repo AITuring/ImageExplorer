@@ -16,6 +16,8 @@ import { useFileKeyboardShortcuts } from "./hooks/useFileKeyboardShortcuts";
 import { useFileEntries } from "./hooks/useFileEntries";
 import { useFileRename } from "./hooks/useFileRename";
 import { useQuickLook } from "./hooks/useQuickLook";
+import { usePhotoAnalysis } from "@/hooks/usePhotoAnalysis";
+import { getPhotoGroupColor } from "@/lib/photoAnalysis";
 import { FileListHeader } from "./components/FileListHeader";
 import { FileListItem } from "./components/FileListItem";
 import { FileGridItem } from "./components/FileGridItem";
@@ -106,6 +108,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   const { sortField, sortDirection, handleSort, handleArrange, sortedEntries } =
     useFileSort(entries);
 
+  const { records: photoAnalysis } = usePhotoAnalysis(sortedEntries, viewMode === "icon");
+
   // 3. 选择状态
   const {
     selectedPath,
@@ -167,6 +171,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     selectedPath,
     editingPath,
     entries: sortedEntries,
+    forceCustomImagePreview: viewMode === "icon",
   });
 
   // 7. 键盘快捷键
@@ -617,6 +622,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                           {rowEntries.map((entry, colIdx) => {
                             const globalIndex = startIdx + colIdx;
                             const dragHandlers = makeDragHandlers(entry, handleMove, true);
+                            const analysis = photoAnalysis.get(entry.path);
                             return (
                               <div key={entry.path} draggable {...dragHandlers}>
                                 <AppContextMenu
@@ -636,6 +642,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                                     onClick={(e) => handleClick(entry, globalIndex, e)}
                                     onNameClick={(e) => handleNameClick(entry, globalIndex, e)}
                                     onDoubleClick={() => handleOpen(entry)}
+                                    photoAnalysis={analysis}
+                                    photoGroupColor={getPhotoGroupColor(analysis?.groupId ?? null)}
                                   />
                                 </AppContextMenu>
                               </div>
@@ -657,6 +665,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
           key={quickLookEntry?.path ?? "empty"}
           entry={quickLookEntry}
           entries={sortedEntries}
+          photoAnalysis={photoAnalysis}
           onClose={() => setQuickLookEntry(null)}
           onNavigate={setQuickLookEntry}
         />

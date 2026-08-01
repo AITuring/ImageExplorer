@@ -512,6 +512,7 @@ pub async fn get_file_thumbnail(
     app: tauri::AppHandle,
     path: String,
     size: Option<f64>,
+    allow_icon_fallback: Option<bool>,
 ) -> Option<String> {
     let path_obj = Path::new(&path);
     let metadata = fs::metadata(path_obj).ok()?;
@@ -522,13 +523,15 @@ pub async fn get_file_thumbnail(
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
     let size_val = size.unwrap_or(128.0).clamp(16.0, 4096.0);
+    let allow_icon_fallback = allow_icon_fallback.unwrap_or(true);
 
     let cache_key = format!(
-        "file:{}:{}:{}:{}",
+        "file:{}:{}:{}:{}:{}",
         path,
         metadata.len(),
         modified,
-        size_val.round() as u32
+        size_val.round() as u32,
+        if allow_icon_fallback { "icon" } else { "image" }
     );
     if let Some(cached) = crate::cache::get_icon_cache(&cache_key) {
         return Some(cached);
@@ -549,6 +552,10 @@ pub async fn get_file_thumbnail(
         if let Some(base64) = generate_quicklook_thumbnail(path_obj, size_val) {
             crate::cache::set_icon_cache(cache_key, base64.clone());
             return Some(base64);
+        }
+
+        if !allow_icon_fallback {
+            return None;
         }
 
         let (tx, rx) = std::sync::mpsc::channel();
