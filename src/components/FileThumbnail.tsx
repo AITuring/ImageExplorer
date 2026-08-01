@@ -107,6 +107,7 @@ export const FileThumbnail = memo(function FileThumbnail({
         className={className || "object-contain"}
         style={className ? undefined : { width: roundedSize, height: roundedSize }}
         alt=""
+        decoding="async"
         draggable={false}
         onLoad={(event) => {
           onImageLoad?.(event.currentTarget);

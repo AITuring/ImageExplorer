@@ -2,15 +2,13 @@ import { IMAGE_EXTENSIONS } from "@/constants/fileTypes";
 import type { FileEntry } from "@/types";
 import { loadFileThumbnail } from "@/lib/iconCache";
 
-const ANALYSIS_VERSION = 1;
-const ANALYSIS_SIZE = 128;
+const ANALYSIS_VERSION = 2;
+const ANALYSIS_SIZE = 160;
 const FINGERPRINT_SIZE = 16;
 // A finer grid keeps the marker useful on small previews without decoding the
-// full RAW. The analysis canvas is only 128px, so this remains inexpensive.
+// full RAW. The analysis canvas is only 160px, so this remains inexpensive.
 const FOCUS_GRID_SIZE = 8;
-const MAX_CONCURRENT_ANALYSIS = 2;
-const MIN_FOCUS_ENERGY = 5;
-const MIN_FOCUS_SEPARATION = 0.08;
+const MAX_CONCURRENT_ANALYSIS = 1;
 
 const ANALYZABLE_EXTENSIONS = new Set(
   IMAGE_EXTENSIONS.filter((extension) => extension !== "svg" && extension !== "psd")
@@ -220,10 +218,10 @@ function createFeatures(image: HTMLImageElement, path: string): RawPhotoFeatures
   const second = tileScores[1];
   const focusSeparation =
     best && second ? (best.score - second.score) / Math.max(best.score, 1) : 0;
-  const hasFocus =
-    Boolean(best) && best.score >= MIN_FOCUS_ENERGY && focusSeparation >= MIN_FOCUS_SEPARATION;
-
-  const focusPoint = hasFocus
+  // Always return the strongest tile for a decoded image. Even a low-detail
+  // frame gets a visible, honest center-ish cue instead of silently losing
+  // the marker; decode failures still return no record at all.
+  const focusPoint = best
     ? {
         x: clamp((best.x + 0.5) / FOCUS_GRID_SIZE, 0, 1),
         y: clamp((best.y + 0.5) / FOCUS_GRID_SIZE, 0, 1),
@@ -249,7 +247,7 @@ async function analyzeEntry(entry: FileEntry, key: string, signal: AbortSignal) 
   const thumbnailKey = `photo-analysis:${key}`;
   // Do not accept the generic ARW document icon as an analysis image. It has
   // the same pixels for every failed RAW decode and would create false groups.
-  const base64 = await loadFileThumbnail(thumbnailKey, entry.path, ANALYSIS_SIZE, false);
+  const base64 = await loadFileThumbnail(thumbnailKey, entry.path, ANALYSIS_SIZE, false, signal);
   if (!base64 || signal.aborted) return null;
 
   const image = await decodeThumbnail(base64);
@@ -281,12 +279,16 @@ function hashDistance(first: number[], second: number[]) {
 }
 
 function isSameView(first: RawPhotoFeatures, second: RawPhotoFeatures) {
+  const firstAspect = first.imageWidth / Math.max(first.imageHeight, 1);
+  const secondAspect = second.imageWidth / Math.max(second.imageHeight, 1);
+  if (Math.abs(Math.log(firstAspect / secondAspect)) > 0.08) return false;
+
   const visualDistance = fingerprintDistance(first.fingerprint, second.fingerprint);
   const hashDistanceValue = hashDistance(first.hashBits, second.hashBits);
 
   // The low-resolution fingerprint handles exposure and focus changes; the
   // dHash guard keeps nearby but different compositions from being merged.
-  return (visualDistance <= 0.72 && hashDistanceValue <= 0.38) || visualDistance <= 0.5;
+  return (visualDistance <= 0.62 && hashDistanceValue <= 0.28) || visualDistance <= 0.38;
 }
 
 function buildGroups(
@@ -384,5 +386,5 @@ function createPhotoAnalysisRecords(
 
 export function getPhotoGroupColor(groupId: number | null): string | undefined {
   if (groupId === null) return undefined;
-  return `hsl(var(--photo-group-${(groupId % 4) + 1}))`;
+  return `hsl(var(--photo-group-${(groupId % 6) + 1}))`;
 }

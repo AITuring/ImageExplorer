@@ -11,6 +11,7 @@ import {
   List as ListIcon,
   Columns,
   GalleryHorizontalEnd,
+  Scan,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AppContextMenu } from "@/components/AppContextMenu";
@@ -22,6 +23,7 @@ import { SEARCH_DEBOUNCE_MS, FOCUS_DELAY_MS } from "@/constants/config";
 import { filterHiddenEntries } from "@/utils/file";
 import { useSetting } from "@/hooks/useSetting";
 import { useClipboard } from "@/stores/clipboard";
+import { usePhotoAnalysisMode } from "@/stores/photoAnalysisMode";
 
 // 省略号模式: "start" = 前面省略, "end" = 后面省略
 type EllipsisMode = "start" | "end";
@@ -60,6 +62,7 @@ export function TopBar({ onNavigate }: TopBarProps) {
   const [editValue, setEditValue] = useState(currentPath);
 
   const { viewMode, setViewMode } = useViewMode();
+  const { enabled: photoAnalysisEnabled, toggle: togglePhotoAnalysis } = usePhotoAnalysisMode();
   const [showHiddenFiles] = useSetting<boolean>("show_hidden_files", false);
   const clipboard = useClipboard();
 
@@ -539,6 +542,30 @@ export function TopBar({ onNavigate }: TopBarProps) {
         >
           <GalleryHorizontalEnd className="h-4 w-4" />
         </button>
+        {viewMode === "icon" && (
+          <button
+            type="button"
+            className={`border-border/50 focus-visible:ring-ring ml-1 rounded-sm border-l p-1 pl-1 transition-colors focus-visible:ring-2 focus-visible:outline-none ${
+              photoAnalysisEnabled
+                ? "bg-primary/15 text-primary"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground"
+            }`}
+            onClick={togglePhotoAnalysis}
+            title={t(
+              photoAnalysisEnabled
+                ? "common.photo_analysis_disable"
+                : "common.photo_analysis_enable"
+            )}
+            aria-label={t(
+              photoAnalysisEnabled
+                ? "common.photo_analysis_disable"
+                : "common.photo_analysis_enable"
+            )}
+            aria-pressed={photoAnalysisEnabled}
+          >
+            <Scan className="h-4 w-4" aria-hidden="true" />
+          </button>
+        )}
       </div>
 
       {/* 搜索框 */}

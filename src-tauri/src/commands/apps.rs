@@ -525,32 +525,37 @@ pub async fn get_file_thumbnail(
     let size_val = size.unwrap_or(128.0).clamp(16.0, 4096.0);
     let allow_icon_fallback = allow_icon_fallback.unwrap_or(true);
 
-    let cache_key = format!(
-        "file:{}:{}:{}:{}:{}",
+    let image_cache_key = format!(
+        "file:{}:{}:{}:{}",
         path,
         metadata.len(),
         modified,
-        size_val.round() as u32,
-        if allow_icon_fallback { "icon" } else { "image" }
+        size_val.round() as u32
     );
-    if let Some(cached) = crate::cache::get_icon_cache(&cache_key) {
+    let icon_cache_key = format!("{}:icon", image_cache_key);
+    if let Some(cached) = crate::cache::get_icon_cache(&image_cache_key) {
         return Some(cached);
+    }
+    if allow_icon_fallback {
+        if let Some(cached) = crate::cache::get_icon_cache(&icon_cache_key) {
+            return Some(cached);
+        }
     }
 
     #[cfg(target_os = "macos")]
     {
         if let Some(base64) = generate_image_thumbnail_with_sips(path_obj, size_val) {
-            crate::cache::set_icon_cache(cache_key, base64.clone());
+            crate::cache::set_icon_cache(image_cache_key.clone(), base64.clone());
             return Some(base64);
         }
 
         if let Some(base64) = generate_quicklook_thumbnail_in_process(path_obj, size_val) {
-            crate::cache::set_icon_cache(cache_key, base64.clone());
+            crate::cache::set_icon_cache(image_cache_key.clone(), base64.clone());
             return Some(base64);
         }
 
         if let Some(base64) = generate_quicklook_thumbnail(path_obj, size_val) {
-            crate::cache::set_icon_cache(cache_key, base64.clone());
+            crate::cache::set_icon_cache(image_cache_key.clone(), base64.clone());
             return Some(base64);
         }
 
@@ -576,7 +581,7 @@ pub async fn get_file_thumbnail(
 
         let result = rx.recv().unwrap_or(None);
         if let Some(ref base64) = result {
-            crate::cache::set_icon_cache(cache_key, base64.clone());
+            crate::cache::set_icon_cache(icon_cache_key, base64.clone());
         }
         result
     }

@@ -11,6 +11,8 @@
     "view_list": "List View",
     "view_column": "Column View",
     "view_gallery": "Gallery View",
+    "photo_analysis_enable": "Enable view and focus analysis",
+    "photo_analysis_disable": "Disable view and focus analysis",
     "quick_look": {
       "preview": "Quick Look",
       "open": "Open",

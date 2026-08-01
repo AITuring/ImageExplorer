@@ -11,6 +11,8 @@
     "view_list": "列表视图",
     "view_column": "分栏视图",
     "view_gallery": "画廊视图",
+    "photo_analysis_enable": "开启视角与焦点识别",
+    "photo_analysis_disable": "关闭视角与焦点识别",
     "quick_look": {
       "preview": "快速预览",
       "open": "打开",

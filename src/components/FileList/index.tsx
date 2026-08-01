@@ -5,6 +5,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { AppContextMenu } from "@/components/AppContextMenu";
 import { FileEntry, FileActions } from "@/types";
 import { useViewMode } from "@/stores/viewMode";
+import { usePhotoAnalysisMode } from "@/stores/photoAnalysisMode";
 import { useTabs } from "@/hooks/useTabs";
 import { QuickLook } from "@/components/QuickLook";
 import { SMART_FOLDER_PREFIX } from "@/constants/config";
@@ -98,6 +99,7 @@ function makeDragHandlers(
 export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProps) {
   const { t } = useTranslation();
   const { viewMode } = useViewMode();
+  const { enabled: photoAnalysisEnabled } = usePhotoAnalysisMode();
   const { addTab } = useTabs();
 
   // 1. 数据加载
@@ -107,8 +109,6 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   // 2. 排序
   const { sortField, sortDirection, handleSort, handleArrange, sortedEntries } =
     useFileSort(entries);
-
-  const { records: photoAnalysis } = usePhotoAnalysis(sortedEntries, viewMode === "icon");
 
   // 3. 选择状态
   const {
@@ -171,8 +171,18 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     selectedPath,
     editingPath,
     entries: sortedEntries,
-    forceCustomImagePreview: viewMode === "icon",
+    forceCustomImagePreview: viewMode === "icon" && photoAnalysisEnabled,
   });
+
+  // Finder keeps interactive preview work ahead of background indexing. Pause
+  // the folder-wide visual analysis while Quick Look is open, retaining the
+  // records already available for the focus marker.
+  const { records: photoAnalysis } = usePhotoAnalysis(
+    sortedEntries,
+    viewMode === "icon" && photoAnalysisEnabled,
+    Boolean(quickLookEntry),
+    quickLookEntry?.path
+  );
 
   // 7. 键盘快捷键
   useFileKeyboardShortcuts({

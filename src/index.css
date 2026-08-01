@@ -108,11 +108,13 @@
     --input: 214.3 31.8% 91.4%;
     --ring: 222.2 84% 4.9%;
 
-    /* Low-saturation fills used to distinguish adjacent same-view groups. */
-    --photo-group-1: 210 60% 95%;
-    --photo-group-2: 150 45% 94%;
-    --photo-group-3: 45 70% 94%;
-    --photo-group-4: 280 40% 95%;
+    /* Low-saturation fills used to distinguish same-view groups. */
+    --photo-group-1: 210 70% 93%;
+    --photo-group-2: 150 55% 91%;
+    --photo-group-3: 45 78% 91%;
+    --photo-group-4: 280 55% 93%;
+    --photo-group-5: 10 68% 92%;
+    --photo-group-6: 190 58% 91%;
 
     --radius: 0.5rem;
   }
@@ -146,10 +148,12 @@
     --input: 217.2 32.6% 17.5%;
     --ring: 212.7 26.8% 83.9%;
 
-    --photo-group-1: 210 35% 18%;
-    --photo-group-2: 150 28% 17%;
-    --photo-group-3: 45 35% 18%;
-    --photo-group-4: 280 28% 19%;
+    --photo-group-1: 210 45% 23%;
+    --photo-group-2: 150 36% 21%;
+    --photo-group-3: 45 45% 22%;
+    --photo-group-4: 280 38% 23%;
+    --photo-group-5: 10 42% 22%;
+    --photo-group-6: 190 40% 21%;
   }
 }
 

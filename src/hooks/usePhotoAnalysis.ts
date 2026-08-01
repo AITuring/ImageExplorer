@@ -20,7 +20,12 @@ interface PhotoAnalysisState {
   progress: PhotoAnalysisProgress;
 }
 
-export function usePhotoAnalysis(entries: FileEntry[], enabled: boolean) {
+export function usePhotoAnalysis(
+  entries: FileEntry[],
+  enabled: boolean,
+  paused = false,
+  priorityPath?: string
+) {
   const [state, setState] = useState<PhotoAnalysisState>({
     signature: "",
     records: EMPTY_RECORDS,
@@ -36,6 +41,12 @@ export function usePhotoAnalysis(entries: FileEntry[], enabled: boolean) {
     () => analysisEntries.map((item) => item.key).join("\u001f"),
     [analysisEntries]
   );
+  const processingEntries = useMemo(() => {
+    if (!enabled) return [];
+    if (!paused) return analysisEntries;
+    if (!priorityPath) return [];
+    return analysisEntries.filter((item) => item.entry.path === priorityPath);
+  }, [analysisEntries, enabled, paused, priorityPath]);
   const visibleState: PhotoAnalysisState =
     state.signature === analysisSignature
       ? state
@@ -53,7 +64,7 @@ export function usePhotoAnalysis(entries: FileEntry[], enabled: boolean) {
     const generation = ++generationRef.current;
     const controller = new AbortController();
 
-    if (!enabled || analysisEntries.length === 0) {
+    if (!enabled || processingEntries.length === 0) {
       return () => controller.abort();
     }
 
@@ -62,51 +73,68 @@ export function usePhotoAnalysis(entries: FileEntry[], enabled: boolean) {
       partialRecords: Map<string, PhotoAnalysisRecord>
     ) => {
       if (generation !== generationRef.current || controller.signal.aborted) return;
-      setState({
-        signature: analysisSignature,
-        records: partialRecords,
-        progress: {
-          completed,
-          total: analysisEntries.length,
-          isAnalyzing: completed < analysisEntries.length,
-        },
+      setState((current) => {
+        const records = new Map(
+          current.signature === analysisSignature ? current.records : EMPTY_RECORDS
+        );
+        partialRecords.forEach((record, path) => records.set(path, record));
+        return {
+          signature: analysisSignature,
+          records,
+          progress: {
+            completed,
+            total: processingEntries.length,
+            isAnalyzing: completed < processingEntries.length,
+          },
+        };
       });
       // Publish partial groups so visible bursts get a background while the
       // rest of a large folder is still being decoded.
     };
 
-    void analyzePhotoEntries(analysisEntries, controller.signal, publishProgress)
-      .then((nextRecords) => {
-        if (generation !== generationRef.current || controller.signal.aborted) return;
-        startTransition(() =>
-          setState({
-            signature: analysisSignature,
-            records: nextRecords,
-            progress: {
-              completed: analysisEntries.length,
-              total: analysisEntries.length,
-              isAnalyzing: false,
-            },
-          })
-        );
-      })
-      .catch((error) => {
-        if (!controller.signal.aborted) {
-          console.warn("Photo analysis stopped", error);
-          setState({
-            signature: analysisSignature,
-            records: EMPTY_RECORDS,
-            progress: {
-              completed: 0,
-              total: analysisEntries.length,
-              isAnalyzing: false,
-            },
+    const startTimer = window.setTimeout(() => {
+      void analyzePhotoEntries(processingEntries, controller.signal, publishProgress)
+        .then((nextRecords) => {
+          if (generation !== generationRef.current || controller.signal.aborted) return;
+          startTransition(() => {
+            setState((current) => {
+              const records = new Map(
+                current.signature === analysisSignature ? current.records : EMPTY_RECORDS
+              );
+              nextRecords.forEach((record, path) => records.set(path, record));
+              return {
+                signature: analysisSignature,
+                records,
+                progress: {
+                  completed: processingEntries.length,
+                  total: processingEntries.length,
+                  isAnalyzing: false,
+                },
+              };
+            });
           });
-        }
-      });
+        })
+        .catch((error) => {
+          if (!controller.signal.aborted) {
+            console.warn("Photo analysis stopped", error);
+            setState((current) => ({
+              signature: analysisSignature,
+              records: current.signature === analysisSignature ? current.records : EMPTY_RECORDS,
+              progress: {
+                completed: 0,
+                total: processingEntries.length,
+                isAnalyzing: false,
+              },
+            }));
+          }
+        });
+    }, 180);
 
-    return () => controller.abort();
-  }, [analysisEntries, analysisSignature, enabled]);
+    return () => {
+      window.clearTimeout(startTimer);
+      controller.abort();
+    };
+  }, [analysisSignature, enabled, processingEntries]);
 
   return { records: visibleState.records, progress: visibleState.progress };
 }

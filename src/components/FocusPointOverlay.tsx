@@ -5,16 +5,16 @@ import type { FocusPointPosition } from "@/lib/focusPoint";
 interface FocusPointOverlayProps {
   point: FocusPoint | null | undefined;
   position: FocusPointPosition;
-  inverseScale?: number;
+  scale?: number;
 }
 
-export function FocusPointOverlay({ point, position, inverseScale = 1 }: FocusPointOverlayProps) {
+export function FocusPointOverlay({ point, position, scale = 1 }: FocusPointOverlayProps) {
   if (!point) return null;
 
   const style: CSSProperties = {
     left: `${position.left}%`,
     top: `${position.top}%`,
-    transform: `translate(-50%, -50%) scale(${inverseScale})`,
+    transform: `translate(-50%, -50%) scale(${scale})`,
   };
 
   return (

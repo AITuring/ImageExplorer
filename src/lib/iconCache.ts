@@ -58,15 +58,43 @@ export function loadFileThumbnail(
   cacheKey: string,
   path: string,
   size: number,
-  allowIconFallback = true
+  allowIconFallback = true,
+  signal?: AbortSignal
 ): Promise<string | null> {
+  if (signal?.aborted) {
+    return Promise.resolve(null);
+  }
+
   if (pendingLoads.has(cacheKey)) {
     bumpQueuedTask(cacheKey);
     return pendingLoads.get(cacheKey)!;
   }
 
   const task = new Promise<string | null>((resolve) => {
+    let started = false;
+    let settled = false;
+    const cancelQueuedTask = () => {
+      if (started || settled) return;
+      settled = true;
+      queuedThumbnailTasks.delete(cacheKey);
+      pendingLoads.delete(cacheKey);
+      resolve(null);
+    };
+
+    signal?.addEventListener("abort", cancelQueuedTask, { once: true });
     queuedThumbnailTasks.set(cacheKey, () => {
+      if (settled) return;
+      started = true;
+      signal?.removeEventListener("abort", cancelQueuedTask);
+      if (signal?.aborted) {
+        settled = true;
+        activeThumbnailLoads = Math.max(0, activeThumbnailLoads - 1);
+        pendingLoads.delete(cacheKey);
+        resolve(null);
+        runNextThumbnailTask();
+        return;
+      }
+
       invoke<string | null>("get_file_thumbnail", {
         path,
         size,
@@ -78,6 +106,7 @@ export function loadFileThumbnail(
         })
         .then(resolve)
         .finally(() => {
+          settled = true;
           activeThumbnailLoads = Math.max(0, activeThumbnailLoads - 1);
           pendingLoads.delete(cacheKey);
           runNextThumbnailTask();

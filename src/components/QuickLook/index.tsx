@@ -48,7 +48,7 @@ const MAX_IMAGE_ZOOM = 6;
 const MIN_IMAGE_ZOOM = 1;
 const THUMBNAIL_SIZE_STEPS = [384, 512, 768, 1024, 1536, 2048, 3072, 4096];
 const MIN_SCROLL_ADJUST_DELTA = 6;
-const MAX_RAW_PREVIEW_SIZE = 4096;
+const MAX_RAW_PREVIEW_SIZE = 3072;
 const RAW_EXTENSIONS = new Set(RAW_IMAGE_EXTENSIONS);
 
 function clampZoom(value: number) {
@@ -129,16 +129,13 @@ const ZoomableImageElement = memo(function ZoomableImageElement({
         src={src}
         alt={entry.name}
         className={`${fittedImageSize ? "h-full w-full" : "h-auto max-h-full w-auto max-w-full"} select-none ${isZooming ? "" : "rounded-lg shadow-lg"}`}
+        decoding="async"
         draggable={false}
         onLoad={(event) => onLoad(event.currentTarget)}
         onError={onError}
       />
       {focusPoint && focusPosition && (
-        <FocusPointOverlay
-          point={focusPoint}
-          position={focusPosition}
-          inverseScale={1 / imageZoom}
-        />
+        <FocusPointOverlay point={focusPoint} position={focusPosition} />
       )}
     </div>
   );
@@ -440,8 +437,16 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
               className="relative shrink-0"
               style={
                 fittedImageSize
-                  ? { width: `${fittedImageSize.width}px`, height: `${fittedImageSize.height}px` }
-                  : undefined
+                  ? {
+                      width: `${fittedImageSize.width}px`,
+                      height: `${fittedImageSize.height}px`,
+                      transform: `translateZ(0) scale(${imageZoom})`,
+                      transformOrigin: "center center",
+                    }
+                  : {
+                      transform: `translateZ(0) scale(${imageZoom})`,
+                      transformOrigin: "center center",
+                    }
               }
             >
               <FileThumbnail
@@ -595,12 +600,16 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     }
 
     const extension = (entry.extension || "").toLowerCase();
+    if (isRawImage) {
+      return 768;
+    }
+
     if (extension === "psd") {
       return entry.size > 120 * 1024 * 1024 ? 512 : 768;
     }
 
     return 384;
-  }, [entry, previewType]);
+  }, [entry, isRawImage, previewType]);
 
   const cachedNativePreview = useMemo(() => {
     if (!entry) {
@@ -785,6 +794,10 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     };
 
     const loadFullPreview = () => {
+      if (cancelled) {
+        return Promise.resolve();
+      }
+
       if (cachedNativePreview && cachedNativePreview.size >= nativePreviewRequestSize) {
         return Promise.resolve();
       }
@@ -798,8 +811,17 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
       !cachedNativePreview || cachedNativePreview.size < progressivePreviewRequestSize;
 
     if (isRawImage) {
-      // RAW 使用一次受控的高清 Quick Look 请求，避免低清预览在 100% 时长期占位。
-      void loadFullPreview();
+      // 先显示较小的 RAW 预览，再在后台升级到当前缩放所需的尺寸，避免
+      // 空格预览必须等待一次完整的高分辨率解码。
+      if (shouldLoadProgressive) {
+        loadFileThumbnail(progressiveCacheKey, entry.path, progressivePreviewRequestSize)
+          .then(applyPreview)
+          .finally(() => {
+            if (!cancelled) void loadFullPreview();
+          });
+      } else {
+        void loadFullPreview();
+      }
       return () => {
         cancelled = true;
       };
@@ -809,7 +831,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
       loadFileThumbnail(progressiveCacheKey, entry.path, progressivePreviewRequestSize)
         .then(applyPreview)
         .finally(() => {
-          void loadFullPreview();
+          if (!cancelled) void loadFullPreview();
         });
       return () => {
         cancelled = true;
