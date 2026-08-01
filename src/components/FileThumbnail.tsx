@@ -138,7 +138,13 @@ export const FileThumbnail = memo(function FileThumbnail({
         fallbackClassName ||
         (entry.is_dir ? "h-6 w-6 text-blue-500" : "text-muted-foreground h-6 w-6")
       }
-      sysIcon={entry.is_dir ? { type: "folder" } : { type: "ext", value: normalizedExtension }}
+      sysIcon={
+        entry.is_package
+          ? { type: "path", value: entry.path }
+          : entry.is_dir
+            ? { type: "folder" }
+            : { type: "ext", value: normalizedExtension }
+      }
     />
   );
 });

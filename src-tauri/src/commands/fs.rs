@@ -84,6 +84,83 @@ mod path_utils {
     }
 }
 
+/// Return the platform-specific permission details that can be represented in
+/// the shared file model. Unix exposes mode/uid/gid, while Windows exposes the
+/// file attribute bitmask. Unsupported values remain `None`.
+fn metadata_details(
+    metadata: &fs::Metadata,
+) -> (Option<u32>, Option<u32>, Option<u32>, Option<u32>) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return (
+            Some(metadata.mode()),
+            Some(metadata.uid()),
+            Some(metadata.gid()),
+            None,
+        );
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        return (None, None, None, Some(metadata.file_attributes()));
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = metadata;
+        (None, None, None, None)
+    }
+}
+
+fn system_time_seconds(time: Option<std::io::Result<SystemTime>>) -> Option<u64> {
+    time.and_then(|value| value.ok())
+        .and_then(|value| value.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+}
+
+fn is_hidden_entry(name: &str, metadata: Option<&fs::Metadata>) -> bool {
+    if name.starts_with('.') {
+        return true;
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        return metadata
+            .map(|value| value.file_attributes() & 0x2 != 0)
+            .unwrap_or(false);
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = metadata;
+        false
+    }
+}
+
+fn package_type(path: &Path, is_dir: bool) -> Option<String> {
+    if !is_dir {
+        return None;
+    }
+
+    let extension = path.extension()?.to_string_lossy().to_lowercase();
+    let is_package = matches!(
+        extension.as_str(),
+        "app"
+            | "bundle"
+            | "framework"
+            | "plugin"
+            | "kext"
+            | "prefpane"
+            | "appex"
+            | "xpc"
+    );
+
+    is_package.then_some(extension)
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct FileEntry {
     pub name: String,
@@ -93,6 +170,17 @@ pub struct FileEntry {
     pub modified: Option<u64>,
     pub extension: Option<String>,
     pub readonly: bool,
+    pub is_hidden: bool,
+    pub is_symlink: bool,
+    pub symlink_target: Option<String>,
+    pub is_package: bool,
+    pub package_type: Option<String>,
+    pub created: Option<u64>,
+    pub accessed: Option<u64>,
+    pub mode: Option<u32>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    pub file_attributes: Option<u32>,
 }
 
 #[tauri::command]
@@ -132,18 +220,33 @@ fn load_directory_entries(path: &str) -> Result<Vec<FileEntry>, String> {
 
                 let name = entry.file_name().to_string_lossy().to_string();
 
-                // Skip hidden files (starting with .)
-                if name.starts_with('.') {
-                    continue;
-                }
-
                 let is_dir = file_path.is_dir();
 
-                // Get metadata - try both entry.metadata() and fs::metadata()
+                // Use symlink metadata so the UI can identify links instead of
+                // silently treating them as their target.
                 let metadata = entry
-                    .metadata()
+                    .path()
+                    .symlink_metadata()
                     .ok()
                     .or_else(|| fs::metadata(&file_path).ok());
+
+                let is_symlink = metadata
+                    .as_ref()
+                    .map(|value| value.file_type().is_symlink())
+                    .unwrap_or(false);
+                let symlink_target = if is_symlink {
+                    fs::read_link(&file_path)
+                        .ok()
+                        .map(|target| target.to_string_lossy().to_string())
+                } else {
+                    None
+                };
+                let package_type = package_type(&file_path, is_dir);
+                let (mode, uid, gid, file_attributes) = metadata
+                    .as_ref()
+                    .map(metadata_details)
+                    .unwrap_or((None, None, None, None));
+                let is_hidden = is_hidden_entry(&name, metadata.as_ref());
 
                 let size = if is_dir {
                     0
@@ -151,11 +254,9 @@ fn load_directory_entries(path: &str) -> Result<Vec<FileEntry>, String> {
                     metadata.as_ref().map(|m| m.len()).unwrap_or(0)
                 };
 
-                let modified = metadata
-                    .as_ref()
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs());
+                let modified = system_time_seconds(metadata.as_ref().map(|value| value.modified()));
+                let created = system_time_seconds(metadata.as_ref().map(|value| value.created()));
+                let accessed = system_time_seconds(metadata.as_ref().map(|value| value.accessed()));
 
                 let extension = if is_dir {
                     None
@@ -184,6 +285,17 @@ fn load_directory_entries(path: &str) -> Result<Vec<FileEntry>, String> {
                     modified,
                     extension,
                     readonly,
+                    is_hidden,
+                    is_symlink,
+                    symlink_target,
+                    is_package: package_type.is_some(),
+                    package_type,
+                    created,
+                    accessed,
+                    mode,
+                    uid,
+                    gid,
+                    file_attributes,
                 });
             }
         }

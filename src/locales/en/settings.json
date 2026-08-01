@@ -12,6 +12,8 @@
     "theme_light": "Light",
     "theme_dark": "Dark",
     "theme_system": "System Default",
+    "show_hidden_files": "Show Hidden Files",
+    "show_hidden_files_desc": "Show files and folders hidden by their name or filesystem attributes.",
     "terminal": "Default Terminal",
     "terminal_desc": "Select the terminal emulator for \"Open in Terminal\".",
     "terminal_default": "System Default",

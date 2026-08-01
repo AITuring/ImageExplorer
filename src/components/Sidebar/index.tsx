@@ -19,6 +19,8 @@ import {
 import { useTranslation } from "react-i18next";
 import { AppContextMenu } from "@/components/AppContextMenu";
 import { SmartIcon } from "@/components/SmartIcon";
+import { filterHiddenEntries } from "@/utils/file";
+import { useSetting } from "@/hooks/useSetting";
 
 import { FileEntry, FolderItem, SidebarItemActions } from "@/types";
 
@@ -110,10 +112,12 @@ function FolderTreeItem({
   item,
   level = 0,
   onNavigate,
+  showHiddenFiles,
 }: {
   item: FolderItem;
   level?: number;
   onNavigate: (path: string) => void;
+  showHiddenFiles: boolean;
 }) {
   const { t } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(false);
@@ -129,14 +133,14 @@ function FolderTreeItem({
   const refreshChildren = useCallback(async () => {
     try {
       const entries = await invoke<FileEntry[]>("get_entries", { path: item.path });
-      const subDirs = entries
-        .filter((e) => e.is_dir && !e.name.startsWith("."))
+      const subDirs = filterHiddenEntries(entries, showHiddenFiles)
+        .filter((e) => e.is_dir)
         .map((e) => ({ name: e.name, path: e.path }));
       setChildren(subDirs);
     } catch {
       // 静默失败
     }
-  }, [item.path]);
+  }, [item.path, showHiddenFiles]);
 
   // 展开时监听目录变化，折叠时取消监听
   useEffect(() => {
@@ -164,6 +168,13 @@ function FolderTreeItem({
     };
   }, [isExpanded, hasLoaded, item.path, refreshChildren]);
 
+  // 显示偏好变化时重新过滤已加载的目录树，避免必须折叠再展开。
+  useEffect(() => {
+    if (hasLoaded) {
+      refreshChildren();
+    }
+  }, [hasLoaded, refreshChildren, showHiddenFiles]);
+
   const handleToggle = async (e: React.MouseEvent) => {
     e.stopPropagation();
 
@@ -178,8 +189,8 @@ function FolderTreeItem({
       setIsLoading(true);
       try {
         const entries = await invoke<FileEntry[]>("get_entries", { path: item.path });
-        const subDirs = entries
-          .filter((e) => e.is_dir && !e.name.startsWith("."))
+        const subDirs = filterHiddenEntries(entries, showHiddenFiles)
+          .filter((e) => e.is_dir)
           .map((e) => ({ name: e.name, path: e.path }));
 
         setChildren(subDirs);
@@ -247,7 +258,13 @@ function FolderTreeItem({
       {isExpanded &&
         !loadError &&
         children.map((child) => (
-          <FolderTreeItem key={child.path} item={child} level={level + 1} onNavigate={onNavigate} />
+          <FolderTreeItem
+            key={child.path}
+            item={child}
+            level={level + 1}
+            onNavigate={onNavigate}
+            showHiddenFiles={showHiddenFiles}
+          />
         ))}
     </div>
   );
@@ -257,6 +274,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
   const { t } = useTranslation();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [home, setHome] = useState<string>("");
+  const [showHiddenFiles] = useSetting<boolean>("show_hidden_files", false);
 
   useEffect(() => {
     invoke<string>("get_home_dir").then(setHome).catch(console.error);
@@ -352,7 +370,12 @@ export function Sidebar({ onNavigate }: SidebarProps) {
         </h3>
         <div className="w-max min-w-full space-y-0.5">
           {folderTree.map((item) => (
-            <FolderTreeItem key={item.path} item={item} onNavigate={onNavigate} />
+            <FolderTreeItem
+              key={item.path}
+              item={item}
+              onNavigate={onNavigate}
+              showHiddenFiles={showHiddenFiles}
+            />
           ))}
         </div>
       </div>

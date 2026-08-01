@@ -170,6 +170,7 @@ pub async fn get_smart_files(
                 size: r.size as u64,
                 modified: r.modified.map(|m| m as u64),
                 extension: r.extension,
+                is_hidden: r.is_hidden,
             })
             .collect();
 

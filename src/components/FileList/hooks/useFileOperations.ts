@@ -23,7 +23,11 @@ export function useFileOperations({
 
   const handleOpen = useCallback(
     (entry: FileEntry) => {
-      if (entry.is_dir) {
+      // macOS application packages should launch on double-click; other
+      // packages and directories remain browsable until "Show Package
+      // Contents" is added to the context menu.
+      const shouldOpenAsFile = entry.is_package && entry.package_type === "app";
+      if (entry.is_dir && !shouldOpenAsFile) {
         onNavigate(entry.path);
       } else {
         invoke("open_file", { path: entry.path }).catch((e) => {

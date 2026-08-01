@@ -16,6 +16,7 @@ pub struct SearchResult {
     pub size: i64,
     pub modified: Option<i64>,
     pub extension: Option<String>,
+    pub is_hidden: bool,
 }
 
 /// 搜索引擎
@@ -87,6 +88,7 @@ impl SearchEngine {
                     size: row.get(4)?,
                     modified: row.get(5)?,
                     extension: row.get(6)?,
+                    is_hidden: row.get::<_, String>(1)?.starts_with('.'),
                 })
             })
             .ok();
@@ -131,6 +133,7 @@ impl SearchEngine {
                     size: row.get(4)?,
                     modified: row.get(5)?,
                     extension: row.get(6)?,
+                    is_hidden: row.get::<_, String>(0)?.starts_with('.'),
                 })
             })
             .ok();
@@ -186,6 +189,7 @@ impl SearchEngine {
                     size: row.get(4)?,
                     modified: row.get(5)?,
                     extension: row.get(6)?,
+                    is_hidden: row.get::<_, String>(0)?.starts_with('.'),
                 })
             })
             .ok();

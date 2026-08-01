@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Folder, File, ChevronRight } from "lucide-react";
 import { FileEntry } from "@/types";
 import { SmartIcon } from "@/components/SmartIcon";
+import { filterHiddenEntries } from "@/utils/file";
 
 interface FileColumnViewProps {
   currentPath: string;
@@ -10,6 +11,7 @@ interface FileColumnViewProps {
   onClick: (entry: FileEntry, index: number, e: React.MouseEvent) => void;
   onDoubleClick: (entry: FileEntry) => void;
   onNavigate: (path: string) => void;
+  showHiddenFiles: boolean;
 }
 
 interface ColumnData {
@@ -24,6 +26,7 @@ export function FileColumnView({
   onClick,
   onDoubleClick,
   onNavigate,
+  showHiddenFiles,
 }: FileColumnViewProps) {
   const [columns, setColumns] = useState<ColumnData[]>([]);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -41,10 +44,16 @@ export function FileColumnView({
   useEffect(() => {
     const init = async () => {
       const entries = await loadColumn(currentPath);
-      setColumns([{ path: currentPath, entries, selectedPath: null }]);
+      setColumns([
+        {
+          path: currentPath,
+          entries: filterHiddenEntries(entries, showHiddenFiles),
+          selectedPath: null,
+        },
+      ]);
     };
     init();
-  }, [currentPath, loadColumn]);
+  }, [currentPath, loadColumn, showHiddenFiles]);
 
   // 选中文件夹时展开新列（使用函数式更新避免 columns 依赖）
   const handleSelect = useCallback(
@@ -53,7 +62,7 @@ export function FileColumnView({
 
       let newEntries: FileEntry[] = [];
       if (entry.is_dir) {
-        newEntries = await loadColumn(entry.path);
+        newEntries = filterHiddenEntries(await loadColumn(entry.path), showHiddenFiles);
       }
 
       setColumns((prev) => {
@@ -73,7 +82,7 @@ export function FileColumnView({
         });
       });
     },
-    [loadColumn, onClick]
+    [loadColumn, onClick, showHiddenFiles]
   );
 
   // 双击文件夹时导航

@@ -93,7 +93,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   const { viewMode } = useViewMode();
 
   // 1. 数据加载
-  const { entries, loading, error, loadEntries } = useFileEntries(currentPath);
+  const { entries, showHiddenFiles, loading, error, loadEntries } = useFileEntries(currentPath);
 
   // 2. 排序
   const { sortField, sortDirection, handleSort, sortedEntries } = useFileSort(entries);
@@ -392,6 +392,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
               onClick={(entry, index, e) => handleClick(entry, index, e)}
               onDoubleClick={handleOpen}
               onNavigate={(path) => onNavigate(path)}
+              showHiddenFiles={showHiddenFiles}
             />
           ) : viewMode === "gallery" ? (
             <FileGalleryView

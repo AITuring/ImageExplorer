@@ -6,6 +6,23 @@ export interface FileEntry {
   modified: number | null;
   extension: string | null;
   readonly: boolean;
+  /** Whether the item is hidden by the filesystem or filename convention. */
+  is_hidden: boolean;
+  /** Whether the item is a symbolic link. */
+  is_symlink?: boolean;
+  /** Resolved symbolic-link target, when available. */
+  symlink_target?: string | null;
+  /** Whether the item is a platform package such as a .app bundle. */
+  is_package?: boolean;
+  /** Package extension without the leading dot, when this is a package. */
+  package_type?: string | null;
+  /** Extended metadata. Values are seconds since the Unix epoch where applicable. */
+  created?: number | null;
+  accessed?: number | null;
+  mode?: number | null;
+  uid?: number | null;
+  gid?: number | null;
+  file_attributes?: number | null;
 }
 
 export interface InstalledApp {
@@ -22,6 +39,7 @@ export interface SearchResult {
   path: string;
   is_dir: boolean;
   extension?: string;
+  is_hidden?: boolean;
 }
 
 export interface SearchResponse {

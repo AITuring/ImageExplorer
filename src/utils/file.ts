@@ -91,3 +91,16 @@ export const isSpecialFolder = (name: string): boolean => {
   ];
   return SPECIAL_FOLDERS.includes(name);
 };
+
+/**
+ * Keep the backend directory cache complete and apply the visibility preference
+ * only at the presentation boundary. This lets the user toggle hidden files
+ * without rescanning or maintaining two cache entries for the same directory.
+ */
+export const filterHiddenEntries = <T extends { is_hidden?: boolean; name?: string }>(
+  entries: T[],
+  showHidden: boolean
+): T[] => {
+  if (showHidden) return entries;
+  return entries.filter((entry) => !entry.is_hidden && !entry.name?.startsWith("."));
+};

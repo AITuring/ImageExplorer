@@ -17,6 +17,7 @@ pub struct IndexedFile {
     pub size: u64,
     pub modified: Option<u64>,
     pub extension: Option<String>,
+    pub is_hidden: bool,
 }
 
 pub struct FileIndex {
@@ -120,6 +121,7 @@ impl FileIndex {
                     size,
                     modified,
                     extension,
+                    is_hidden: name.starts_with('.'),
                 };
 
                 name_index.push((name_lower, path_str.clone()));
@@ -236,6 +238,7 @@ impl FileIndex {
                 size,
                 modified,
                 extension,
+                is_hidden: name.starts_with('.'),
             };
 
             // ... (rest of add logic)

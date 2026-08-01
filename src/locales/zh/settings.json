@@ -12,6 +12,8 @@
     "theme_light": "浅色",
     "theme_dark": "深色",
     "theme_system": "跟随系统",
+    "show_hidden_files": "显示隐藏文件",
+    "show_hidden_files_desc": "显示以点号开头或由系统标记为隐藏的文件和文件夹。",
     "terminal": "默认终端",
     "terminal_desc": "选择用于\"在终端打开\"功能的终端模拟器。",
     "terminal_default": "系统默认",

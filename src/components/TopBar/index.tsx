@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Search,
@@ -19,6 +19,8 @@ import { SmartIcon } from "@/components/SmartIcon";
 import { useViewMode } from "@/stores/viewMode";
 import { useTabs } from "@/hooks/useTabs";
 import { SEARCH_DEBOUNCE_MS, FOCUS_DELAY_MS } from "@/constants/config";
+import { filterHiddenEntries } from "@/utils/file";
+import { useSetting } from "@/hooks/useSetting";
 
 // 省略号模式: "start" = 前面省略, "end" = 后面省略
 type EllipsisMode = "start" | "end";
@@ -32,10 +34,15 @@ export function TopBar() {
   const [editValue, setEditValue] = useState(currentPath);
 
   const { viewMode, setViewMode } = useViewMode();
+  const [showHiddenFiles] = useSetting<boolean>("show_hidden_files", false);
 
   // 搜索状态
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const visibleSearchResults = useMemo(
+    () => filterHiddenEntries(searchResults, showHiddenFiles),
+    [searchResults, showHiddenFiles]
+  );
   const [ellipsisMode] = useState<EllipsisMode>("end");
 
   const inputRef = useRef<HTMLInputElement>(null);
@@ -371,7 +378,7 @@ export function TopBar() {
             type="text"
             value={searchQuery}
             onChange={(e) => handleSearchInputChange(e.target.value)}
-            onFocus={() => searchQuery && searchResults.length > 0 && setShowResults(true)}
+            onFocus={() => searchQuery && visibleSearchResults.length > 0 && setShowResults(true)}
             onCompositionStart={() => (isComposingRef.current = true)}
             onCompositionEnd={(e) => {
               isComposingRef.current = false;
@@ -403,13 +410,13 @@ export function TopBar() {
               <div className="text-muted-foreground flex items-center justify-center p-4 text-sm">
                 {t("search.searching")}
               </div>
-            ) : searchResults.length > 0 ? (
+            ) : visibleSearchResults.length > 0 ? (
               <>
                 <div className="bg-muted/50 text-muted-foreground flex justify-between px-3 py-1.5 text-xs font-medium">
                   <span>{t("search.results_label")}</span>
                 </div>
                 <ul className="max-h-[60vh] overflow-y-auto py-1">
-                  {searchResults.map((result) => (
+                  {visibleSearchResults.map((result) => (
                     <li key={result.path}>
                       <button
                         className="hover:bg-accent flex w-full items-center gap-2 px-3 py-2 text-left text-sm"

@@ -1,22 +1,31 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { FileEntry } from "@/types";
 import { SMART_FOLDER_PREFIX, DIR_CHANGE_DEBOUNCE_MS } from "@/constants/config";
 import { getCachedEntries, setCachedEntries, invalidateCache } from "@/lib/entriesCache";
+import { filterHiddenEntries } from "@/utils/file";
+import { useSetting } from "@/hooks/useSetting";
 
 interface UseFileEntriesResult {
   entries: FileEntry[];
+  showHiddenFiles: boolean;
   loading: boolean;
   error: string | null;
   loadEntries: (showLoading?: boolean) => Promise<void>;
 }
 
 export function useFileEntries(currentPath: string): UseFileEntriesResult {
-  const [entries, setEntries] = useState<FileEntry[]>([]);
+  const [allEntries, setAllEntries] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [showHiddenFiles] = useSetting<boolean>("show_hidden_files", false);
+
+  const entries = useMemo(
+    () => filterHiddenEntries(allEntries, showHiddenFiles),
+    [allEntries, showHiddenFiles]
+  );
 
   // 加载目录内容
   const loadEntries = useCallback(
@@ -31,8 +40,8 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
         } else {
           result = await invoke<FileEntry[]>("get_entries", { path: currentPath });
         }
-        setEntries(result);
-        // 缓存结果
+        setAllEntries(result);
+        // 缓存完整结果，显示偏好只在渲染边界应用
         setCachedEntries(currentPath, result);
       } catch (e) {
         setError(String(e));
@@ -62,7 +71,7 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
     // 优先使用缓存
     const cached = getCachedEntries(currentPath);
     if (cached) {
-      setEntries(cached);
+      setAllEntries(cached);
       setLoading(false);
       // 后台静默刷新
       loadEntries(false);
@@ -122,6 +131,7 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
 
   return {
     entries,
+    showHiddenFiles,
     loading,
     error,
     loadEntries,

@@ -16,6 +16,8 @@ import {
   Sun,
   Laptop,
   Keyboard,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
@@ -117,6 +119,7 @@ function SettingsDialogComponent({ open, onOpenChange }: SettingsDialogProps) {
     "default_terminal",
     "com.apple.Terminal"
   );
+  const [showHiddenFiles, setShowHiddenFiles] = useSetting<boolean>("show_hidden_files", false);
 
   const [activeTab, setActiveTab] = useState<TabId>("general");
   const [permissionStatus, setPermissionStatus] = useState<"unknown" | "authorized" | "denied">(
@@ -373,6 +376,41 @@ function SettingsDialogComponent({ open, onOpenChange }: SettingsDialogProps) {
                         { value: "dark", label: t("settings.general.theme_dark") },
                       ]}
                     />
+                  </div>
+
+                  {/* 隐藏文件设置 */}
+                  <div className="group flex items-center justify-between">
+                    <div className="space-y-1">
+                      <label className="flex items-center gap-2 text-sm leading-none font-medium">
+                        {showHiddenFiles ? (
+                          <Eye className="text-muted-foreground h-4 w-4" />
+                        ) : (
+                          <EyeOff className="text-muted-foreground h-4 w-4" />
+                        )}
+                        {t("settings.general.show_hidden_files")}
+                      </label>
+                      <p className="text-muted-foreground text-xs">
+                        {t("settings.general.show_hidden_files_desc")}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={showHiddenFiles}
+                      aria-label={t("settings.general.show_hidden_files")}
+                      onClick={() => setShowHiddenFiles(!showHiddenFiles)}
+                      className={cn(
+                        "relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none",
+                        showHiddenFiles ? "bg-blue-500" : "bg-muted"
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "pointer-events-none block h-5 w-5 rounded-full bg-white shadow-sm transition-transform",
+                          showHiddenFiles ? "translate-x-5" : "translate-x-0"
+                        )}
+                      />
+                    </button>
                   </div>
 
                   {/* 语言设置项 */}
