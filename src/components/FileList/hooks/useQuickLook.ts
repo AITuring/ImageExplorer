@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { FileEntry } from "@/types";
 
 interface UseQuickLookOptions {
@@ -11,6 +12,7 @@ interface UseQuickLookResult {
   quickLookEntry: FileEntry | null;
   setQuickLookEntry: (entry: FileEntry | null) => void;
   toggleQuickLook: () => void;
+  useNativeQuickLook: boolean;
 }
 
 export function useQuickLook({
@@ -18,7 +20,48 @@ export function useQuickLook({
   editingPath,
   entries,
 }: UseQuickLookOptions): UseQuickLookResult {
-  const [quickLookEntry, setQuickLookEntry] = useState<FileEntry | null>(null);
+  const [quickLookEntry, setQuickLookEntryState] = useState<FileEntry | null>(null);
+  const [nativeQuickLookEnabled, setNativeQuickLookEnabled] = useState(true);
+  const isMacOS = useMemo(() => {
+    if (typeof navigator === "undefined") {
+      return false;
+    }
+
+    return /mac os|macintosh|macintosh/i.test(navigator.userAgent);
+  }, []);
+
+  const closeNativeQuickLook = useCallback(() => {
+    void invoke("close_native_quick_look").catch(() => {});
+  }, []);
+
+  const setQuickLookEntry = useCallback(
+    (entry: FileEntry | null) => {
+      if (isMacOS && nativeQuickLookEnabled) {
+        if (!entry) {
+          closeNativeQuickLook();
+          setQuickLookEntryState(null);
+          return;
+        }
+
+        void invoke("open_native_quick_look", {
+          paths: entries.map((item) => item.path),
+          currentPath: entry.path,
+        })
+          .then(() => {
+            setQuickLookEntryState(entry);
+          })
+          .catch((error) => {
+            console.error("Failed to open native Quick Look", error);
+            setNativeQuickLookEnabled(false);
+            setQuickLookEntryState(entry);
+          });
+        return;
+      }
+
+      setQuickLookEntryState(entry);
+    },
+    [closeNativeQuickLook, entries, isMacOS, nativeQuickLookEnabled]
+  );
 
   // 切换快速预览
   const toggleQuickLook = useCallback(() => {
@@ -30,7 +73,15 @@ export function useQuickLook({
         setQuickLookEntry(entry);
       }
     }
-  }, [quickLookEntry, selectedPath, entries]);
+  }, [entries, quickLookEntry, selectedPath, setQuickLookEntry]);
+
+  useEffect(() => {
+    return () => {
+      if (isMacOS && nativeQuickLookEnabled) {
+        closeNativeQuickLook();
+      }
+    };
+  }, [closeNativeQuickLook, isMacOS, nativeQuickLookEnabled]);
 
   // Quick Look 快捷键 (Space)
   useEffect(() => {
@@ -51,5 +102,6 @@ export function useQuickLook({
     quickLookEntry,
     setQuickLookEntry,
     toggleQuickLook,
+    useNativeQuickLook: isMacOS && nativeQuickLookEnabled,
   };
 }

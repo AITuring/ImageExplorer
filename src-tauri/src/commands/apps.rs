@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::SystemTime;
 
 // Suppress deprecation warnings is NO LONGER NEEDED as we removed cocoa.
@@ -18,6 +18,51 @@ pub struct InstalledApp {
     pub icon_path: Option<String>,
     pub icon_base64: Option<String>, // 新增 base64 图标数据
     pub is_terminal: bool,
+}
+
+#[cfg(target_os = "macos")]
+fn close_native_quick_look_process(
+    native_quick_look: &tauri::State<'_, crate::NativeQuickLookState>,
+) -> Result<(), String> {
+    let mut child_guard = native_quick_look
+        .lock()
+        .map_err(|_| "Failed to lock native Quick Look process".to_string())?;
+
+    if let Some(mut child) = child_guard.take() {
+        match child.try_wait() {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => {
+                child
+                    .kill()
+                    .map_err(|e| format!("Failed to close native Quick Look: {}", e))?;
+                let _ = child.wait();
+                Ok(())
+            }
+            Err(e) => Err(format!("Failed to inspect native Quick Look process: {}", e)),
+        }
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn reorder_quick_look_paths(paths: Vec<String>, current_path: Option<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut valid_paths = paths
+        .into_iter()
+        .filter(|path| !path.is_empty())
+        .filter(|path| Path::new(path).exists())
+        .filter(|path| seen.insert(path.clone()))
+        .collect::<Vec<_>>();
+
+    if let Some(current_path) = current_path {
+        if let Some(current_index) = valid_paths.iter().position(|path| path == &current_path) {
+            let current = valid_paths.remove(current_index);
+            valid_paths.insert(0, current);
+        }
+    }
+
+    valid_paths
 }
 
 /// 已知终端应用的 Bundle ID
@@ -121,6 +166,7 @@ fn is_image_for_native_thumbnail(path: &Path) -> bool {
                     | "heif"
                     | "avif"
                     | "ico"
+                    | "psd"
             )
         })
         .unwrap_or(false)
@@ -429,7 +475,7 @@ pub async fn get_file_thumbnail(
         .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
-    let size_val = size.unwrap_or(128.0).clamp(16.0, 1024.0);
+    let size_val = size.unwrap_or(128.0).clamp(16.0, 4096.0);
 
     let cache_key = format!(
         "file:{}:{}:{}:{}",
@@ -599,6 +645,65 @@ pub fn open_with(path: String, app_path: String) -> Result<(), String> {
         .map_err(|e| format!("Failed to open with app: {}", e))?;
 
     Ok(())
+}
+
+/// 使用系统 Quick Look 预览多个文件（macOS）
+#[tauri::command]
+pub fn open_native_quick_look(
+    paths: Vec<String>,
+    current_path: Option<String>,
+    native_quick_look: tauri::State<'_, crate::NativeQuickLookState>,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let ordered_paths = reorder_quick_look_paths(paths, current_path);
+        if ordered_paths.is_empty() {
+            return Err("No valid files available for Quick Look".to_string());
+        }
+
+        close_native_quick_look_process(&native_quick_look)?;
+
+        let mut command = Command::new("/usr/bin/qlmanage");
+        command.arg("-p");
+        command.args(&ordered_paths);
+        command.stdout(Stdio::null());
+        command.stderr(Stdio::null());
+
+        let child = command
+            .spawn()
+            .map_err(|e| format!("Failed to open native Quick Look: {}", e))?;
+
+        let mut child_guard = native_quick_look
+            .lock()
+            .map_err(|_| "Failed to store native Quick Look process".to_string())?;
+        *child_guard = Some(child);
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = paths;
+        let _ = current_path;
+        let _ = native_quick_look;
+        Err("Native Quick Look is only supported on macOS".to_string())
+    }
+}
+
+/// 关闭由应用启动的系统 Quick Look 预览（macOS）
+#[tauri::command]
+pub fn close_native_quick_look(
+    native_quick_look: tauri::State<'_, crate::NativeQuickLookState>,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        return close_native_quick_look_process(&native_quick_look);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = native_quick_look;
+        Err("Native Quick Look is only supported on macOS".to_string())
+    }
 }
 
 /// 使用指定终端打开目录

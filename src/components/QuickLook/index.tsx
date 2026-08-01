@@ -1,8 +1,17 @@
-import { useEffect, useState, useMemo, type CSSProperties } from "react";
+import {
+  memo,
+  useEffect,
+  useState,
+  useMemo,
+  useRef,
+  useCallback,
+  type CSSProperties,
+  type WheelEvent,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
-import { X, ExternalLink, File, Loader2 } from "lucide-react";
+import { X, ExternalLink, File, Loader2, ChevronLeft, ChevronRight } from "lucide-react";
 import { SmartIcon } from "@/components/SmartIcon";
 import { FileThumbnail } from "@/components/FileThumbnail";
 import { iconCache, loadFileThumbnail } from "@/lib/iconCache";
@@ -19,7 +28,9 @@ import { formatFileSize, formatDate } from "@/utils/format";
 
 interface QuickLookProps {
   entry: FileEntry | null;
+  entries: FileEntry[];
   onClose: () => void;
+  onNavigate: (entry: FileEntry) => void;
 }
 
 type PreviewType = "text" | "image" | "video" | "audio" | "pdf" | "icon";
@@ -29,7 +40,417 @@ interface ImageDimensions {
   height: number;
 }
 
-export function QuickLook({ entry, onClose }: QuickLookProps) {
+const MAX_IMAGE_ZOOM = 6;
+const MIN_IMAGE_ZOOM = 1;
+const THUMBNAIL_SIZE_STEPS = [384, 512, 768, 1024, 1536, 2048, 3072, 4096];
+const MIN_SCROLL_ADJUST_DELTA = 6;
+
+function clampZoom(value: number) {
+  return Math.min(MAX_IMAGE_ZOOM, Math.max(MIN_IMAGE_ZOOM, value));
+}
+
+function snapThumbnailSize(value: number) {
+  return (
+    THUMBNAIL_SIZE_STEPS.find((step) => value <= step) ??
+    THUMBNAIL_SIZE_STEPS[THUMBNAIL_SIZE_STEPS.length - 1]
+  );
+}
+
+function getPreviewZoomFactor(value: number) {
+  if (value <= 1.2) return 1;
+  if (value <= 1.8) return 1.5;
+  if (value <= 2.8) return 2;
+  return 3;
+}
+
+interface ZoomableImagePreviewProps {
+  entry: FileEntry;
+  viewportSize: { width: number; height: number };
+  imageDimensions: ImageDimensions | null;
+  nativePreviewSrc: string | null;
+  fallbackSrc: string | null;
+  fileSrc: string | null;
+  useNativeImagePreview: boolean;
+  progressivePreviewRequestSize: number;
+  onImageLoadDimensions: (image: HTMLImageElement) => void;
+  onBrowserImageError: () => void;
+  onZoomDisplayChange: (zoom: number) => void;
+  onCommittedZoomChange: (zoom: number) => void;
+}
+
+interface ZoomableImageElementProps {
+  entry: FileEntry;
+  src: string;
+  fittedImageSize: { width: number; height: number } | null;
+  imageZoom: number;
+  isZooming: boolean;
+  onLoad: (image: HTMLImageElement) => void;
+  onError?: () => void;
+}
+
+const ZoomableImageElement = memo(function ZoomableImageElement({
+  entry,
+  src,
+  fittedImageSize,
+  imageZoom,
+  isZooming,
+  onLoad,
+  onError,
+}: ZoomableImageElementProps) {
+  return (
+    <img
+      key={entry.path}
+      src={src}
+      alt={entry.name}
+      className={`h-full w-full select-none ${isZooming ? "" : "rounded-lg shadow-lg"}`}
+      style={
+        fittedImageSize
+          ? {
+              width: `${fittedImageSize.width}px`,
+              height: `${fittedImageSize.height}px`,
+              maxWidth: "none",
+              maxHeight: "none",
+              transform: `translateZ(0) scale(${imageZoom})`,
+              transformOrigin: "center center",
+              willChange: "transform",
+              backfaceVisibility: "hidden",
+            }
+          : {
+              transform: `translateZ(0) scale(${imageZoom})`,
+              transformOrigin: "center center",
+              willChange: "transform",
+              backfaceVisibility: "hidden",
+            }
+      }
+      draggable={false}
+      onLoad={(event) => onLoad(event.currentTarget)}
+      onError={onError}
+    />
+  );
+});
+
+const ZoomableImagePreview = memo(function ZoomableImagePreview({
+  entry,
+  viewportSize,
+  imageDimensions,
+  nativePreviewSrc,
+  fallbackSrc,
+  fileSrc,
+  useNativeImagePreview,
+  progressivePreviewRequestSize,
+  onImageLoadDimensions,
+  onBrowserImageError,
+  onZoomDisplayChange,
+  onCommittedZoomChange,
+}: ZoomableImagePreviewProps) {
+  const [previewViewport, setPreviewViewport] = useState({ width: 0, height: 0 });
+  const [imageZoom, setImageZoom] = useState(1);
+  const [isZooming, setIsZooming] = useState(false);
+  const imageViewportRef = useRef<HTMLDivElement | null>(null);
+  const imageZoomRef = useRef(1);
+  const pendingZoomRef = useRef<number | null>(null);
+  const zoomAnimationFrameRef = useRef<number | null>(null);
+  const commitZoomTimeoutRef = useRef<number | null>(null);
+  const zoomInteractionTimeoutRef = useRef<number | null>(null);
+  const scrollAdjustmentRef = useRef<{
+    previousZoom: number;
+    nextZoom: number;
+    previousCenterX: number;
+    previousCenterY: number;
+    pointerOffsetX: number | null;
+    pointerOffsetY: number | null;
+    pointerClientX: number | null;
+    pointerClientY: number | null;
+    rectLeft: number | null;
+    rectTop: number | null;
+  } | null>(null);
+
+  const imageViewportSize = useMemo(() => {
+    if (previewViewport.width > 0 && previewViewport.height > 0) {
+      return previewViewport;
+    }
+
+    return {
+      width: Math.max(320, Math.floor(viewportSize.width * 0.92)),
+      height: Math.max(240, Math.floor(viewportSize.height * 0.82)),
+    };
+  }, [previewViewport, viewportSize.height, viewportSize.width]);
+
+  const fittedImageSize = useMemo(() => {
+    if (!imageDimensions) {
+      return null;
+    }
+
+    const scale = Math.min(
+      imageViewportSize.width / imageDimensions.width,
+      imageViewportSize.height / imageDimensions.height
+    );
+
+    return {
+      width: Math.max(1, Math.round(imageDimensions.width * scale)),
+      height: Math.max(1, Math.round(imageDimensions.height * scale)),
+    };
+  }, [imageDimensions, imageViewportSize.height, imageViewportSize.width]);
+
+  const zoomedCanvasSize = useMemo(() => {
+    if (!fittedImageSize) {
+      return null;
+    }
+
+    return {
+      width: Math.max(imageViewportSize.width, Math.round(fittedImageSize.width * imageZoom)),
+      height: Math.max(imageViewportSize.height, Math.round(fittedImageSize.height * imageZoom)),
+    };
+  }, [fittedImageSize, imageViewportSize.height, imageViewportSize.width, imageZoom]);
+
+  useEffect(() => {
+    setImageZoom(1);
+    setIsZooming(false);
+    imageZoomRef.current = 1;
+    pendingZoomRef.current = null;
+    scrollAdjustmentRef.current = null;
+    onZoomDisplayChange(1);
+    onCommittedZoomChange(1);
+  }, [entry.path, onCommittedZoomChange, onZoomDisplayChange]);
+
+  useEffect(() => {
+    imageZoomRef.current = imageZoom;
+    onZoomDisplayChange(imageZoom);
+  }, [imageZoom, onZoomDisplayChange]);
+
+  useEffect(() => {
+    const viewport = imageViewportRef.current;
+    if (!viewport) {
+      return;
+    }
+
+    const updateSize = () => {
+      setPreviewViewport({
+        width: viewport.clientWidth,
+        height: viewport.clientHeight,
+      });
+    };
+
+    updateSize();
+
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(viewport);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [entry.path]);
+
+  useEffect(() => {
+    if (commitZoomTimeoutRef.current) {
+      window.clearTimeout(commitZoomTimeoutRef.current);
+    }
+
+    commitZoomTimeoutRef.current = window.setTimeout(() => {
+      onCommittedZoomChange(imageZoomRef.current);
+    }, 220);
+
+    return () => {
+      if (commitZoomTimeoutRef.current) {
+        window.clearTimeout(commitZoomTimeoutRef.current);
+        commitZoomTimeoutRef.current = null;
+      }
+    };
+  }, [imageZoom, onCommittedZoomChange]);
+
+  useEffect(() => {
+    const adjustment = scrollAdjustmentRef.current;
+    if (!adjustment || Math.abs(adjustment.nextZoom - imageZoom) >= 0.01) {
+      return;
+    }
+
+    const viewport = imageViewportRef.current;
+    if (!viewport) {
+      scrollAdjustmentRef.current = null;
+      return;
+    }
+
+    const ratio = adjustment.nextZoom / adjustment.previousZoom;
+    if (!Number.isFinite(ratio) || ratio <= 0) {
+      scrollAdjustmentRef.current = null;
+      return;
+    }
+
+    let nextScrollLeft: number;
+    let nextScrollTop: number;
+    if (
+      adjustment.pointerOffsetX !== null &&
+      adjustment.pointerOffsetY !== null &&
+      adjustment.pointerClientX !== null &&
+      adjustment.pointerClientY !== null &&
+      adjustment.rectLeft !== null &&
+      adjustment.rectTop !== null
+    ) {
+      nextScrollLeft = Math.max(
+        0,
+        adjustment.pointerOffsetX * ratio - (adjustment.pointerClientX - adjustment.rectLeft)
+      );
+      nextScrollTop = Math.max(
+        0,
+        adjustment.pointerOffsetY * ratio - (adjustment.pointerClientY - adjustment.rectTop)
+      );
+    } else {
+      nextScrollLeft = Math.max(0, adjustment.previousCenterX * ratio - viewport.clientWidth / 2);
+      nextScrollTop = Math.max(0, adjustment.previousCenterY * ratio - viewport.clientHeight / 2);
+    }
+
+    const scrollDeltaX = Math.abs(nextScrollLeft - viewport.scrollLeft);
+    const scrollDeltaY = Math.abs(nextScrollTop - viewport.scrollTop);
+    if (scrollDeltaX < MIN_SCROLL_ADJUST_DELTA && scrollDeltaY < MIN_SCROLL_ADJUST_DELTA) {
+      scrollAdjustmentRef.current = null;
+      return;
+    }
+
+    viewport.scrollLeft = nextScrollLeft;
+    viewport.scrollTop = nextScrollTop;
+
+    scrollAdjustmentRef.current = null;
+  }, [imageZoom]);
+
+  const updateImageZoom = useCallback((nextZoom: number, anchor?: { clientX: number; clientY: number }) => {
+    const clampedZoom = clampZoom(nextZoom);
+    const currentZoom = pendingZoomRef.current ?? imageZoomRef.current;
+    if (Math.abs(clampedZoom - currentZoom) < 0.01) {
+      return;
+    }
+
+    const viewport = imageViewportRef.current;
+    const rect = viewport?.getBoundingClientRect();
+    scrollAdjustmentRef.current = viewport
+      ? {
+          previousZoom: currentZoom,
+          nextZoom: clampedZoom,
+          previousCenterX: viewport.scrollLeft + viewport.clientWidth / 2,
+          previousCenterY: viewport.scrollTop + viewport.clientHeight / 2,
+          pointerOffsetX: rect && anchor ? anchor.clientX - rect.left + viewport.scrollLeft : null,
+          pointerOffsetY: rect && anchor ? anchor.clientY - rect.top + viewport.scrollTop : null,
+          pointerClientX: anchor?.clientX ?? null,
+          pointerClientY: anchor?.clientY ?? null,
+          rectLeft: rect?.left ?? null,
+          rectTop: rect?.top ?? null,
+        }
+      : null;
+
+    pendingZoomRef.current = clampedZoom;
+    setIsZooming(true);
+    if (zoomInteractionTimeoutRef.current !== null) {
+      window.clearTimeout(zoomInteractionTimeoutRef.current);
+    }
+    zoomInteractionTimeoutRef.current = window.setTimeout(() => {
+      setIsZooming(false);
+    }, 120);
+
+    if (zoomAnimationFrameRef.current !== null) {
+      return;
+    }
+
+    zoomAnimationFrameRef.current = window.requestAnimationFrame(() => {
+      zoomAnimationFrameRef.current = null;
+      const pendingZoom = pendingZoomRef.current;
+      if (pendingZoom === null) {
+        return;
+      }
+
+      pendingZoomRef.current = null;
+      setImageZoom(pendingZoom);
+    });
+  }, []);
+
+  const handleImageWheel = useCallback(
+    (event: WheelEvent<HTMLDivElement>) => {
+      if (!event.ctrlKey && !event.metaKey) {
+        return;
+      }
+
+      event.preventDefault();
+      const sensitivity = event.ctrlKey ? 0.02 : 0.01;
+      const zoomFactor = Math.exp(-event.deltaY * sensitivity);
+      updateImageZoom((pendingZoomRef.current ?? imageZoomRef.current) * zoomFactor, {
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
+    },
+    [updateImageZoom]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (zoomAnimationFrameRef.current !== null) {
+        window.cancelAnimationFrame(zoomAnimationFrameRef.current);
+      }
+      if (commitZoomTimeoutRef.current !== null) {
+        window.clearTimeout(commitZoomTimeoutRef.current);
+      }
+      if (zoomInteractionTimeoutRef.current !== null) {
+        window.clearTimeout(zoomInteractionTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  return (
+    <div
+      ref={imageViewportRef}
+      className="flex h-full w-full overflow-auto"
+      style={{
+        contain: "layout paint size",
+        isolation: "isolate",
+        overscrollBehavior: "contain",
+      }}
+      onWheel={handleImageWheel}
+    >
+      <div
+        className="flex min-h-full min-w-full items-center justify-center"
+        style={
+          zoomedCanvasSize
+            ? {
+                width: `${zoomedCanvasSize.width}px`,
+                height: `${zoomedCanvasSize.height}px`,
+              }
+            : undefined
+        }
+      >
+        {useNativeImagePreview || !isBrowserSupportedImage(entry.extension) ? (
+          nativePreviewSrc ? (
+            <ZoomableImageElement
+              entry={{ ...entry, path: `${entry.path}:${nativePreviewSrc}` }}
+              src={nativePreviewSrc}
+              fittedImageSize={fittedImageSize}
+              imageZoom={imageZoom}
+              isZooming={isZooming}
+              onLoad={onImageLoadDimensions}
+            />
+          ) : (
+            <FileThumbnail
+              entry={entry}
+              size={320}
+              requestSizeOverride={progressivePreviewRequestSize}
+              className={`h-full w-full object-contain ${isZooming ? "" : "rounded-lg shadow-lg"}`}
+              fallbackClassName="text-muted-foreground h-40 w-40"
+              onImageLoad={onImageLoadDimensions}
+            />
+          )
+        ) : (
+          <ZoomableImageElement
+            entry={entry}
+            src={fallbackSrc || fileSrc || ""}
+            fittedImageSize={fittedImageSize}
+            imageZoom={imageZoom}
+            isZooming={isZooming}
+            onLoad={onImageLoadDimensions}
+            onError={onBrowserImageError}
+          />
+        )}
+      </div>
+    </div>
+  );
+});
+
+export function QuickLook({ entry, entries, onClose, onNavigate }: QuickLookProps) {
   const { t } = useTranslation();
 
   const [textContent, setTextContent] = useState<string | null>(null);
@@ -43,6 +464,8 @@ export function QuickLook({ entry, onClose }: QuickLookProps) {
     width: typeof window === "undefined" ? 1440 : window.innerWidth,
     height: typeof window === "undefined" ? 900 : window.innerHeight,
   }));
+  const [committedZoom, setCommittedZoom] = useState(1);
+  const zoomIndicatorRef = useRef<HTMLSpanElement | null>(null);
 
   // 缓存 convertFileSrc 结果，避免重复转换
   const fileSrc = useMemo(() => {
@@ -87,28 +510,50 @@ export function QuickLook({ entry, onClose }: QuickLookProps) {
       ? "p-1.5 md:p-2"
       : "p-8";
 
+  const quickLookEntries = useMemo(
+    () => entries.filter((candidate) => !candidate.name.startsWith("._")),
+    [entries]
+  );
+  const currentEntryIndex = useMemo(() => {
+    if (!entry) {
+      return -1;
+    }
+    return quickLookEntries.findIndex((candidate) => candidate.path === entry.path);
+  }, [entry, quickLookEntries]);
+  const previousEntry = currentEntryIndex > 0 ? quickLookEntries[currentEntryIndex - 1] : null;
+  const nextEntry =
+    currentEntryIndex >= 0 && currentEntryIndex < quickLookEntries.length - 1
+      ? quickLookEntries[currentEntryIndex + 1]
+      : null;
+  const canNavigate = quickLookEntries.length > 1;
+  const previewZoomFactor = useMemo(() => getPreviewZoomFactor(committedZoom), [committedZoom]);
+
   const nativePreviewRequestSize = useMemo(() => {
     if (previewType !== "image" || !entry) {
       return 768;
     }
 
     const viewportMax = Math.max(viewportSize.width, viewportSize.height);
-    const baseSize = Math.min(1280, Math.max(896, Math.round(viewportMax * 0.72)));
+    const devicePixelRatio =
+      typeof window === "undefined" ? 1 : Math.min(window.devicePixelRatio || 1, 2);
+    const zoomScale = previewZoomFactor;
+    const baseSize = snapThumbnailSize(
+      Math.max(1024, Math.round(viewportMax * 0.86 * devicePixelRatio * zoomScale))
+    );
     const extension = (entry.extension || "").toLowerCase();
 
-    // PSD uses a progressive strategy: tiny first frame, then a noticeably larger background preview.
     if (extension === "psd") {
-      if (entry.size > 200 * 1024 * 1024) {
-        return 768;
+      if (entry.size > 400 * 1024 * 1024) {
+        return Math.min(2048, baseSize);
       }
-      if (entry.size > 80 * 1024 * 1024) {
-        return 896;
+      if (entry.size > 160 * 1024 * 1024) {
+        return Math.min(3072, Math.max(1536, baseSize));
       }
-      return Math.min(1024, baseSize);
+      return Math.min(4096, Math.max(2048, baseSize));
     }
 
     return baseSize;
-  }, [entry, previewType, viewportSize.height, viewportSize.width]);
+  }, [entry, previewType, previewZoomFactor, viewportSize.height, viewportSize.width]);
 
   const progressivePreviewRequestSize = useMemo(() => {
     if (previewType !== "image" || !entry) {
@@ -117,7 +562,7 @@ export function QuickLook({ entry, onClose }: QuickLookProps) {
 
     const extension = (entry.extension || "").toLowerCase();
     if (extension === "psd") {
-      return entry.size > 80 * 1024 * 1024 ? 256 : 320;
+      return entry.size > 120 * 1024 * 1024 ? 512 : 768;
     }
 
     return 384;
@@ -196,7 +641,19 @@ export function QuickLook({ entry, onClose }: QuickLookProps) {
     setUseNativeImagePreview(false);
     setImageDimensions(null);
     setNativePreviewSrc(null);
+    setCommittedZoom(1);
   }, [entry]);
+
+  const updateZoomIndicator = useCallback((zoom: number | null) => {
+    if (!zoomIndicatorRef.current) {
+      return;
+    }
+    zoomIndicatorRef.current.textContent = zoom === null ? "" : ` ${Math.round(zoom * 100)}%`;
+  }, []);
+
+  useEffect(() => {
+    updateZoomIndicator(previewType === "image" ? 1 : null);
+  }, [entry, previewType, updateZoomIndicator]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -217,6 +674,22 @@ export function QuickLook({ entry, onClose }: QuickLookProps) {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         onClose();
+        return;
+      }
+
+      if (!canNavigate) {
+        return;
+      }
+
+      if ((e.key === "ArrowLeft" || e.key === "ArrowUp") && previousEntry) {
+        e.preventDefault();
+        onNavigate(previousEntry);
+        return;
+      }
+
+      if ((e.key === "ArrowRight" || e.key === "ArrowDown") && nextEntry) {
+        e.preventDefault();
+        onNavigate(nextEntry);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
@@ -228,7 +701,7 @@ export function QuickLook({ entry, onClose }: QuickLookProps) {
         (el as HTMLMediaElement).pause();
       });
     };
-  }, [entry, onClose]);
+  }, [canNavigate, entry, nextEntry, onClose, onNavigate, previousEntry]);
 
   useEffect(() => {
     if (!entry || previewType !== "image") {
@@ -360,6 +833,37 @@ export function QuickLook({ entry, onClose }: QuickLookProps) {
     }
   };
 
+  const handleImageLoadDimensions = useCallback((image: HTMLImageElement) => {
+    if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+      setImageDimensions({
+        width: image.naturalWidth,
+        height: image.naturalHeight,
+      });
+    }
+  }, []);
+
+  const handleBrowserImageError = useCallback(() => {
+    if (!entry) {
+      return;
+    }
+
+    if (fallbackSrc) {
+      setUseNativeImagePreview(true);
+      setError(null);
+      return;
+    }
+
+    invoke<string>("read_image_base64", { path: entry.path })
+      .then((base64) => {
+        setFallbackSrc(base64);
+        setError(null);
+      })
+      .catch(() => {
+        setUseNativeImagePreview(true);
+        setError(null);
+      });
+  }, [entry, fallbackSrc]);
+
   const renderPreview = () => {
     if (loading) {
       return (
@@ -382,76 +886,20 @@ export function QuickLook({ entry, onClose }: QuickLookProps) {
     switch (previewType) {
       case "image":
         return (
-          <div className="flex h-full w-full items-center justify-center">
-            {useNativeImagePreview || !isBrowserSupportedImage(entry.extension) ? (
-              nativePreviewSrc ? (
-                <img
-                  key={`${entry.path}:${nativePreviewSrc}`}
-                  src={nativePreviewSrc}
-                  alt={entry.name}
-                  className="h-full w-full rounded-lg object-contain shadow-lg"
-                  onLoad={(event) => {
-                    const img = event.currentTarget;
-                    if (img.naturalWidth > 0 && img.naturalHeight > 0) {
-                      setImageDimensions({
-                        width: img.naturalWidth,
-                        height: img.naturalHeight,
-                      });
-                    }
-                  }}
-                />
-              ) : (
-                <FileThumbnail
-                  entry={entry}
-                  size={320}
-                  requestSizeOverride={progressivePreviewRequestSize}
-                  className="h-full w-full rounded-lg object-contain shadow-lg"
-                  fallbackClassName="text-muted-foreground h-40 w-40"
-                  onImageLoad={(image) => {
-                    if (image.naturalWidth > 0 && image.naturalHeight > 0) {
-                      setImageDimensions({
-                        width: image.naturalWidth,
-                        height: image.naturalHeight,
-                      });
-                    }
-                  }}
-                />
-              )
-            ) : (
-              <img
-                key={entry.path}
-                src={fallbackSrc || fileSrc || ""}
-                alt={entry.name}
-                className="h-full w-full rounded-lg object-contain shadow-lg"
-                onLoad={(event) => {
-                  const img = event.currentTarget;
-                  if (img.naturalWidth > 0 && img.naturalHeight > 0) {
-                    setImageDimensions({
-                      width: img.naturalWidth,
-                      height: img.naturalHeight,
-                    });
-                  }
-                }}
-                onError={() => {
-                  if (fallbackSrc) {
-                    setUseNativeImagePreview(true);
-                    setError(null);
-                    return;
-                  }
-
-                  invoke<string>("read_image_base64", { path: entry.path })
-                    .then((base64) => {
-                      setFallbackSrc(base64);
-                      setError(null);
-                    })
-                    .catch(() => {
-                      setUseNativeImagePreview(true);
-                      setError(null);
-                    });
-                }}
-              />
-            )}
-          </div>
+          <ZoomableImagePreview
+            entry={entry}
+            viewportSize={viewportSize}
+            imageDimensions={imageDimensions}
+            nativePreviewSrc={nativePreviewSrc}
+            fallbackSrc={fallbackSrc}
+            fileSrc={fileSrc}
+            useNativeImagePreview={useNativeImagePreview}
+            progressivePreviewRequestSize={progressivePreviewRequestSize}
+            onImageLoadDimensions={handleImageLoadDimensions}
+            onBrowserImageError={handleBrowserImageError}
+            onZoomDisplayChange={updateZoomIndicator}
+            onCommittedZoomChange={setCommittedZoom}
+          />
         );
 
       case "video":
@@ -577,8 +1025,29 @@ export function QuickLook({ entry, onClose }: QuickLookProps) {
             >
               <X className="h-4 w-4" />
             </button>
+            {canNavigate ? (
+              <>
+                <button
+                  onClick={() => previousEntry && onNavigate(previousEntry)}
+                  disabled={!previousEntry}
+                  className="text-muted-foreground hover:text-foreground disabled:text-muted-foreground/40 rounded-full p-1 transition-colors hover:bg-black/10 disabled:hover:bg-transparent dark:hover:bg-white/10"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                <button
+                  onClick={() => nextEntry && onNavigate(nextEntry)}
+                  disabled={!nextEntry}
+                  className="text-muted-foreground hover:text-foreground disabled:text-muted-foreground/40 rounded-full p-1 transition-colors hover:bg-black/10 disabled:hover:bg-transparent dark:hover:bg-white/10"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </>
+            ) : null}
           </div>
-          <div className="text-sm font-medium opacity-80">{t("common.quick_look.preview")}</div>
+          <div className="text-sm font-medium opacity-80">
+            {t("common.quick_look.preview")}
+            <span ref={zoomIndicatorRef}>{previewType === "image" ? " 100%" : ""}</span>
+          </div>
           <button
             onClick={handleOpen}
             className="text-primary hover:text-primary/80 flex items-center gap-1 text-sm font-medium transition-colors"

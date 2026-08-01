@@ -154,10 +154,10 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   const [showBatchRename, setShowBatchRename] = useState(false);
 
   // 7. 快速预览
-  const { quickLookEntry, setQuickLookEntry } = useQuickLook({
+  const { quickLookEntry, setQuickLookEntry, useNativeQuickLook } = useQuickLook({
     selectedPath,
     editingPath,
-    entries,
+    entries: sortedEntries,
   });
 
   // 7. 键盘快捷键
@@ -539,11 +539,15 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
         </div>
       </AppContextMenu>
 
-      <QuickLook
-        key={quickLookEntry?.path ?? "empty"}
-        entry={quickLookEntry}
-        onClose={() => setQuickLookEntry(null)}
-      />
+      {!useNativeQuickLook && (
+        <QuickLook
+          key={quickLookEntry?.path ?? "empty"}
+          entry={quickLookEntry}
+          entries={sortedEntries}
+          onClose={() => setQuickLookEntry(null)}
+          onNavigate={setQuickLookEntry}
+        />
+      )}
 
       <BatchRenameDialog
         open={showBatchRename}

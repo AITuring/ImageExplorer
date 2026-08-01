@@ -9,8 +9,9 @@ mod index;
 mod menu;
 
 use commands::apps::{
-    get_app_icon, get_file_thumbnail, get_file_type_icon, get_installed_apps,
-    get_recommended_apps, get_sf_symbol, get_terminal_apps, open_in_terminal_with, open_with,
+    close_native_quick_look, get_app_icon, get_file_thumbnail, get_file_type_icon,
+    get_installed_apps, get_recommended_apps, get_sf_symbol, get_terminal_apps,
+    open_in_terminal_with, open_native_quick_look, open_with,
 };
 use commands::fs::{
     batch_rename, check_full_disk_access, copy_file, create_directory, create_file,
@@ -22,6 +23,7 @@ use commands::watcher::{stop_watching, unwatch_directory, watch_directory, Watch
 use db::{Database, IndexBuilder, IndexUpdater, SearchEngine};
 use index::{create_shared_index, IndexedFile, SharedIndex};
 use serde::Serialize;
+use std::process::Child;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 #[cfg(target_os = "macos")]
@@ -119,6 +121,7 @@ fn get_index_status(index: tauri::State<'_, SharedIndex>) -> IndexStatus {
 
 /// Watcher 停止信号发送端（用于优雅关闭）
 pub type WatcherStopSenders = Arc<Mutex<Vec<std::sync::mpsc::Sender<()>>>>;
+pub type NativeQuickLookState = Mutex<Option<Child>>;
 
 /// 后台构建索引（优先使用 SQLite，回退到内存索引）
 fn build_index_background(
@@ -346,6 +349,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .manage(Mutex::new(WatcherState::new()))
+        .manage(Mutex::new(None::<Child>))
         .manage(shared_index.clone())
         .manage(shared_database.clone())
         .setup(move |app| {
@@ -453,6 +457,8 @@ pub fn run() {
             get_file_type_icon,
             open_with,
             open_in_terminal_with,
+            open_native_quick_look,
+            close_native_quick_look,
             get_sf_symbol,
             read_text_file,
             read_image_base64,
@@ -467,6 +473,12 @@ pub fn run() {
                 if let Ok(senders) = stop_senders_for_exit.lock() {
                     for sender in senders.iter() {
                         let _ = sender.send(());
+                    }
+                }
+                if let Ok(mut native_quick_look) = _app_handle.state::<NativeQuickLookState>().lock() {
+                    if let Some(mut child) = native_quick_look.take() {
+                        let _ = child.kill();
+                        let _ = child.wait();
                     }
                 }
             }
