@@ -103,7 +103,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   const [requestingAccess, setRequestingAccess] = useState(false);
 
   // 2. 排序
-  const { sortField, sortDirection, handleSort, sortedEntries } = useFileSort(entries);
+  const { sortField, sortDirection, handleSort, handleArrange, sortedEntries } =
+    useFileSort(entries);
 
   // 3. 选择状态
   const {
@@ -477,6 +478,11 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
           onNewFile: handleNewFile,
           onNewFolder: handleNewFolder,
           onOpenInTerminal: handleOpenInTerminal,
+          onSort: handleSort,
+          onArrange: () => handleArrange(),
+          onArrangeBy: handleArrange,
+          sortField,
+          sortDirection,
           currentPath,
         }}
       >

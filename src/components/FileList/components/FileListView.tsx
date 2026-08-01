@@ -1,5 +1,6 @@
 import { DragEvent } from "react";
 import { FileEntry, FileActions } from "@/types";
+import type { SortDirection, SortField } from "@/types";
 import { AppContextMenu } from "@/components/AppContextMenu";
 import { FileListHeader } from "./FileListHeader";
 import { FileListItem } from "./FileListItem";
@@ -9,11 +10,11 @@ interface FileListViewProps {
   selectedPaths: string[];
   editingPath: string | null;
   editValue: string;
-  sortField: "name" | "size" | "date";
-  sortDirection: "asc" | "desc";
+  sortField: SortField;
+  sortDirection: SortDirection;
   fileActions: FileActions;
   // 事件处理
-  onSort: (field: "name" | "size" | "date") => void;
+  onSort: (field: SortField) => void;
   onEditValueChange: (value: string) => void;
   onSubmitRename: () => void;
   onCancelRename: () => void;

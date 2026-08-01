@@ -20,7 +20,7 @@ ImageExplorer brings the best of Windows Explorer to macOS: an editable address 
 - **Multi-Tab & Multi-Window** — Drag tabs between windows while preserving their navigation history; detached tabs open with their current folder and history; move files and folders into another window or its current folder, with source and destination views refreshed after completion
 - **Cmd+X Cut** — Native cut support, no more Cmd+C → Cmd+Option+V
 - **QuickLook Preview** — Press Space to preview files (text, images, video, audio, PDF, HEIC, DNG, PSD), with native macOS thumbnail fallback for unsupported formats
-- **Context Menus** — Windows-style right-click with 20+ actions: "New File", "Open in New Tab" for folders, "Open in Terminal", "Copy Path", etc.
+- **Context Menus** — Windows-style right-click with 20+ actions, Finder-like sorting and arranging: "New File", "Open in New Tab" for folders, "Open in Terminal", "Copy Path", etc.
 - **Dark Mode** — Light / Dark / System theme
 - **i18n** — English and Simplified Chinese
 

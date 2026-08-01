@@ -128,8 +128,16 @@ export interface EmptyAreaActions {
   onNewFile: () => void;
   onNewFolder: () => void;
   onOpenInTerminal: () => void;
+  onSort: (field: SortField) => void;
+  onArrange: () => void;
+  onArrangeBy: (field: SortField) => void;
+  sortField: SortField;
+  sortDirection: SortDirection;
   currentPath: string;
 }
+
+export type SortField = "name" | "kind" | "size" | "date" | "created";
+export type SortDirection = "asc" | "desc";
 
 export interface SidebarItemActions {
   onOpen: () => void;

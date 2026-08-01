@@ -1,8 +1,6 @@
 import { useState, useMemo } from "react";
 import { FileEntry } from "@/types";
-
-type SortField = "name" | "size" | "date";
-type SortDirection = "asc" | "desc";
+import type { SortDirection, SortField } from "@/types";
 
 export function useFileSort(entries: FileEntry[]) {
   const [sortField, setSortField] = useState<SortField>("name");
@@ -15,6 +13,11 @@ export function useFileSort(entries: FileEntry[]) {
       setSortField(field);
       setSortDirection("asc");
     }
+  };
+
+  const handleArrange = (field = sortField) => {
+    setSortField(field);
+    setSortDirection("asc");
   };
 
   const sortedEntries = useMemo(() => {
@@ -35,6 +38,12 @@ export function useFileSort(entries: FileEntry[]) {
         case "date":
           comparison = (a.modified || 0) - (b.modified || 0);
           break;
+        case "created":
+          comparison = (a.created || 0) - (b.created || 0);
+          break;
+        case "kind":
+          comparison = getEntryKind(a).localeCompare(getEntryKind(b));
+          break;
       }
 
       return sortDirection === "asc" ? comparison : -comparison;
@@ -45,8 +54,15 @@ export function useFileSort(entries: FileEntry[]) {
     sortField,
     sortDirection,
     handleSort,
+    handleArrange,
     sortedEntries,
   };
+}
+
+function getEntryKind(entry: FileEntry) {
+  if (entry.is_dir) return "folder";
+  if (entry.is_package && entry.package_type) return entry.package_type;
+  return entry.extension || "file";
 }
 
 export type { SortField, SortDirection };
