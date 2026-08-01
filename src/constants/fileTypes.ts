@@ -26,6 +26,24 @@ export const TEXT_EXTENSIONS = [
   "rtf",
 ];
 
+export const RAW_IMAGE_EXTENSIONS = [
+  "arw",
+  "cr2",
+  "cr3",
+  "nef",
+  "nrw",
+  "raf",
+  "orf",
+  "rw2",
+  "pef",
+  "srw",
+  "dcr",
+  "kdc",
+  "3fr",
+  "iiq",
+  "x3f",
+];
+
 export const IMAGE_EXTENSIONS = [
   "jpg",
   "jpeg",
@@ -41,6 +59,7 @@ export const IMAGE_EXTENSIONS = [
   "heif",
   "dng",
   "psd",
+  ...RAW_IMAGE_EXTENSIONS,
 ];
 
 // 浏览器原生支持的图片格式（移除 heic, tiff 等需要特殊解码的格式）

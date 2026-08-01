@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { FileEntry } from "@/types";
+import { RAW_IMAGE_EXTENSIONS } from "@/constants/fileTypes";
 
 interface UseQuickLookOptions {
   selectedPath: string | null;
@@ -13,6 +14,39 @@ interface UseQuickLookResult {
   setQuickLookEntry: (entry: FileEntry | null) => void;
   toggleQuickLook: () => void;
   useNativeQuickLook: boolean;
+}
+
+const QUICK_LOOK_CONTEXT_SIZE = 9;
+const RAW_EXTENSIONS = new Set(RAW_IMAGE_EXTENSIONS);
+
+function getQuickLookPaths(entry: FileEntry, entries: FileEntry[]) {
+  if (RAW_EXTENSIONS.has((entry.extension || "").toLowerCase())) {
+    // RAW 解码明显重于普通图片；当前文件单独启动，避免 Quick Look 同时
+    // 预热相邻 RAW 文件。关闭后再次按空格仍可快速预览其他文件。
+    return [entry.path];
+  }
+
+  const currentIndex = entries.findIndex((candidate) => candidate.path === entry.path);
+  if (currentIndex < 0) {
+    return [entry.path];
+  }
+
+  const start = Math.max(
+    0,
+    Math.min(
+      currentIndex - Math.floor(QUICK_LOOK_CONTEXT_SIZE / 2),
+      entries.length - QUICK_LOOK_CONTEXT_SIZE
+    )
+  );
+
+  return entries
+    .slice(start, start + QUICK_LOOK_CONTEXT_SIZE)
+    .map((candidate) => candidate.path)
+    .filter(Boolean);
+}
+
+function isRawImageEntry(entry: FileEntry) {
+  return RAW_EXTENSIONS.has((entry.extension || "").toLowerCase());
 }
 
 export function useQuickLook({
@@ -36,7 +70,7 @@ export function useQuickLook({
 
   const setQuickLookEntry = useCallback(
     (entry: FileEntry | null) => {
-      if (isMacOS && nativeQuickLookEnabled) {
+      if (isMacOS && nativeQuickLookEnabled && (!entry || !isRawImageEntry(entry))) {
         if (!entry) {
           closeNativeQuickLook();
           setQuickLookEntryState(null);
@@ -44,7 +78,9 @@ export function useQuickLook({
         }
 
         void invoke("open_native_quick_look", {
-          paths: entries.map((item) => item.path),
+          // qlmanage 会为传入的每个路径准备预览。大目录只传当前文件附近
+          // 的少量条目，保留相邻文件切换能力，避免一次解码整个 RAW 文件夹。
+          paths: getQuickLookPaths(entry, entries),
           currentPath: entry.path,
         })
           .then(() => {
@@ -58,6 +94,11 @@ export function useQuickLook({
         return;
       }
 
+      if (entry && isMacOS && nativeQuickLookEnabled && isRawImageEntry(entry)) {
+        // 从普通文件的系统 Quick Look 切换到 RAW 的应用内预览时，先关闭
+        // 旧窗口，避免两个预览同时解码或遮挡当前预览。
+        closeNativeQuickLook();
+      }
       setQuickLookEntryState(entry);
     },
     [closeNativeQuickLook, entries, isMacOS, nativeQuickLookEnabled]
@@ -102,6 +143,8 @@ export function useQuickLook({
     quickLookEntry,
     setQuickLookEntry,
     toggleQuickLook,
-    useNativeQuickLook: isMacOS && nativeQuickLookEnabled,
+    // RAW 文件使用应用内预览，避免 qlmanage 启动和重复解码带来的延迟。
+    useNativeQuickLook:
+      isMacOS && nativeQuickLookEnabled && !(quickLookEntry && isRawImageEntry(quickLookEntry)),
   };
 }

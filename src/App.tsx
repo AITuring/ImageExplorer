@@ -15,10 +15,11 @@ import { useTabs } from "@/hooks/useTabs";
 import { useTabShortcuts } from "@/hooks/useTabShortcuts";
 import { windowManager } from "@/lib/windowManager";
 import { OperationCenter } from "@/components/OperationCenter";
+import { ensureDirectoryAccess } from "@/lib/directoryAccess";
 
 function App() {
   const [isInitializing, setIsInitializing] = useState(true);
-  const { i18n } = useTranslation();
+  const { i18n, t } = useTranslation();
   // 使用 useSetting 监听语言变更
   const [language] = useSetting<string | null>("language", null);
 
@@ -40,11 +41,22 @@ function App() {
   const [fileToSelect, setFileToSelect] = useState<string | null>(null);
 
   const handleNavigate = useCallback(
-    (path: string, selectFile?: string) => {
+    async (path: string, selectFile?: string) => {
+      try {
+        const accessiblePath = await ensureDirectoryAccess(path, t("file_list.permission_title"));
+        if (!accessiblePath) {
+          return;
+        }
+        path = accessiblePath;
+      } catch (error) {
+        // Non-permission errors remain visible in FileList, which can show the
+        // original backend message and a retry action when appropriate.
+        console.error("Failed to request directory access:", error);
+      }
       setFileToSelect(selectFile ?? null);
       navigate(path, selectFile);
     },
-    [navigate]
+    [navigate, t]
   );
 
   useEffect(() => {

@@ -9,7 +9,9 @@ export const loadingIcons = new Set<string>();
 const pendingLoads = new Map<string, Promise<string | null>>();
 const queuedThumbnailTasks = new Map<string, () => void>();
 const queuedTaskKeys: string[] = [];
-const MAX_CONCURRENT_THUMBNAILS = 6;
+// macOS Quick Look 解码 RAW 时会占用较多 CPU/内存。限制并发能避免大目录
+// 首屏同时启动多个 qlmanage 进程，把主线程和磁盘留给滚动、选中与交互。
+const MAX_CONCURRENT_THUMBNAILS = 3;
 let activeThumbnailLoads = 0;
 
 // 全局刷新回调列表

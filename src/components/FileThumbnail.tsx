@@ -9,24 +9,9 @@ import {
   triggerIconRefresh,
 } from "@/lib/iconCache";
 import type { FileEntry } from "@/types/index";
+import { IMAGE_EXTENSIONS } from "@/constants/fileTypes";
 
-const PREVIEWABLE_EXTENSIONS = new Set([
-  "jpg",
-  "jpeg",
-  "png",
-  "webp",
-  "gif",
-  "bmp",
-  "tif",
-  "tiff",
-  "heic",
-  "heif",
-  "avif",
-  "dng",
-  "svg",
-  "pdf",
-  "psd",
-]);
+const PREVIEWABLE_EXTENSIONS = new Set([...IMAGE_EXTENSIONS, "pdf"]);
 
 interface FileThumbnailProps {
   entry: FileEntry;
@@ -45,7 +30,7 @@ export const FileThumbnail = memo(function FileThumbnail({
   requestSizeOverride,
   onImageLoad,
 }: FileThumbnailProps) {
-  const [updateCount, forceUpdate] = useState(0);
+  const [, forceUpdate] = useState(0);
   const normalizedExtension = (entry.extension || "").toLowerCase();
   const shouldLoadPreview = !entry.is_dir && PREVIEWABLE_EXTENSIONS.has(normalizedExtension);
   const requestSize = useMemo(() => {
@@ -53,10 +38,11 @@ export const FileThumbnail = memo(function FileThumbnail({
       return requestSizeOverride;
     }
     const dpr = typeof window === "undefined" ? 1 : window.devicePixelRatio || 1;
-    if (size >= 96) {
-      return Math.min(1024, Math.max(512, Math.round(size * Math.max(4, dpr * 2.5))));
-    }
-    return Math.min(1024, Math.max(512, Math.round(size * Math.max(5, dpr * 3))));
+    // 缩略图只需要覆盖当前卡片的物理像素，避免对 RAW 文件请求不必要的
+    // 512px/1024px 解码结果。Quick Look 预览会单独请求更大的尺寸。
+    const pixelRatio = Math.max(1.5, Math.min(2.5, dpr));
+    const minimumSize = size >= 96 ? 240 : 160;
+    return Math.min(768, Math.max(minimumSize, Math.round(size * pixelRatio)));
   }, [requestSizeOverride, size]);
 
   const roundedSize = Math.round(size);
@@ -65,10 +51,8 @@ export const FileThumbnail = memo(function FileThumbnail({
     [entry.modified, entry.path, entry.size, requestSize]
   );
 
-  const thumbnailBase64 = useMemo(() => {
-    const cached = iconCache[cacheKey];
-    return cached === "failed" ? null : cached || null;
-  }, [cacheKey, updateCount]);
+  const cachedThumbnail = iconCache[cacheKey];
+  const thumbnailBase64 = cachedThumbnail === "failed" ? null : cachedThumbnail || null;
 
   useEffect(() => {
     const unregister = registerIconRefresh(() => {

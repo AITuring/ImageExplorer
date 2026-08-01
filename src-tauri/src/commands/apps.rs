@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
+use base64::Engine as _;
 use std::collections::{hash_map::DefaultHasher, HashSet};
+#[cfg(target_os = "macos")]
+use std::ffi::CString;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -47,6 +50,7 @@ fn close_native_quick_look_process(
 
 #[cfg(target_os = "macos")]
 fn reorder_quick_look_paths(paths: Vec<String>, current_path: Option<String>) -> Vec<String> {
+    const MAX_NATIVE_QUICK_LOOK_ITEMS: usize = 9;
     let mut seen = HashSet::new();
     let mut valid_paths = paths
         .into_iter()
@@ -54,6 +58,23 @@ fn reorder_quick_look_paths(paths: Vec<String>, current_path: Option<String>) ->
         .filter(|path| Path::new(path).exists())
         .filter(|path| seen.insert(path.clone()))
         .collect::<Vec<_>>();
+
+    let current_index = current_path
+        .as_ref()
+        .and_then(|path| valid_paths.iter().position(|item| item == path));
+
+    if valid_paths.len() > MAX_NATIVE_QUICK_LOOK_ITEMS {
+        let center = current_index.unwrap_or(0);
+        let half_window = MAX_NATIVE_QUICK_LOOK_ITEMS / 2;
+        let start = center
+            .saturating_sub(half_window)
+            .min(valid_paths.len() - MAX_NATIVE_QUICK_LOOK_ITEMS);
+        valid_paths = valid_paths
+            .into_iter()
+            .skip(start)
+            .take(MAX_NATIVE_QUICK_LOOK_ITEMS)
+            .collect();
+    }
 
     if let Some(current_path) = current_path {
         if let Some(current_index) = valid_paths.iter().position(|path| path == &current_path) {
@@ -247,6 +268,31 @@ fn generate_quicklook_thumbnail(path: &Path, size: f64) -> Option<String> {
     let base64 = icon_utils::png_file_to_base64(&thumbnail_path);
     let _ = fs::remove_dir_all(&output_dir);
     base64
+}
+
+#[cfg(target_os = "macos")]
+fn generate_quicklook_thumbnail_in_process(path: &Path, size: f64) -> Option<String> {
+    extern "C" {
+        fn imageexplorer_quicklook_thumbnail(
+            path: *const std::ffi::c_char,
+            size: u32,
+            length: *mut usize,
+        ) -> *mut u8;
+        fn imageexplorer_free_thumbnail(buffer: *mut u8);
+    }
+
+    let path = CString::new(path.to_string_lossy().as_bytes()).ok()?;
+    let mut length = 0usize;
+    let buffer = unsafe {
+        imageexplorer_quicklook_thumbnail(path.as_ptr(), size.round() as u32, &mut length)
+    };
+    if buffer.is_null() || length == 0 {
+        return None;
+    }
+
+    let bytes = unsafe { std::slice::from_raw_parts(buffer, length).to_vec() };
+    unsafe { imageexplorer_free_thumbnail(buffer) };
+    Some(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
 /// 扫描指定目录下的应用
@@ -491,6 +537,11 @@ pub async fn get_file_thumbnail(
     #[cfg(target_os = "macos")]
     {
         if let Some(base64) = generate_image_thumbnail_with_sips(path_obj, size_val) {
+            crate::cache::set_icon_cache(cache_key, base64.clone());
+            return Some(base64);
+        }
+
+        if let Some(base64) = generate_quicklook_thumbnail_in_process(path_obj, size_val) {
             crate::cache::set_icon_cache(cache_key, base64.clone());
             return Some(base64);
         }

@@ -25,6 +25,7 @@ import {
   isPdfFile,
 } from "@/utils/file";
 import { formatFileSize, formatDate } from "@/utils/format";
+import { RAW_IMAGE_EXTENSIONS } from "@/constants/fileTypes";
 
 interface QuickLookProps {
   entry: FileEntry | null;
@@ -44,6 +45,8 @@ const MAX_IMAGE_ZOOM = 6;
 const MIN_IMAGE_ZOOM = 1;
 const THUMBNAIL_SIZE_STEPS = [384, 512, 768, 1024, 1536, 2048, 3072, 4096];
 const MIN_SCROLL_ADJUST_DELTA = 6;
+const MAX_RAW_PREVIEW_SIZE = 4096;
+const RAW_EXTENSIONS = new Set(RAW_IMAGE_EXTENSIONS);
 
 function clampZoom(value: number) {
   return Math.min(MAX_IMAGE_ZOOM, Math.max(MIN_IMAGE_ZOOM, value));
@@ -204,16 +207,6 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
   }, [fittedImageSize, imageViewportSize.height, imageViewportSize.width, imageZoom]);
 
   useEffect(() => {
-    setImageZoom(1);
-    setIsZooming(false);
-    imageZoomRef.current = 1;
-    pendingZoomRef.current = null;
-    scrollAdjustmentRef.current = null;
-    onZoomDisplayChange(1);
-    onCommittedZoomChange(1);
-  }, [entry.path, onCommittedZoomChange, onZoomDisplayChange]);
-
-  useEffect(() => {
     imageZoomRef.current = imageZoom;
     onZoomDisplayChange(imageZoom);
   }, [imageZoom, onZoomDisplayChange]);
@@ -312,54 +305,58 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
     scrollAdjustmentRef.current = null;
   }, [imageZoom]);
 
-  const updateImageZoom = useCallback((nextZoom: number, anchor?: { clientX: number; clientY: number }) => {
-    const clampedZoom = clampZoom(nextZoom);
-    const currentZoom = pendingZoomRef.current ?? imageZoomRef.current;
-    if (Math.abs(clampedZoom - currentZoom) < 0.01) {
-      return;
-    }
-
-    const viewport = imageViewportRef.current;
-    const rect = viewport?.getBoundingClientRect();
-    scrollAdjustmentRef.current = viewport
-      ? {
-          previousZoom: currentZoom,
-          nextZoom: clampedZoom,
-          previousCenterX: viewport.scrollLeft + viewport.clientWidth / 2,
-          previousCenterY: viewport.scrollTop + viewport.clientHeight / 2,
-          pointerOffsetX: rect && anchor ? anchor.clientX - rect.left + viewport.scrollLeft : null,
-          pointerOffsetY: rect && anchor ? anchor.clientY - rect.top + viewport.scrollTop : null,
-          pointerClientX: anchor?.clientX ?? null,
-          pointerClientY: anchor?.clientY ?? null,
-          rectLeft: rect?.left ?? null,
-          rectTop: rect?.top ?? null,
-        }
-      : null;
-
-    pendingZoomRef.current = clampedZoom;
-    setIsZooming(true);
-    if (zoomInteractionTimeoutRef.current !== null) {
-      window.clearTimeout(zoomInteractionTimeoutRef.current);
-    }
-    zoomInteractionTimeoutRef.current = window.setTimeout(() => {
-      setIsZooming(false);
-    }, 120);
-
-    if (zoomAnimationFrameRef.current !== null) {
-      return;
-    }
-
-    zoomAnimationFrameRef.current = window.requestAnimationFrame(() => {
-      zoomAnimationFrameRef.current = null;
-      const pendingZoom = pendingZoomRef.current;
-      if (pendingZoom === null) {
+  const updateImageZoom = useCallback(
+    (nextZoom: number, anchor?: { clientX: number; clientY: number }) => {
+      const clampedZoom = clampZoom(nextZoom);
+      const currentZoom = pendingZoomRef.current ?? imageZoomRef.current;
+      if (Math.abs(clampedZoom - currentZoom) < 0.01) {
         return;
       }
 
-      pendingZoomRef.current = null;
-      setImageZoom(pendingZoom);
-    });
-  }, []);
+      const viewport = imageViewportRef.current;
+      const rect = viewport?.getBoundingClientRect();
+      scrollAdjustmentRef.current = viewport
+        ? {
+            previousZoom: currentZoom,
+            nextZoom: clampedZoom,
+            previousCenterX: viewport.scrollLeft + viewport.clientWidth / 2,
+            previousCenterY: viewport.scrollTop + viewport.clientHeight / 2,
+            pointerOffsetX:
+              rect && anchor ? anchor.clientX - rect.left + viewport.scrollLeft : null,
+            pointerOffsetY: rect && anchor ? anchor.clientY - rect.top + viewport.scrollTop : null,
+            pointerClientX: anchor?.clientX ?? null,
+            pointerClientY: anchor?.clientY ?? null,
+            rectLeft: rect?.left ?? null,
+            rectTop: rect?.top ?? null,
+          }
+        : null;
+
+      pendingZoomRef.current = clampedZoom;
+      setIsZooming(true);
+      if (zoomInteractionTimeoutRef.current !== null) {
+        window.clearTimeout(zoomInteractionTimeoutRef.current);
+      }
+      zoomInteractionTimeoutRef.current = window.setTimeout(() => {
+        setIsZooming(false);
+      }, 120);
+
+      if (zoomAnimationFrameRef.current !== null) {
+        return;
+      }
+
+      zoomAnimationFrameRef.current = window.requestAnimationFrame(() => {
+        zoomAnimationFrameRef.current = null;
+        const pendingZoom = pendingZoomRef.current;
+        if (pendingZoom === null) {
+          return;
+        }
+
+        pendingZoomRef.current = null;
+        setImageZoom(pendingZoom);
+      });
+    },
+    []
+  );
 
   const handleImageWheel = useCallback(
     (event: WheelEvent<HTMLDivElement>) => {
@@ -527,6 +524,7 @@ export function QuickLook({ entry, entries, onClose, onNavigate }: QuickLookProp
       : null;
   const canNavigate = quickLookEntries.length > 1;
   const previewZoomFactor = useMemo(() => getPreviewZoomFactor(committedZoom), [committedZoom]);
+  const isRawImage = Boolean(entry && RAW_EXTENSIONS.has((entry.extension || "").toLowerCase()));
 
   const nativePreviewRequestSize = useMemo(() => {
     if (previewType !== "image" || !entry) {
@@ -542,6 +540,12 @@ export function QuickLook({ entry, entries, onClose, onNavigate }: QuickLookProp
     );
     const extension = (entry.extension || "").toLowerCase();
 
+    if (isRawImage) {
+      // RAW 预览直接请求一张足够清晰的图，避免先显示 384px 缩略图后一直
+      // 停留在模糊状态；列表缩略图仍然小尺寸，空格预览只解码当前文件。
+      return Math.min(MAX_RAW_PREVIEW_SIZE, Math.max(1536, baseSize));
+    }
+
     if (extension === "psd") {
       if (entry.size > 400 * 1024 * 1024) {
         return Math.min(2048, baseSize);
@@ -553,7 +557,7 @@ export function QuickLook({ entry, entries, onClose, onNavigate }: QuickLookProp
     }
 
     return baseSize;
-  }, [entry, previewType, previewZoomFactor, viewportSize.height, viewportSize.width]);
+  }, [entry, isRawImage, previewType, previewZoomFactor, viewportSize.height, viewportSize.width]);
 
   const progressivePreviewRequestSize = useMemo(() => {
     if (previewType !== "image" || !entry) {
@@ -704,7 +708,9 @@ export function QuickLook({ entry, entries, onClose, onNavigate }: QuickLookProp
   }, [canNavigate, entry, nextEntry, onClose, onNavigate, previousEntry]);
 
   useEffect(() => {
-    if (!entry || previewType !== "image") {
+    // sips 不支持部分 RAW 格式，且在 macOS 上可能启动一个失败的子进程；
+    // RAW 的尺寸直接从 Quick Look 缩略图 onLoad 获取。
+    if (!entry || previewType !== "image" || isRawImage) {
       return;
     }
 
@@ -723,7 +729,7 @@ export function QuickLook({ entry, entries, onClose, onNavigate }: QuickLookProp
     return () => {
       cancelled = true;
     };
-  }, [entry, previewType]);
+  }, [entry, isRawImage, previewType]);
 
   useEffect(() => {
     if (
@@ -753,11 +759,21 @@ export function QuickLook({ entry, entries, onClose, onNavigate }: QuickLookProp
         return Promise.resolve();
       }
 
-      return loadFileThumbnail(fullCacheKey, entry.path, nativePreviewRequestSize).then(applyPreview);
+      return loadFileThumbnail(fullCacheKey, entry.path, nativePreviewRequestSize).then(
+        applyPreview
+      );
     };
 
     const shouldLoadProgressive =
       !cachedNativePreview || cachedNativePreview.size < progressivePreviewRequestSize;
+
+    if (isRawImage) {
+      // RAW 使用一次受控的高清 Quick Look 请求，避免低清预览在 100% 时长期占位。
+      void loadFullPreview();
+      return () => {
+        cancelled = true;
+      };
+    }
 
     if (shouldLoadProgressive) {
       loadFileThumbnail(progressiveCacheKey, entry.path, progressivePreviewRequestSize)
@@ -779,6 +795,8 @@ export function QuickLook({ entry, entries, onClose, onNavigate }: QuickLookProp
     cachedNativePreview,
     entry,
     nativePreviewRequestSize,
+    isRawImage,
+    previewZoomFactor,
     previewType,
     progressivePreviewRequestSize,
     useNativeImagePreview,
@@ -822,9 +840,11 @@ export function QuickLook({ entry, entries, onClose, onNavigate }: QuickLookProp
     };
   }, [entry, previewType]);
 
-  if (!entry) return null;
-
   const handleOpen = async () => {
+    if (!entry) {
+      return;
+    }
+
     try {
       await invoke("open_file", { path: entry.path });
       onClose();
@@ -863,6 +883,8 @@ export function QuickLook({ entry, entries, onClose, onNavigate }: QuickLookProp
         setError(null);
       });
   }, [entry, fallbackSrc]);
+
+  if (!entry) return null;
 
   const renderPreview = () => {
     if (loading) {

@@ -1797,6 +1797,7 @@ name = "imageexplorer"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "cc",
  "chrono",
  "dashmap",
  "dirs",

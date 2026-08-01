@@ -23,6 +23,7 @@ import { FileColumnView } from "./components/FileColumnView";
 import { FileGalleryView } from "./components/FileGalleryView";
 import { BatchRenameDialog } from "@/components/BatchRenameDialog";
 import { FILE_DRAG_MIME, readFileDragData, serializeFileDragData } from "@/lib/dragData";
+import { isPermissionDeniedError, requestDirectoryAccess } from "@/lib/directoryAccess";
 
 /** 列表视图固定行高 */
 const LIST_ITEM_HEIGHT = 40;
@@ -99,6 +100,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
 
   // 1. 数据加载
   const { entries, showHiddenFiles, loading, error, loadEntries } = useFileEntries(currentPath);
+  const [requestingAccess, setRequestingAccess] = useState(false);
 
   // 2. 排序
   const { sortField, sortDirection, handleSort, sortedEntries } = useFileSort(entries);
@@ -412,10 +414,45 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
 
   // Error 状态
   if (error) {
+    const needsAccess = isPermissionDeniedError(error);
+    const handleRequestAccess = async () => {
+      setRequestingAccess(true);
+      try {
+        const accessiblePath = await requestDirectoryAccess(
+          currentPath,
+          t("file_list.permission_title")
+        );
+        if (accessiblePath) {
+          onNavigate(accessiblePath);
+        }
+      } catch (accessError) {
+        console.error("Failed to authorize directory:", accessError);
+      } finally {
+        setRequestingAccess(false);
+      }
+    };
+
     return (
       <div className="bg-background/60 flex h-full items-center justify-center">
-        <div className="text-destructive">
-          {error.includes("Path does not exist") ? t("file_list.error_path_not_exists") : error}
+        <div className="flex max-w-lg flex-col items-center gap-3 px-6 text-center">
+          <div className="text-destructive">
+            {error.includes("Path does not exist") ? t("file_list.error_path_not_exists") : error}
+          </div>
+          {needsAccess && (
+            <>
+              <p className="text-muted-foreground text-sm">{t("file_list.permission_desc")}</p>
+              <button
+                type="button"
+                className="bg-primary text-primary-foreground hover:bg-primary/90 rounded-md px-3 py-1.5 text-sm disabled:opacity-50"
+                onClick={handleRequestAccess}
+                disabled={requestingAccess}
+              >
+                {requestingAccess
+                  ? t("file_list.permission_requesting")
+                  : t("file_list.permission_action")}
+              </button>
+            </>
+          )}
         </div>
       </div>
     );
