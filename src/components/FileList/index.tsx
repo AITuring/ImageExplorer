@@ -181,7 +181,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     sortedEntries,
     viewMode === "icon" && photoAnalysisEnabled,
     Boolean(quickLookEntry),
-    quickLookEntry?.path
+    quickLookEntry?.path,
+    currentPath
   );
 
   // 7. 键盘快捷键
@@ -209,15 +210,12 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   const galleryScrollRef = useRef<HTMLDivElement>(null);
   const scrollPositionsRef = useRef<Record<string, number>>({});
 
-  const getScrollContainer = useCallback(
-    (mode: typeof viewMode) => {
-      if (mode === "list") return listScrollRef.current;
-      if (mode === "gallery") return galleryScrollRef.current;
-      if (mode === "icon") return gridScrollRef.current;
-      return null;
-    },
-    [viewMode]
-  );
+  const getScrollContainer = useCallback((mode: typeof viewMode) => {
+    if (mode === "list") return listScrollRef.current;
+    if (mode === "gallery") return galleryScrollRef.current;
+    if (mode === "icon") return gridScrollRef.current;
+    return null;
+  }, []);
 
   // 计算网格每行列数
   const gridColumnsRef = useRef(6);
@@ -264,10 +262,11 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
 
   useEffect(() => {
     const locationKey = `${viewMode}:${currentPath}`;
+    const scrollPositions = scrollPositionsRef.current;
     return () => {
       const scrollContainer = getScrollContainer(viewMode);
       if (scrollContainer) {
-        scrollPositionsRef.current[locationKey] = scrollContainer.scrollTop;
+        scrollPositions[locationKey] = scrollContainer.scrollTop;
       }
     };
   }, [currentPath, getScrollContainer, viewMode]);
@@ -653,6 +652,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                                     onNameClick={(e) => handleNameClick(entry, globalIndex, e)}
                                     onDoubleClick={() => handleOpen(entry)}
                                     photoAnalysis={analysis}
+                                    photoAnalysisEnabled={photoAnalysisEnabled}
                                     photoGroupColor={getPhotoGroupColor(analysis?.groupId ?? null)}
                                   />
                                 </AppContextMenu>

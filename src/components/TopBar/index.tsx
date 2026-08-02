@@ -24,6 +24,8 @@ import { filterHiddenEntries } from "@/utils/file";
 import { useSetting } from "@/hooks/useSetting";
 import { useClipboard } from "@/stores/clipboard";
 import { usePhotoAnalysisMode } from "@/stores/photoAnalysisMode";
+import { usePhotoAnalysisProgress } from "@/stores/photoAnalysisProgress";
+import { PhotoAnalysisProgressIndicator } from "@/components/PhotoAnalysisProgressIndicator";
 
 // 省略号模式: "start" = 前面省略, "end" = 后面省略
 type EllipsisMode = "start" | "end";
@@ -63,6 +65,8 @@ export function TopBar({ onNavigate }: TopBarProps) {
 
   const { viewMode, setViewMode } = useViewMode();
   const { enabled: photoAnalysisEnabled, toggle: togglePhotoAnalysis } = usePhotoAnalysisMode();
+  const { scopePath: photoAnalysisScope, progress: photoAnalysisProgress } =
+    usePhotoAnalysisProgress();
   const [showHiddenFiles] = useSetting<boolean>("show_hidden_files", false);
   const clipboard = useClipboard();
 
@@ -705,6 +709,10 @@ export function TopBar({ onNavigate }: TopBarProps) {
           </div>
         )}
       </div>
+
+      {viewMode === "icon" && photoAnalysisEnabled && photoAnalysisScope === currentPath && (
+        <PhotoAnalysisProgressIndicator progress={photoAnalysisProgress} />
+      )}
     </header>
   );
 }

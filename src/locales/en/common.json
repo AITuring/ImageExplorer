@@ -13,6 +13,9 @@
     "view_gallery": "Gallery View",
     "photo_analysis_enable": "Enable view and focus analysis",
     "photo_analysis_disable": "Disable view and focus analysis",
+    "photo_analysis_label": "Photo analysis",
+    "photo_analysis_progress": "Analyzing {{completed}}/{{total}}",
+    "photo_analysis_progress_done": "Analysis complete · {{total}} items",
     "quick_look": {
       "preview": "Quick Look",
       "open": "Open",
@@ -24,8 +27,12 @@
       "focus_region_size": "Area {{width}}% × {{height}}%",
       "focus_full_frame": "Sharp across frame · suspected focus stack",
       "focus_confidence": "Confidence {{value}}%",
-      "focus_method": "Sharpness estimate",
-      "focus_unavailable": "No data"
+      "focus_method": "Multi-scale sharpness estimate (not camera AF)",
+      "focus_unavailable": "No data",
+      "focus_camera_af": "Camera AF area",
+      "focus_camera_af_exact": "Sony MakerNote coordinates",
+      "focus_camera_af_approx": "Camera coordinates (area size approximated)",
+      "focus_camera_af_unavailable": "Camera did not record drawable AF coordinates"
     }
   },
   "indexing": {

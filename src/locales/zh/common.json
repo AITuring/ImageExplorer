@@ -13,6 +13,9 @@
     "view_gallery": "画廊视图",
     "photo_analysis_enable": "开启视角与焦点识别",
     "photo_analysis_disable": "关闭视角与焦点识别",
+    "photo_analysis_label": "识别整理",
+    "photo_analysis_progress": "正在识别整理 {{completed}}/{{total}}",
+    "photo_analysis_progress_done": "识别整理完成 {{total}} 项",
     "quick_look": {
       "preview": "快速预览",
       "open": "打开",
@@ -24,8 +27,12 @@
       "focus_region_size": "区域大小 {{width}}% × {{height}}%",
       "focus_full_frame": "全域清晰 · 疑似焦点合成",
       "focus_confidence": "置信度 {{value}}%",
-      "focus_method": "清晰度估算",
-      "focus_unavailable": "暂无数据"
+      "focus_method": "多尺度锐度估算（非相机 AF）",
+      "focus_unavailable": "暂无数据",
+      "focus_camera_af": "相机 AF 区域",
+      "focus_camera_af_exact": "Sony MakerNote 坐标",
+      "focus_camera_af_approx": "相机坐标（区域尺寸近似）",
+      "focus_camera_af_unavailable": "相机未记录可绘制 AF 坐标"
     }
   },
   "indexing": {

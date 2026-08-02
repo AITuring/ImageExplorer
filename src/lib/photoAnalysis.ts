@@ -1,25 +1,32 @@
 import { IMAGE_EXTENSIONS } from "@/constants/fileTypes";
 import type { FileEntry } from "@/types";
-import { loadFileThumbnail } from "@/lib/iconCache";
+import {
+  getFileThumbnailCacheKey,
+  getThumbnailRequestSize,
+  loadFileThumbnail,
+} from "@/lib/iconCache";
 
-const ANALYSIS_VERSION = 4;
-const ANALYSIS_SIZE = 160;
+const ANALYSIS_VERSION = 8;
+const ANALYSIS_SIZE = 128;
 // Keep more spatial detail than the thumbnail shown in the grid. A 24x24
-// fingerprint is still cheap at 160px, but prevents different crops of the
+// fingerprint is still cheap at 128px, but prevents different crops of the
 // same artwork from collapsing into one view group.
 const FINGERPRINT_SIZE = 24;
 const HASH_SIZE = 16;
 // A finer grid keeps the marker useful on small previews without decoding the
-// full RAW. The analysis canvas is only 160px, so this remains inexpensive.
+// full RAW. The analysis canvas is only 128px, so this remains inexpensive.
 const FOCUS_GRID_SIZE = 8;
 const MAX_FOCUS_REGIONS = 5;
-const MAX_CONCURRENT_ANALYSIS = 1;
+// Keep one thumbnail slot free for visible grid/Quick Look requests while two
+// background analysis tasks decode in parallel.
+const MAX_CONCURRENT_ANALYSIS = 2;
 
 const ANALYZABLE_EXTENSIONS = new Set(
   IMAGE_EXTENSIONS.filter((extension) => extension !== "svg" && extension !== "psd")
 );
 
 export type FocusAnalysisKind = "localized" | "multiple" | "full-frame" | "unavailable";
+export type FocusAnalysisSource = "sharpness-estimate" | "unavailable";
 
 export interface FocusRegion {
   /** Region bounds normalized from top-left. */
@@ -32,6 +39,7 @@ export interface FocusRegion {
 
 export interface FocusAnalysis {
   kind: FocusAnalysisKind;
+  source: FocusAnalysisSource;
   regions: FocusRegion[];
   confidence: number;
 }
@@ -137,7 +145,45 @@ function normalizeFingerprint(values: number[]) {
 }
 
 function unavailableFocusAnalysis(): FocusAnalysis {
-  return { kind: "unavailable", regions: [], confidence: 0 };
+  return { kind: "unavailable", source: "sharpness-estimate", regions: [], confidence: 0 };
+}
+
+function smoothFocusTileScores(
+  tileScores: Array<{ score: number; x: number; y: number }>
+): Array<{ score: number; x: number; y: number }> {
+  return tileScores.map((tile) => {
+    let weightedScore = tile.score * 2;
+    let totalWeight = 2;
+
+    for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+      for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+        if (offsetX === 0 && offsetY === 0) continue;
+
+        const neighborX = tile.x + offsetX;
+        const neighborY = tile.y + offsetY;
+        if (
+          neighborX < 0 ||
+          neighborX >= FOCUS_GRID_SIZE ||
+          neighborY < 0 ||
+          neighborY >= FOCUS_GRID_SIZE
+        ) {
+          continue;
+        }
+
+        const neighbor = tileScores[neighborY * FOCUS_GRID_SIZE + neighborX];
+        if (!neighbor) continue;
+
+        // Direct neighbors describe the same physical sharp area more
+        // reliably than diagonal neighbors. This suppresses one-pixel
+        // contrast boundaries without erasing a small but connected subject.
+        const weight = offsetX === 0 || offsetY === 0 ? 1.25 : 0.75;
+        weightedScore += neighbor.score * weight;
+        totalWeight += weight;
+      }
+    }
+
+    return { ...tile, score: weightedScore / totalWeight };
+  });
 }
 
 function buildFocusAnalysis(
@@ -167,7 +213,7 @@ function buildFocusAnalysis(
   const deviation = Math.sqrt(variance / tileScores.length);
   const threshold = Math.min(
     maximum,
-    Math.max(mean + deviation * 0.35, mean + (maximum - mean) * 0.42, maximum * 0.55)
+    Math.max(mean + deviation * 0.35, mean + (maximum - mean) * 0.36, maximum * 0.5)
   );
 
   const tileCount = FOCUS_GRID_SIZE * FOCUS_GRID_SIZE;
@@ -272,6 +318,7 @@ function buildFocusAnalysis(
   if (coverage >= 0.68 && maximum >= 4) {
     return {
       kind: "full-frame",
+      source: "sharpness-estimate",
       regions: [],
       confidence: clamp(coverage * (mean / Math.max(maximum, 1)), 0, 1),
     };
@@ -280,6 +327,7 @@ function buildFocusAnalysis(
   if (regions.length === 0) return unavailableFocusAnalysis();
   return {
     kind: regions.length > 1 ? "multiple" : "localized",
+    source: "sharpness-estimate",
     regions,
     confidence: regions[0].confidence,
   };
@@ -348,7 +396,7 @@ function createFeatures(image: HTMLImageElement, path: string): RawPhotoFeatures
   }
 
   // Camera-maker AF regions are not consistently exposed by Quick Look, so
-  // the first pass uses local edge energy to estimate sharp regions.
+  // the first pass uses multi-scale local detail to estimate sharp regions.
   const tileWidth = Math.max(8, Math.floor(contentWidth / FOCUS_GRID_SIZE));
   const tileHeight = Math.max(8, Math.floor(contentHeight / FOCUS_GRID_SIZE));
   const tileScores: Array<{ score: number; x: number; y: number }> = [];
@@ -359,20 +407,69 @@ function createFeatures(image: HTMLImageElement, path: string): RawPhotoFeatures
       const startY = contentTop + tileY * tileHeight;
       const endX = Math.min(contentLeft + contentWidth - 1, startX + tileWidth);
       const endY = Math.min(contentTop + contentHeight - 1, startY + tileHeight);
-      let score = 0;
+      const gradientValues: number[] = [];
+      const laplacianValues: number[] = [];
+      let horizontalEnergy = 0;
+      let verticalEnergy = 0;
       let samples = 0;
 
       for (let y = startY + 1; y < endY - 1; y += 1) {
         for (let x = startX + 1; x < endX - 1; x += 1) {
+          const center = getGray(imageData, x, y);
           const horizontal = Math.abs(getGray(imageData, x + 1, y) - getGray(imageData, x - 1, y));
           const vertical = Math.abs(getGray(imageData, x, y + 1) - getGray(imageData, x, y - 1));
-          score += horizontal + vertical;
+          const gradient = (horizontal + vertical) / 2;
+          horizontalEnergy += horizontal;
+          verticalEnergy += vertical;
+          const laplacian = Math.abs(
+            center * 4 -
+              getGray(imageData, x - 1, y) -
+              getGray(imageData, x + 1, y) -
+              getGray(imageData, x, y - 1) -
+              getGray(imageData, x, y + 1)
+          );
+          gradientValues.push(gradient);
+          laplacianValues.push(laplacian);
           samples += 1;
         }
       }
 
+      const gradientMean =
+        gradientValues.reduce((total, value) => total + value, 0) / Math.max(samples, 1);
+      const laplacianMean =
+        laplacianValues.reduce((total, value) => total + value, 0) / Math.max(samples, 1);
+      const gradientDeviation = Math.sqrt(
+        gradientValues.reduce((total, value) => total + (value - gradientMean) ** 2, 0) /
+          Math.max(samples, 1)
+      );
+      const laplacianDeviation = Math.sqrt(
+        laplacianValues.reduce((total, value) => total + (value - laplacianMean) ** 2, 0) /
+          Math.max(samples, 1)
+      );
+      const gradientSpread =
+        gradientValues.filter(
+          (value) => value >= Math.max(2, gradientMean + gradientDeviation * 0.35)
+        ).length / Math.max(samples, 1);
+      const laplacianSpread =
+        laplacianValues.filter(
+          (value) => value >= Math.max(2, laplacianMean + laplacianDeviation * 0.35)
+        ).length / Math.max(samples, 1);
+      const textureSpread = (gradientSpread + laplacianSpread) / 2;
+      const directionBalance =
+        1 -
+        Math.abs(horizontalEnergy - verticalEnergy) /
+          Math.max(horizontalEnergy + verticalEnergy, 1);
+      // A single high-contrast border can have a larger raw gradient than a
+      // genuinely textured subject. Combine first- and second-order detail,
+      // then discount energy concentrated in only a few pixels or one dominant
+      // edge direction (for example, a display-case boundary).
+      const detailScore = gradientMean * 0.45 + laplacianMean * 0.55;
+      const textureFactor = 0.45 + Math.min(textureSpread * 1.85, 0.55);
+      const directionFactor = 0.4 + directionBalance * 0.6;
+      const score = detailScore * textureFactor * directionFactor;
+
       tileScores.push({
-        score: samples > 0 ? score / samples : 0,
+        score: samples > 0 ? score : 0,
         x: tileX,
         y: tileY,
       });
@@ -380,7 +477,7 @@ function createFeatures(image: HTMLImageElement, path: string): RawPhotoFeatures
   }
 
   const edgeFingerprint = normalizeFingerprint(tileScores.map((tile) => tile.score));
-  const focusAnalysis = buildFocusAnalysis(tileScores);
+  const focusAnalysis = buildFocusAnalysis(smoothFocusTileScores(tileScores));
 
   return {
     path,
@@ -398,10 +495,28 @@ async function analyzeEntry(entry: FileEntry, key: string, signal: AbortSignal) 
   if (cached) return cached.features;
 
   if (signal.aborted) return null;
-  const thumbnailKey = `photo-analysis:${key}`;
+  // Share the visible 80px grid thumbnail whenever possible. The image is
+  // still sampled into the smaller analysis canvas, but RAW decoding happens
+  // only once per file/request size.
+  const thumbnailRequestSize = getThumbnailRequestSize(80);
+  const thumbnailKey = getFileThumbnailCacheKey(
+    entry.path,
+    entry.modified,
+    entry.size,
+    thumbnailRequestSize,
+    true
+  );
   // Do not accept the generic ARW document icon as an analysis image. It has
   // the same pixels for every failed RAW decode and would create false groups.
-  const base64 = await loadFileThumbnail(thumbnailKey, entry.path, ANALYSIS_SIZE, false, signal);
+  const base64 = await loadFileThumbnail(
+    thumbnailKey,
+    entry.path,
+    thumbnailRequestSize,
+    false,
+    signal,
+    "background",
+    true
+  );
   if (!base64 || signal.aborted) return null;
 
   const image = await decodeThumbnail(base64);
@@ -511,8 +626,11 @@ export async function analyzePhotoEntries(
         console.warn(`Failed to analyze photo: ${item.entry.path}`, error);
       } finally {
         completed += 1;
-        if (completed % 4 === 0 || completed === entries.length) {
-          onUpdate(completed, createPhotoAnalysisRecords(entries, featuresByPath));
+        if (completed === 1 || completed % 4 === 0 || completed === entries.length) {
+          // Grouping is quadratic in the worst case. Keep partial updates
+          // focused on decoded thumbnails/regions and do the final grouping
+          // once the whole folder has been analyzed.
+          onUpdate(completed, createPhotoAnalysisRecords(entries, featuresByPath, false));
         }
         await yieldToBrowser();
       }
@@ -529,9 +647,12 @@ export async function analyzePhotoEntries(
 
 function createPhotoAnalysisRecords(
   entries: PhotoAnalysisEntry[],
-  featuresByPath: Map<string, RawPhotoFeatures>
+  featuresByPath: Map<string, RawPhotoFeatures>,
+  includeGroups = true
 ): Map<string, PhotoAnalysisRecord> {
-  const groups = buildGroups(entries, featuresByPath);
+  const groups = includeGroups
+    ? buildGroups(entries, featuresByPath)
+    : new Map<string, number | null>();
   const result = new Map<string, PhotoAnalysisRecord>();
   for (const item of entries) {
     const features = featuresByPath.get(item.entry.path);

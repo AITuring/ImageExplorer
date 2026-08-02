@@ -64,7 +64,12 @@ static CGImageRef imageexplorer_create_quicklook_preview(NSURL *fileURL, uint32_
 
 // Generate a high-resolution PNG in-process. This avoids spawning one qlmanage
 // process for every RAW file in a large directory.
-uint8_t *imageexplorer_quicklook_thumbnail(const char *path, uint32_t size, size_t *length) {
+uint8_t *imageexplorer_quicklook_thumbnail(
+    const char *path,
+    uint32_t size,
+    int preferEmbedded,
+    size_t *length
+) {
     if (path == NULL || length == NULL || size == 0) {
         return NULL;
     }
@@ -78,11 +83,15 @@ uint8_t *imageexplorer_quicklook_thumbnail(const char *path, uint32_t size, size
         }
 
         NSURL *fileURL = [NSURL fileURLWithPath:filePath];
-        // ImageIO can decode the camera source at the requested size. Quick Look
-        // remains a fallback for formats that ImageIO cannot decode directly.
-        CGImageRef image = imageexplorer_create_imageio_preview(fileURL, size);
-        if (image == NULL) {
-            image = imageexplorer_create_embedded_preview(fileURL, size);
+        // Grid thumbnails and focus analysis should use the camera-embedded JPEG
+        // whenever possible. Decoding the full RAW source for every small card
+        // can stall a large folder for tens of seconds. Full ImageIO decoding
+        // remains available for Quick Look and files without an embedded preview.
+        CGImageRef image = preferEmbedded
+            ? imageexplorer_create_embedded_preview(fileURL, size)
+            : imageexplorer_create_imageio_preview(fileURL, size);
+        if (image == NULL && preferEmbedded) {
+            image = imageexplorer_create_imageio_preview(fileURL, size);
         }
         if (image == NULL) {
             image = imageexplorer_create_quicklook_preview(fileURL, size);

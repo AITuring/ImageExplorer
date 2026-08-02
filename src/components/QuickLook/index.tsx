@@ -17,7 +17,12 @@ import { FileThumbnail } from "@/components/FileThumbnail";
 import { FocusRegionOverlay } from "@/components/FocusRegionOverlay";
 import { iconCache, loadFileThumbnail } from "@/lib/iconCache";
 import type { FileEntry } from "@/types/index";
-import type { FocusAnalysis, PhotoAnalysisRecord } from "@/lib/photoAnalysis";
+import { isAnalyzablePhoto, type FocusAnalysis, type PhotoAnalysisRecord } from "@/lib/photoAnalysis";
+import {
+  getCameraAfRegions,
+  loadCameraAfMetadata,
+  type CameraAfMetadata,
+} from "@/lib/cameraAfMetadata";
 import {
   isTextFile,
   isImageFile,
@@ -46,9 +51,9 @@ interface ImageDimensions {
 
 const MAX_IMAGE_ZOOM = 6;
 const MIN_IMAGE_ZOOM = 1;
-const THUMBNAIL_SIZE_STEPS = [384, 512, 768, 1024, 1536, 2048, 3072, 4096];
+const THUMBNAIL_SIZE_STEPS = [384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144];
 const MIN_SCROLL_ADJUST_DELTA = 6;
-const MAX_RAW_PREVIEW_SIZE = 3072;
+const MAX_RAW_PREVIEW_SIZE = 6144;
 const RAW_EXTENSIONS = new Set(RAW_IMAGE_EXTENSIONS);
 
 function clampZoom(value: number) {
@@ -71,12 +76,16 @@ function getPreviewZoomFactor(value: number) {
 
 const FocusAnalysisDetails = memo(function FocusAnalysisDetails({
   analysis,
+  cameraAfMetadata,
 }: {
   analysis?: PhotoAnalysisRecord;
+  cameraAfMetadata?: CameraAfMetadata | null;
 }) {
   const { t } = useTranslation();
   const focusAnalysis = analysis?.focusAnalysis;
-  const region = focusAnalysis?.regions[0];
+  const cameraAfRegions = getCameraAfRegions(cameraAfMetadata);
+  const regions = cameraAfRegions ?? focusAnalysis?.regions ?? [];
+  const region = regions[0];
 
   return (
     <div
@@ -84,8 +93,46 @@ const FocusAnalysisDetails = memo(function FocusAnalysisDetails({
       role="status"
       aria-live="polite"
     >
-      <span className="text-foreground font-medium">{t("common.quick_look.focus_data")}</span>
-      {focusAnalysis?.kind === "full-frame" ? (
+      <span className="text-foreground font-medium">
+        {cameraAfRegions !== null
+          ? t("common.quick_look.focus_camera_af")
+          : t("common.quick_look.focus_data")}
+      </span>
+      {cameraAfMetadata?.source === "camera-maker-note" && cameraAfRegions?.length ? (
+        <>
+          <span>
+            {t("common.quick_look.focus_regions", {
+              count: cameraAfRegions.length,
+            })}
+          </span>
+          {cameraAfRegions.length === 1 && (
+            <span>
+              {t("common.quick_look.focus_region_position", {
+                x: Math.round((region.x + region.width / 2) * 100),
+                y: Math.round((region.y + region.height / 2) * 100),
+              })}
+            </span>
+          )}
+          <span>
+            {t("common.quick_look.focus_region_size", {
+              width: Math.round(region.width * 100),
+              height: Math.round(region.height * 100),
+            })}
+          </span>
+          <span>
+            {cameraAfMetadata.exact
+              ? t("common.quick_look.focus_camera_af_exact")
+              : t("common.quick_look.focus_camera_af_approx")}
+          </span>
+          {cameraAfMetadata.areaMode && <span>{cameraAfMetadata.areaMode}</span>}
+        </>
+      ) : cameraAfMetadata?.source === "camera-maker-note" ? (
+        <>
+          <span>{t("common.quick_look.focus_camera_af_unavailable")}</span>
+          {cameraAfMetadata.areaMode && <span>{cameraAfMetadata.areaMode}</span>}
+          {cameraAfMetadata.focusMode && <span>{cameraAfMetadata.focusMode}</span>}
+        </>
+      ) : focusAnalysis?.kind === "full-frame" ? (
         <>
           <span>{t("common.quick_look.focus_full_frame")}</span>
           <span>
@@ -94,15 +141,18 @@ const FocusAnalysisDetails = memo(function FocusAnalysisDetails({
             })}
           </span>
           <span>{t("common.quick_look.focus_method")}</span>
+          {cameraAfMetadata?.source === "unavailable" && (
+            <span>{t("common.quick_look.focus_camera_af_unavailable")}</span>
+          )}
         </>
       ) : focusAnalysis && region ? (
         <>
           <span>
             {t("common.quick_look.focus_regions", {
-              count: focusAnalysis.regions.length,
+              count: regions.length,
             })}
           </span>
-          {focusAnalysis.regions.length === 1 && (
+          {regions.length === 1 && (
             <span>
               {t("common.quick_look.focus_region_position", {
                 x: Math.round((region.x + region.width / 2) * 100),
@@ -122,9 +172,17 @@ const FocusAnalysisDetails = memo(function FocusAnalysisDetails({
             })}
           </span>
           <span>{t("common.quick_look.focus_method")}</span>
+          {cameraAfMetadata?.source === "unavailable" && (
+            <span>{t("common.quick_look.focus_camera_af_unavailable")}</span>
+          )}
         </>
       ) : (
-        <span>{t("common.quick_look.focus_unavailable")}</span>
+        <>
+          <span>{t("common.quick_look.focus_unavailable")}</span>
+          {cameraAfMetadata?.source === "unavailable" && (
+            <span>{t("common.quick_look.focus_camera_af_unavailable")}</span>
+          )}
+        </>
       )}
     </div>
   );
@@ -144,6 +202,7 @@ interface ZoomableImagePreviewProps {
   onZoomDisplayChange: (zoom: number) => void;
   onCommittedZoomChange: (zoom: number) => void;
   focusAnalysis?: FocusAnalysis | null;
+  cameraAfMetadata?: CameraAfMetadata | null;
 }
 
 interface ZoomableImageElementProps {
@@ -155,6 +214,7 @@ interface ZoomableImageElementProps {
   onLoad: (image: HTMLImageElement) => void;
   onError?: () => void;
   focusAnalysis?: FocusAnalysis | null;
+  cameraAfMetadata?: CameraAfMetadata | null;
 }
 
 const ZoomableImageElement = memo(function ZoomableImageElement({
@@ -166,8 +226,11 @@ const ZoomableImageElement = memo(function ZoomableImageElement({
   onLoad,
   onError,
   focusAnalysis,
+  cameraAfMetadata,
 }: ZoomableImageElementProps) {
-  const focusRegions = focusAnalysis?.kind === "full-frame" ? [] : (focusAnalysis?.regions ?? []);
+  const cameraAfRegions = getCameraAfRegions(cameraAfMetadata);
+  const focusRegions =
+    cameraAfRegions ?? (focusAnalysis?.kind === "full-frame" ? [] : (focusAnalysis?.regions ?? []));
   const frameStyle: CSSProperties = {
     ...(fittedImageSize
       ? {
@@ -198,6 +261,7 @@ const ZoomableImageElement = memo(function ZoomableImageElement({
       {focusRegions.map((region) => (
         <FocusRegionOverlay
           key={`${region.x}-${region.y}-${region.width}-${region.height}`}
+          variant={cameraAfRegions !== null ? "camera" : "estimate"}
           position={{
             left: region.x * 100,
             top: region.y * 100,
@@ -224,7 +288,11 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
   onZoomDisplayChange,
   onCommittedZoomChange,
   focusAnalysis,
+  cameraAfMetadata,
 }: ZoomableImagePreviewProps) {
+  const cameraAfRegions = getCameraAfRegions(cameraAfMetadata);
+  const focusRegions =
+    cameraAfRegions ?? (focusAnalysis?.kind === "full-frame" ? [] : (focusAnalysis?.regions ?? []));
   const [previewViewport, setPreviewViewport] = useState({ width: 0, height: 0 });
   const [imageZoom, setImageZoom] = useState(1);
   const [isZooming, setIsZooming] = useState(false);
@@ -500,6 +568,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
               isZooming={isZooming}
               onLoad={onImageLoadDimensions}
               focusAnalysis={focusAnalysis}
+              cameraAfMetadata={cameraAfMetadata}
             />
           ) : (
             <div
@@ -526,11 +595,11 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
                 fallbackClassName="text-muted-foreground h-40 w-40"
                 onImageLoad={onImageLoadDimensions}
               />
-              {focusAnalysis?.kind !== "full-frame" &&
-                fittedImageSize &&
-                focusAnalysis?.regions.map((region) => (
+              {fittedImageSize &&
+                focusRegions.map((region) => (
                   <FocusRegionOverlay
                     key={`${region.x}-${region.y}-${region.width}-${region.height}`}
+                    variant={cameraAfRegions !== null ? "camera" : "estimate"}
                     position={{
                       left: region.x * 100,
                       top: region.y * 100,
@@ -551,6 +620,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
             onLoad={onImageLoadDimensions}
             onError={onBrowserImageError}
             focusAnalysis={focusAnalysis}
+            cameraAfMetadata={cameraAfMetadata}
           />
         )}
       </div>
@@ -573,6 +643,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     height: typeof window === "undefined" ? 900 : window.innerHeight,
   }));
   const [committedZoom, setCommittedZoom] = useState(1);
+  const [cameraAfMetadata, setCameraAfMetadata] = useState<CameraAfMetadata | null>(null);
   const zoomIndicatorRef = useRef<HTMLSpanElement | null>(null);
 
   // 缓存 convertFileSrc 结果，避免重复转换
@@ -636,6 +707,23 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
   const canNavigate = quickLookEntries.length > 1;
   const previewZoomFactor = useMemo(() => getPreviewZoomFactor(committedZoom), [committedZoom]);
   const isRawImage = Boolean(entry && RAW_EXTENSIONS.has((entry.extension || "").toLowerCase()));
+
+  useEffect(() => {
+    if (!entry || previewType !== "image" || !isAnalyzablePhoto(entry)) {
+      setCameraAfMetadata(null);
+      return;
+    }
+
+    let cancelled = false;
+    setCameraAfMetadata(null);
+    void loadCameraAfMetadata(entry).then((metadata) => {
+      if (!cancelled) setCameraAfMetadata(metadata);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [entry, previewType]);
 
   useEffect(() => {
     if (!entry || previewType !== "image") {
@@ -795,6 +883,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     setImageDimensions(null);
     setNativePreviewSrc(null);
     setCommittedZoom(1);
+    setCameraAfMetadata(null);
   }, [entry]);
 
   const updateZoomIndicator = useCallback((zoom: number | null) => {
@@ -1087,9 +1176,13 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
                 onZoomDisplayChange={updateZoomIndicator}
                 onCommittedZoomChange={setCommittedZoom}
                 focusAnalysis={photoAnalysis?.get(entry.path)?.focusAnalysis ?? null}
+                cameraAfMetadata={cameraAfMetadata}
               />
             </div>
-            <FocusAnalysisDetails analysis={photoAnalysis?.get(entry.path)} />
+            <FocusAnalysisDetails
+              analysis={photoAnalysis?.get(entry.path)}
+              cameraAfMetadata={cameraAfMetadata}
+            />
           </div>
         );
 

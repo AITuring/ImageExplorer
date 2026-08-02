@@ -23,6 +23,19 @@ ImageExplorer 将 Windows 资源管理器的高效逻辑带到 macOS：可编辑
 3. 在缩略图上绘制小型焦点方框；空格预览放大时方框会跟随图片缩放，底部会显示位置、置信度和判断方式。
 4. 在文件名下方懒加载 macOS 可读取的 EXIF 摘要，包括尺寸、ISO、光圈、快门、焦段、机身和镜头。
 
+### 相机真实 AF 元数据
+
+如果 Sony RAW/JPEG 中保留了 MakerNote 对焦坐标，ImageExplorer 会调用
+ExifTool 读取 `FocusLocation`/`FocusFrameSize`，并兼容文档化的
+`FlexibleSpotPosition`。这类结果使用实线青色方框，并标注为“相机 AF”。
+虚线琥珀色方框表示文件没有可绘制的相机 AF 坐标，此时才会显示独立的
+锐度估算，绝不会冒充相机真实 AF。
+
+macOS 可通过 `brew install exiftool` 安装 ExifTool，也可以用
+`IMAGEEXPLORER_EXIFTOOL` 或 `EXIFTOOL_PATH` 指向应用内或独立的可执行文件。
+如果某张 Sony 文件没有写入 AF 坐标，界面会明确显示“相机未记录可绘制 AF
+坐标”。标签定义可参考 [ExifTool Sony MakerNote 文档](https://exiftool.org/TagNames/Sony.html)。
+
 ![图标视图中的重复视角高亮](./docs/screenshots/icon-view-focus-groups.png)
 
 ![RAW/JPEG 配对缩略图](./docs/screenshots/icon-view-raw-pairs.png)
@@ -31,7 +44,7 @@ ImageExplorer 将 Windows 资源管理器的高效逻辑带到 macOS：可编辑
 
 ![带焦点标记的空格快速预览](./docs/screenshots/quick-look-zoom-focus.png)
 
-> 焦点方框是基于可用预览图清晰度的视觉估算，并不等同于相机 MakerNote 中的真实 AF 区域。界面会显示置信度，建议把它作为筛选辅助，最终仍以全尺寸 RAW 检查为准。
+> 只有文件中确实存在 Sony MakerNote 坐标时才绘制“相机 AF”实线方框。没有坐标时的虚线方框只是挑片辅助，最终仍建议结合全尺寸 RAW 判断。
 
 ## 功能特性
 

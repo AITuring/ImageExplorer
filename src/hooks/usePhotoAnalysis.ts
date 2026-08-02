@@ -6,6 +6,7 @@ import {
   type PhotoAnalysisProgress,
   type PhotoAnalysisRecord,
 } from "@/lib/photoAnalysis";
+import { usePhotoAnalysisProgress } from "@/stores/photoAnalysisProgress";
 
 const EMPTY_RECORDS = new Map<string, PhotoAnalysisRecord>();
 const INITIAL_PROGRESS: PhotoAnalysisProgress = {
@@ -24,7 +25,8 @@ export function usePhotoAnalysis(
   entries: FileEntry[],
   enabled: boolean,
   paused = false,
-  priorityPath?: string
+  priorityPath?: string,
+  scopePath?: string
 ) {
   const [state, setState] = useState<PhotoAnalysisState>({
     signature: "",
@@ -59,6 +61,36 @@ export function usePhotoAnalysis(
             isAnalyzing: enabled && analysisEntries.length > 0,
           },
         };
+  const {
+    completed: visibleCompleted,
+    total: visibleTotal,
+    isAnalyzing: visibleIsAnalyzing,
+  } = visibleState.progress;
+
+  useEffect(() => {
+    if (!scopePath) return;
+
+    const progressStore = usePhotoAnalysisProgress.getState();
+    if (!enabled || paused) {
+      progressStore.setProgress(scopePath, INITIAL_PROGRESS);
+    } else {
+      progressStore.setProgress(scopePath, {
+        completed: visibleCompleted,
+        total: visibleTotal,
+        isAnalyzing: visibleIsAnalyzing,
+      });
+    }
+
+    return () => progressStore.clear(scopePath);
+  }, [
+    analysisSignature,
+    enabled,
+    paused,
+    scopePath,
+    visibleCompleted,
+    visibleIsAnalyzing,
+    visibleTotal,
+  ]);
 
   useEffect(() => {
     const generation = ++generationRef.current;
@@ -88,8 +120,9 @@ export function usePhotoAnalysis(
           },
         };
       });
-      // Publish partial groups so visible bursts get a background while the
-      // rest of a large folder is still being decoded.
+      // Publish partial regions so visible bursts get focus feedback while
+      // the rest of a large folder is still being decoded. Group colors are
+      // assigned once the complete feature set is available.
     };
 
     const startTimer = window.setTimeout(() => {

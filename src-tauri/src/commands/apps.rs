@@ -188,14 +188,67 @@ fn is_image_for_native_thumbnail(path: &Path) -> bool {
                     | "avif"
                     | "ico"
                     | "psd"
+                    | "arw"
+                    | "cr2"
+                    | "cr3"
+                    | "nef"
+                    | "nrw"
+                    | "raf"
+                    | "orf"
+                    | "rw2"
+                    | "pef"
+                    | "srw"
+                    | "dcr"
+                    | "kdc"
+                    | "3fr"
+                    | "iiq"
+                    | "x3f"
             )
         })
         .unwrap_or(false)
 }
 
 #[cfg(target_os = "macos")]
-fn generate_image_thumbnail_with_sips(path: &Path, size: f64) -> Option<String> {
-    if path.is_dir() || !is_image_for_native_thumbnail(path) {
+fn is_raw_for_native_thumbnail(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "arw"
+                    | "cr2"
+                    | "cr3"
+                    | "nef"
+                    | "nrw"
+                    | "raf"
+                    | "orf"
+                    | "rw2"
+                    | "pef"
+                    | "srw"
+                    | "dcr"
+                    | "kdc"
+                    | "3fr"
+                    | "iiq"
+                    | "x3f"
+                    | "dng"
+            )
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn generate_image_thumbnail_with_sips(
+    path: &Path,
+    size: f64,
+    prefer_embedded: bool,
+) -> Option<String> {
+    // Embedded previews keep the large-folder path fast. sips is reserved for
+    // the full Quick Look path, where a high-resolution RAW render is worth
+    // the extra decode cost.
+    if path.is_dir()
+        || !is_image_for_native_thumbnail(path)
+        || (is_raw_for_native_thumbnail(path) && (prefer_embedded || size < 1024.0))
+    {
         return None;
     }
 
@@ -271,11 +324,16 @@ fn generate_quicklook_thumbnail(path: &Path, size: f64) -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn generate_quicklook_thumbnail_in_process(path: &Path, size: f64) -> Option<String> {
+fn generate_quicklook_thumbnail_in_process(
+    path: &Path,
+    size: f64,
+    prefer_embedded: bool,
+) -> Option<String> {
     extern "C" {
         fn imageexplorer_quicklook_thumbnail(
             path: *const std::ffi::c_char,
             size: u32,
+            prefer_embedded: i32,
             length: *mut usize,
         ) -> *mut u8;
         fn imageexplorer_free_thumbnail(buffer: *mut u8);
@@ -284,7 +342,12 @@ fn generate_quicklook_thumbnail_in_process(path: &Path, size: f64) -> Option<Str
     let path = CString::new(path.to_string_lossy().as_bytes()).ok()?;
     let mut length = 0usize;
     let buffer = unsafe {
-        imageexplorer_quicklook_thumbnail(path.as_ptr(), size.round() as u32, &mut length)
+        imageexplorer_quicklook_thumbnail(
+            path.as_ptr(),
+            size.round() as u32,
+            if prefer_embedded { 1 } else { 0 },
+            &mut length,
+        )
     };
     if buffer.is_null() || length == 0 {
         return None;
@@ -513,6 +576,7 @@ pub async fn get_file_thumbnail(
     path: String,
     size: Option<f64>,
     allow_icon_fallback: Option<bool>,
+    prefer_embedded: Option<bool>,
 ) -> Option<String> {
     let path_obj = Path::new(&path);
     let metadata = fs::metadata(path_obj).ok()?;
@@ -522,15 +586,17 @@ pub async fn get_file_thumbnail(
         .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
-    let size_val = size.unwrap_or(128.0).clamp(16.0, 4096.0);
+    let size_val = size.unwrap_or(128.0).clamp(16.0, 8192.0);
     let allow_icon_fallback = allow_icon_fallback.unwrap_or(true);
+    let prefer_embedded = prefer_embedded.unwrap_or(false);
 
     let image_cache_key = format!(
-        "file:{}:{}:{}:{}",
+        "file:{}:{}:{}:{}:{}",
         path,
         metadata.len(),
         modified,
-        size_val.round() as u32
+        size_val.round() as u32,
+        if prefer_embedded { "embedded" } else { "full" }
     );
     let icon_cache_key = format!("{}:icon", image_cache_key);
     if let Some(cached) = crate::cache::get_icon_cache(&image_cache_key) {
@@ -544,12 +610,18 @@ pub async fn get_file_thumbnail(
 
     #[cfg(target_os = "macos")]
     {
-        if let Some(base64) = generate_image_thumbnail_with_sips(path_obj, size_val) {
+        if let Some(base64) =
+            generate_image_thumbnail_with_sips(path_obj, size_val, prefer_embedded)
+        {
             crate::cache::set_icon_cache(image_cache_key.clone(), base64.clone());
             return Some(base64);
         }
 
-        if let Some(base64) = generate_quicklook_thumbnail_in_process(path_obj, size_val) {
+        if let Some(base64) = generate_quicklook_thumbnail_in_process(
+            path_obj,
+            size_val,
+            prefer_embedded,
+        ) {
             crate::cache::set_icon_cache(image_cache_key.clone(), base64.clone());
             return Some(base64);
         }

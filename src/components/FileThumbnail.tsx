@@ -7,6 +7,8 @@ import {
   loadFileThumbnail,
   registerIconRefresh,
   triggerIconRefresh,
+  getFileThumbnailCacheKey,
+  getThumbnailRequestSize,
 } from "@/lib/iconCache";
 import type { FileEntry } from "@/types/index";
 import { IMAGE_EXTENSIONS } from "@/constants/fileTypes";
@@ -33,21 +35,14 @@ export const FileThumbnail = memo(function FileThumbnail({
   const [, forceUpdate] = useState(0);
   const normalizedExtension = (entry.extension || "").toLowerCase();
   const shouldLoadPreview = !entry.is_dir && PREVIEWABLE_EXTENSIONS.has(normalizedExtension);
-  const requestSize = useMemo(() => {
-    if (requestSizeOverride) {
-      return requestSizeOverride;
-    }
-    const dpr = typeof window === "undefined" ? 1 : window.devicePixelRatio || 1;
-    // 缩略图只需要覆盖当前卡片的物理像素，避免对 RAW 文件请求不必要的
-    // 512px/1024px 解码结果。Quick Look 预览会单独请求更大的尺寸。
-    const pixelRatio = Math.max(1.5, Math.min(2.5, dpr));
-    const minimumSize = size >= 96 ? 240 : 160;
-    return Math.min(768, Math.max(minimumSize, Math.round(size * pixelRatio)));
-  }, [requestSizeOverride, size]);
+  const requestSize = useMemo(
+    () => getThumbnailRequestSize(size, requestSizeOverride),
+    [requestSizeOverride, size]
+  );
 
   const roundedSize = Math.round(size);
   const cacheKey = useMemo(
-    () => `file:${entry.path}:${entry.modified ?? 0}:${entry.size}:${requestSize}`,
+    () => getFileThumbnailCacheKey(entry.path, entry.modified, entry.size, requestSize, true),
     [entry.modified, entry.path, entry.size, requestSize]
   );
 
@@ -79,7 +74,10 @@ export const FileThumbnail = memo(function FileThumbnail({
     let isMounted = true;
     loadingIcons.add(cacheKey);
 
-    loadFileThumbnail(cacheKey, entry.path, requestSize)
+    // Image previews already render a file icon when decoding fails, so avoid
+    // asking the native bridge for a generic icon. This also lets analysis and
+    // visible thumbnails share the same in-flight/cache entry safely.
+    loadFileThumbnail(cacheKey, entry.path, requestSize, false, undefined, "interactive", true)
       .then((base64) => {
         iconCache[cacheKey] = base64 || "failed";
         if (isMounted) {

@@ -5,8 +5,10 @@ import { FileThumbnail } from "@/components/FileThumbnail";
 import { FocusRegionOverlay } from "@/components/FocusRegionOverlay";
 import { getContainedFocusRegionPosition } from "@/lib/focusPoint";
 import type { PhotoAnalysisRecord } from "@/lib/photoAnalysis";
+import { getCameraAfRegions } from "@/lib/cameraAfMetadata";
 import { getPhotoMetadataSummary } from "@/lib/photoMetadata";
 import { usePhotoMetadata } from "@/hooks/usePhotoMetadata";
+import { useCameraAfMetadata } from "@/hooks/useCameraAfMetadata";
 import { Input } from "@/components/ui/input";
 
 interface FileGridItemProps {
@@ -23,6 +25,7 @@ interface FileGridItemProps {
   onMove?: (source: string, target: string) => void;
   photoAnalysis?: PhotoAnalysisRecord;
   photoGroupColor?: string;
+  photoAnalysisEnabled?: boolean;
 }
 
 export const FileGridItem = memo(function FileGridItem({
@@ -38,19 +41,24 @@ export const FileGridItem = memo(function FileGridItem({
   onDoubleClick,
   photoAnalysis,
   photoGroupColor,
+  photoAnalysisEnabled = false,
 }: FileGridItemProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const { t } = useTranslation();
   const photoMetadata = usePhotoMetadata(entry);
+  const cameraAfMetadata = useCameraAfMetadata(entry, photoAnalysisEnabled);
   const metadataSummary = getPhotoMetadataSummary(photoMetadata);
   const thumbnailSize = 80;
-  const focusRegions =
+  const cameraAfRegions = getCameraAfRegions(cameraAfMetadata);
+  const focusRegions = cameraAfRegions ?? (
     photoAnalysis &&
     photoAnalysis.imageWidth > 0 &&
     photoAnalysis.imageHeight > 0 &&
     photoAnalysis.focusAnalysis.kind !== "full-frame"
       ? photoAnalysis.focusAnalysis.regions
-      : [];
+      : []
+  );
+  const focusOverlayVariant = cameraAfRegions ? "camera" : "estimate";
 
   useEffect(() => {
     if (!isEditing) return;
@@ -85,6 +93,7 @@ export const FileGridItem = memo(function FileGridItem({
           focusRegions.map((region) => (
             <FocusRegionOverlay
               key={`${region.x}-${region.y}-${region.width}-${region.height}`}
+              variant={focusOverlayVariant}
               position={getContainedFocusRegionPosition({
                 region,
                 containerWidth: thumbnailSize,
@@ -136,13 +145,22 @@ export const FileGridItem = memo(function FileGridItem({
           >
             {entry.name}
           </span>
-          {photoAnalysis?.focusAnalysis.kind === "full-frame" && (
+          {cameraAfRegions === null && photoAnalysis?.focusAnalysis.kind === "full-frame" && (
             <div
               className="mt-1 max-w-full truncate px-1 text-[9px] leading-3 text-cyan-700/80 dark:text-cyan-200/80"
               title={t("common.quick_look.focus_full_frame")}
               aria-label={t("common.quick_look.focus_full_frame")}
             >
               {t("common.quick_look.focus_full_frame")}
+            </div>
+          )}
+          {cameraAfMetadata?.source === "camera-maker-note" && cameraAfMetadata.regions.length > 0 && (
+            <div
+              className="mt-1 max-w-full truncate px-1 text-[9px] leading-3 text-cyan-700/90 dark:text-cyan-200/90"
+              title={cameraAfMetadata.note ?? t("common.quick_look.focus_camera_af")}
+              aria-label={t("common.quick_look.focus_camera_af")}
+            >
+              {t("common.quick_look.focus_camera_af")}
             </div>
           )}
           {metadataSummary && (

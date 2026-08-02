@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::fs;
 use std::path::Path;
+#[cfg(target_os = "macos")]
+use std::sync::OnceLock;
 use std::time::SystemTime;
 
 #[derive(Serialize)]
@@ -25,6 +28,36 @@ pub struct ImageMetadata {
     pub aperture: Option<String>,
     pub focal_length: Option<String>,
     pub captured_at: Option<String>,
+}
+
+/// A focus rectangle written by the camera. Coordinates are normalized to the
+/// displayed, orientation-corrected image and are only populated when the
+/// MakerNote contains enough information to draw a rectangle safely.
+#[derive(Deserialize, Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraAfRegion {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub confidence: f32,
+}
+
+/// Sony AF data is deliberately separate from the sharpness estimate used as
+/// a fallback in the UI. A file can contain the AF mode without containing a
+/// drawable AF coordinate, so `exact` must not be inferred from `source`.
+#[derive(Deserialize, Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraAfMetadata {
+    pub source: String,
+    pub exact: bool,
+    pub regions: Vec<CameraAfRegion>,
+    pub area_mode: Option<String>,
+    pub focus_mode: Option<String>,
+    pub selected_point: Option<String>,
+    pub points_used: Option<u32>,
+    pub extractor: Option<String>,
+    pub note: Option<String>,
 }
 
 /// 受保护的目录列表（macOS）
@@ -672,6 +705,526 @@ fn image_metadata_needs_fallback(metadata: &ImageMetadata) -> bool {
         || metadata.shutter_speed.is_none()
         || metadata.aperture.is_none()
         || metadata.focal_length.is_none()
+}
+
+#[cfg(target_os = "macos")]
+fn sony_exiftool_candidates() -> Vec<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+
+    for variable in ["IMAGEEXPLORER_EXIFTOOL", "EXIFTOOL_PATH"] {
+        if let Ok(path) = std::env::var(variable) {
+            if !path.trim().is_empty() {
+                candidates.push(std::path::PathBuf::from(path));
+            }
+        }
+    }
+
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(contents) = executable.parent() {
+            // Tauri app bundle resources are normally next to the executable
+            // under ../Resources. The second layout is useful in development
+            // and for a directory resource containing the Perl launcher.
+            candidates.push(contents.join("../Resources/exiftool"));
+            candidates.push(contents.join("../Resources/exiftool/exiftool"));
+            candidates.push(contents.join("resources/exiftool"));
+            candidates.push(contents.join("resources/exiftool/exiftool"));
+        }
+    }
+
+    // Homebrew installs ExifTool in one of these locations. The bare command
+    // is kept last so PATH remains usable in development and CI.
+    candidates.extend([
+        std::path::PathBuf::from("/opt/homebrew/bin/exiftool"),
+        std::path::PathBuf::from("/usr/local/bin/exiftool"),
+        std::path::PathBuf::from("/usr/bin/exiftool"),
+        std::path::PathBuf::from("exiftool"),
+    ]);
+    candidates
+}
+
+#[cfg(target_os = "macos")]
+fn sony_exiftool_command() -> Option<std::path::PathBuf> {
+    static EXIFTOOL_PATH: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+    EXIFTOOL_PATH
+        .get_or_init(|| {
+            sony_exiftool_candidates().into_iter().find(|candidate| {
+                if candidate.as_os_str() == "exiftool" {
+                    return std::process::Command::new(candidate)
+                        .arg("-ver")
+                        .output()
+                        .map(|output| output.status.success())
+                        .unwrap_or(false);
+                }
+                candidate.is_file()
+            })
+        })
+        .clone()
+}
+
+#[cfg(target_os = "macos")]
+fn sony_json_value<'a>(record: &'a Map<String, Value>, names: &[&str]) -> Option<&'a Value> {
+    for name in names {
+        if let Some((_, value)) = record.iter().find(|(key, _)| {
+            let short_name = key.rsplit(':').next().unwrap_or(key);
+            short_name.eq_ignore_ascii_case(name) || key.eq_ignore_ascii_case(name)
+        }) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn sony_json_numbers(value: Option<&Value>) -> Vec<f64> {
+    let Some(value) = value else {
+        return Vec::new();
+    };
+
+    match value {
+        Value::Array(values) => values
+            .iter()
+            .flat_map(|item| sony_json_numbers(Some(item)))
+            .collect(),
+        Value::Number(number) => number.as_f64().into_iter().collect(),
+        Value::String(text) => text
+            .split(|character: char| {
+                !(character.is_ascii_digit() || matches!(character, '.' | '-' | '+'))
+            })
+            .filter(|part| !part.is_empty() && *part != "+" && *part != "-")
+            .filter_map(|part| part.parse::<f64>().ok())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn sony_json_text(value: Option<&Value>) -> Option<String> {
+    let value = value?;
+    match value {
+        Value::String(text) if !text.trim().is_empty() => Some(text.trim().to_string()),
+        Value::Number(number) => Some(number.to_string()),
+        Value::Array(values) => {
+            let text = values
+                .iter()
+                .filter_map(|item| sony_json_text(Some(item)))
+                .collect::<Vec<_>>()
+                .join(" ");
+            (!text.is_empty()).then_some(text)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn sony_focus_mode(value: Option<&Value>) -> Option<String> {
+    let number = sony_json_numbers(Some(value?)).first().copied()? as i32;
+    Some(
+        match number {
+            0 => "Manual",
+            2 => "AF-S",
+            3 => "AF-C",
+            4 => "AF-A",
+            6 => "DMF",
+            7 => "AF-D",
+            _ => return Some(format!("MakerNote {number}")),
+        }
+        .to_string(),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn sony_area_mode(value: Option<&Value>, setting_layout: bool) -> Option<String> {
+    let number = sony_json_numbers(Some(value?)).first().copied()? as i32;
+    Some(
+        match (setting_layout, number) {
+            (true, 0) => "Wide",
+            (true, 1) => "Center",
+            (true, 3 | 4) => "Flexible Spot",
+            (true, 8 | 11) => "Zone",
+            (true, 9) => "Center",
+            (true, 12) => "Expanded Flexible Spot",
+            (true, 13) => "Custom AF Area",
+            (false, 0) => "Wide / Default",
+            (false, 1) => "Multi",
+            (false, 2) => "Center",
+            (false, 3) => "Spot",
+            (false, 4) => "Flexible Spot",
+            (false, 6) => "Touch",
+            (false, 14) => "Tracking",
+            (false, 15) => "Face Tracking",
+            _ => return Some(format!("MakerNote {number}")),
+        }
+        .to_string(),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn clamp_af_region(x: f64, y: f64, width: f64, height: f64, confidence: f32) -> Option<CameraAfRegion> {
+    if ![x, y, width, height]
+        .iter()
+        .all(|value| value.is_finite() && *value >= 0.0)
+        || width <= 0.0
+        || height <= 0.0
+    {
+        return None;
+    }
+
+    let right = (x + width).min(1.0);
+    let bottom = (y + height).min(1.0);
+    let left = x.min(right);
+    let top = y.min(bottom);
+    let clipped_width = right - left;
+    let clipped_height = bottom - top;
+    if clipped_width <= 0.0 || clipped_height <= 0.0 {
+        return None;
+    }
+
+    Some(CameraAfRegion {
+        x: left as f32,
+        y: top as f32,
+        width: clipped_width as f32,
+        height: clipped_height as f32,
+        confidence: confidence.clamp(0.0, 1.0),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn orient_af_region(region: CameraAfRegion, orientation: u8) -> CameraAfRegion {
+    let (x, y, width, height) = (region.x, region.y, region.width, region.height);
+    let (next_x, next_y, next_width, next_height) = match orientation {
+        2 => (1.0 - x - width, y, width, height),
+        3 => (1.0 - x - width, 1.0 - y - height, width, height),
+        4 => (x, 1.0 - y - height, width, height),
+        5 => (y, x, height, width),
+        6 => (1.0 - y - height, x, height, width),
+        7 => (1.0 - y - height, 1.0 - x - width, height, width),
+        8 => (y, 1.0 - x - width, height, width),
+        _ => (x, y, width, height),
+    };
+
+    CameraAfRegion {
+        x: next_x.clamp(0.0, 1.0),
+        y: next_y.clamp(0.0, 1.0),
+        width: next_width.clamp(0.0, 1.0),
+        height: next_height.clamp(0.0, 1.0),
+        confidence: region.confidence,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn sony_region_from_focus_location(
+    location: &[f64],
+    frame_size: &[f64],
+    orientation: u8,
+    expected_image_width: f64,
+    expected_image_height: f64,
+) -> Option<CameraAfRegion> {
+    if location.len() < 4 || frame_size.len() < 2 {
+        return None;
+    }
+
+    // Sony's FocusLocation is stored as image width, image height, X, Y. The
+    // first two values are checked against the actual file dimensions so a
+    // different MakerNote layout can never be silently misinterpreted.
+    let image_width = location[0];
+    let image_height = location[1];
+    let center_x = location[2];
+    let center_y = location[3];
+    if image_width < 1.0
+        || image_height < 1.0
+        || center_x < 0.0
+        || center_y < 0.0
+        || center_x > image_width
+        || center_y > image_height
+    {
+        return None;
+    }
+    if expected_image_width > 0.0
+        && expected_image_height > 0.0
+        && ((image_width - expected_image_width).abs() > expected_image_width * 0.02
+            || (image_height - expected_image_height).abs() > expected_image_height * 0.02)
+    {
+        return None;
+    }
+
+    let width = frame_size[0];
+    let height = frame_size[1];
+    let region = clamp_af_region(
+        (center_x - width / 2.0) / image_width,
+        (center_y - height / 2.0) / image_height,
+        width / image_width,
+        height / image_height,
+        1.0,
+    )?;
+    Some(orient_af_region(region, orientation))
+}
+
+#[cfg(target_os = "macos")]
+fn sony_region_from_flexible_spot(
+    position: &[f64],
+    frame_size: &[f64],
+    orientation: u8,
+) -> Option<CameraAfRegion> {
+    if position.len() < 2 {
+        return None;
+    }
+
+    // ExifTool documents the NEX/ILCE coordinate space as 640 x 480 (some
+    // older bodies use an 11 x 9 grid). Do not treat arbitrary small numbers
+    // as image pixels; that would produce the false upper-left boxes seen in
+    // the previous sharpness-only implementation.
+    let center_x = position[0];
+    let center_y = position[1];
+    if !(0.0..=640.0).contains(&center_x) || !(0.0..=480.0).contains(&center_y) {
+        return None;
+    }
+    let (width, height, confidence) = if frame_size.len() >= 2
+        && frame_size[0] > 0.0
+        && frame_size[1] > 0.0
+        && frame_size[0] <= 640.0
+        && frame_size[1] <= 480.0
+    {
+        (frame_size[0] / 640.0, frame_size[1] / 480.0, 0.85)
+    } else {
+        // The point itself is camera-authored, but this fallback box is only
+        // an approximate visual affordance because the MakerNote omitted its
+        // frame size.
+        (0.06, 0.06, 0.7)
+    };
+
+    let region = clamp_af_region(
+        center_x / 640.0 - width / 2.0,
+        center_y / 480.0 - height / 2.0,
+        width,
+        height,
+        confidence,
+    )?;
+    Some(orient_af_region(region, orientation))
+}
+
+#[cfg(target_os = "macos")]
+fn read_sony_camera_af_metadata(path: &str) -> Option<CameraAfMetadata> {
+    let exiftool = sony_exiftool_command()?;
+    let output = std::process::Command::new(&exiftool)
+        .args([
+            "-j",
+            "-n",
+            "-q",
+            "-q",
+            "-api",
+            "RequestAll=3",
+            "-ImageWidth",
+            "-ImageHeight",
+            "-Orientation",
+            "-Sony:FocusLocation",
+            "-Sony:FocusLocation2",
+            "-Sony:FocusFrameSize",
+            "-Sony:FlexibleSpotPosition",
+            "-Sony:AFAreaModeSetting",
+            "-Sony:AFAreaMode",
+            "-Sony:FocusMode",
+            "-Sony:AFPointSelected",
+            "-Sony:AFPointAtShutterRelease",
+            "-Sony:FocalPlaneAFPointsUsed",
+            path,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let records: Vec<Value> = serde_json::from_slice(&output.stdout).ok()?;
+    let record = records.first()?.as_object()?;
+    let image_width = sony_json_numbers(sony_json_value(record, &["ImageWidth"]))
+        .first()
+        .copied()
+        .unwrap_or_default();
+    let image_height = sony_json_numbers(sony_json_value(record, &["ImageHeight"]))
+        .first()
+        .copied()
+        .unwrap_or_default();
+    let orientation = sony_json_numbers(sony_json_value(record, &["Orientation"]))
+        .first()
+        .copied()
+        .unwrap_or(1.0) as u8;
+    let frame_size = sony_json_numbers(sony_json_value(record, &["FocusFrameSize"]));
+    let focus_location = sony_json_numbers(sony_json_value(record, &["FocusLocation"]));
+    let focus_location2 = sony_json_numbers(sony_json_value(record, &["FocusLocation2"]));
+    let flexible_spot = sony_json_numbers(sony_json_value(record, &["FlexibleSpotPosition"]));
+
+    let mut regions = Vec::new();
+    if let Some(region) = sony_region_from_focus_location(
+        &focus_location,
+        &frame_size,
+        orientation,
+        image_width,
+        image_height,
+    ) {
+        regions.push(region);
+    }
+    if let Some(region) = sony_region_from_focus_location(
+        &focus_location2,
+        &frame_size,
+        orientation,
+        image_width,
+        image_height,
+    ) {
+        if !regions.iter().any(|existing| {
+            (existing.x - region.x).abs() < 0.001
+                && (existing.y - region.y).abs() < 0.001
+                && (existing.width - region.width).abs() < 0.001
+                && (existing.height - region.height).abs() < 0.001
+        }) {
+            regions.push(region);
+        }
+    }
+    if regions.is_empty() {
+        if let Some(region) = sony_region_from_flexible_spot(&flexible_spot, &frame_size, orientation) {
+            regions.push(region);
+        }
+    }
+
+    let area_mode = if let Some(value) = sony_json_value(record, &["AFAreaModeSetting"]) {
+        sony_area_mode(Some(value), true)
+    } else {
+        sony_area_mode(sony_json_value(record, &["AFAreaMode"]), false)
+    };
+    let focus_mode = sony_focus_mode(sony_json_value(record, &["FocusMode"]));
+    let selected_point = sony_json_text(sony_json_value(
+        record,
+        &["AFPointAtShutterRelease", "AFPointSelected"],
+    ));
+    let points_used = sony_json_numbers(sony_json_value(record, &["FocalPlaneAFPointsUsed"]))
+        .first()
+        .and_then(|value| (*value >= 0.0).then_some(*value as u32));
+
+    let has_camera_tags = area_mode.is_some()
+        || focus_mode.is_some()
+        || selected_point.is_some()
+        || points_used.is_some()
+        || !focus_location.is_empty()
+        || !focus_location2.is_empty()
+        || !flexible_spot.is_empty();
+    if !has_camera_tags {
+        return Some(CameraAfMetadata {
+            source: "unavailable".to_string(),
+            exact: false,
+            regions: Vec::new(),
+            area_mode: None,
+            focus_mode: None,
+            selected_point: None,
+            points_used: None,
+            extractor: Some("ExifTool".to_string()),
+            note: Some("Sony MakerNote 中未记录可绘制的 AF 坐标".to_string()),
+        });
+    }
+
+    let exact = regions.iter().all(|region| region.confidence >= 0.99) && !regions.is_empty();
+    let note = if exact {
+        Some("Sony MakerNote FocusLocation / FocusFrameSize".to_string())
+    } else if !regions.is_empty() {
+        Some("Sony MakerNote AF 坐标；区域尺寸由相机记录或兼容坐标空间推导".to_string())
+    } else {
+        Some("Sony MakerNote 仅记录 AF 模式/点位，未提供可绘制坐标".to_string())
+    };
+
+    Some(CameraAfMetadata {
+        source: "camera-maker-note".to_string(),
+        exact,
+        regions,
+        area_mode,
+        focus_mode,
+        selected_point,
+        points_used,
+        extractor: Some("ExifTool".to_string()),
+        note,
+    })
+}
+
+#[tauri::command]
+pub fn read_camera_af_metadata(path: String) -> Result<Option<CameraAfMetadata>, String> {
+    let path_obj = Path::new(&path);
+    if !path_obj.exists() || !path_obj.is_file() {
+        return Ok(None);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return Ok(Some(read_sony_camera_af_metadata(&path).unwrap_or_else(|| {
+            CameraAfMetadata {
+                source: "unavailable".to_string(),
+                exact: false,
+                regions: Vec::new(),
+                area_mode: None,
+                focus_mode: None,
+                selected_point: None,
+                points_used: None,
+                extractor: None,
+                note: Some("未找到 ExifTool 或文件中没有可读取的 Sony MakerNote".to_string()),
+            }
+        })));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        Ok(None)
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod sony_camera_af_tests {
+    use super::{orient_af_region, sony_region_from_focus_location, CameraAfRegion};
+
+    #[test]
+    fn focus_location_uses_image_dimensions_and_frame_size() {
+        let region = sony_region_from_focus_location(
+            &[6000.0, 4000.0, 3000.0, 2000.0],
+            &[1000.0, 800.0],
+            1,
+            6000.0,
+            4000.0,
+        )
+        .expect("valid Sony FocusLocation");
+
+        assert!((region.x - (2500.0 / 6000.0) as f32).abs() < 0.0001);
+        assert!((region.y - (1600.0 / 4000.0) as f32).abs() < 0.0001);
+        assert!((region.width - (1000.0 / 6000.0) as f32).abs() < 0.0001);
+        assert!((region.height - (800.0 / 4000.0) as f32).abs() < 0.0001);
+        assert!((region.confidence - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn focus_location_rejects_a_different_coordinate_layout() {
+        assert!(sony_region_from_focus_location(
+            &[100.0, 200.0, 300.0, 400.0],
+            &[50.0, 50.0],
+            1,
+            6000.0,
+            4000.0,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn orientation_six_rotates_the_region_with_the_preview() {
+        let rotated = orient_af_region(
+            CameraAfRegion {
+                x: 0.1,
+                y: 0.2,
+                width: 0.3,
+                height: 0.4,
+                confidence: 1.0,
+            },
+            6,
+        );
+
+        assert!((rotated.x - 0.4).abs() < 0.0001);
+        assert!((rotated.y - 0.1).abs() < 0.0001);
+        assert!((rotated.width - 0.4).abs() < 0.0001);
+        assert!((rotated.height - 0.3).abs() < 0.0001);
+    }
 }
 
 /// Read EXIF-like fields through Spotlight's metadata importer. This keeps

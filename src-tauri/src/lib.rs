@@ -18,7 +18,7 @@ use commands::fs::{
     batch_rename, check_full_disk_access, copy_file, create_directory, create_file,
     delete_to_trash, exists, get_entries, get_home_dir, get_mounted_volumes, get_parent_dir,
     move_file, open_file, open_in_terminal, open_url, read_image_base64, read_image_dimensions,
-    read_image_metadata, read_text_file, rename,
+    read_camera_af_metadata, read_image_metadata, read_text_file, rename,
 };
 use commands::search::{get_smart_files, search_files};
 use commands::watcher::{stop_watching, unwatch_directory, watch_directory, WatcherState};
@@ -475,6 +475,7 @@ pub fn run() {
             read_text_file,
             read_image_base64,
             read_image_dimensions,
+            read_camera_af_metadata,
             read_image_metadata,
             batch_rename,
             start_copy_operation,

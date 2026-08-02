@@ -23,6 +23,21 @@ When the mode is enabled:
 3. A small focus box is drawn over each thumbnail. The marker follows the image during Quick Look zoom, and the preview footer reports its normalized position, confidence, and estimation method.
 4. Camera metadata is loaded lazily below the filename when macOS exposes it: dimensions, ISO, aperture, shutter speed, focal length, camera body, and lens.
 
+### Camera AF metadata
+
+When the source file contains Sony MakerNote focus coordinates, ImageExplorer
+uses ExifTool to read `FocusLocation`/`FocusFrameSize` (and the documented
+`FlexibleSpotPosition` fallback). Those rectangles are rendered as solid cyan
+boxes and labelled **Camera AF**. A dashed amber box means the file did not
+provide a drawable camera rectangle and the app is showing its separate
+sharpness estimate instead; it is never presented as the camera's AF result.
+
+Install ExifTool on macOS with `brew install exiftool`, or set
+`IMAGEEXPLORER_EXIFTOOL`/`EXIFTOOL_PATH` to a bundled or standalone executable.
+If a Sony file has no AF coordinates, the UI reports that explicitly. The
+official tag definitions are maintained in the [ExifTool Sony MakerNote
+reference](https://exiftool.org/TagNames/Sony.html).
+
 ![Repeated viewpoints highlighted in icon view](./docs/screenshots/icon-view-focus-groups.png)
 
 ![RAW/JPEG pairs in icon view](./docs/screenshots/icon-view-raw-pairs.png)
@@ -31,7 +46,7 @@ Press **Space** to open Quick Look, use the arrow buttons or Left/Right keys to 
 
 ![Quick Look zoom with focus marker](./docs/screenshots/quick-look-zoom-focus.png)
 
-> Focus boxes are a visual sharpness estimate from the available preview, not a guaranteed camera MakerNote AF-area readout. A confidence value is shown so the result can be treated as a selection aid rather than a replacement for checking the full-resolution RAW.
+> Camera AF boxes are only drawn from coordinates actually present in the file's Sony MakerNote. When those tags are absent, the dashed estimate is a selection aid rather than a replacement for checking the full-resolution RAW.
 
 ## Features
 
