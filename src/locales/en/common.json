@@ -19,7 +19,10 @@
       "modified": "Modified",
       "error": "Failed to load",
       "focus_data": "Focus estimate",
-      "focus_position": "Position {{x}}% × {{y}}%",
+      "focus_regions": "Sharp regions: {{count}}",
+      "focus_region_position": "Center {{x}}% × {{y}}%",
+      "focus_region_size": "Area {{width}}% × {{height}}%",
+      "focus_full_frame": "Sharp across frame · suspected focus stack",
       "focus_confidence": "Confidence {{value}}%",
       "focus_method": "Sharpness estimate",
       "focus_unavailable": "No data"

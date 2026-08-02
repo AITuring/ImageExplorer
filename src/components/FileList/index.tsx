@@ -31,7 +31,7 @@ import { isPermissionDeniedError, requestDirectoryAccess } from "@/lib/directory
 /** 列表视图固定行高 */
 const LIST_ITEM_HEIGHT = 40;
 /** 网格视图固定行高 */
-const GRID_ROW_HEIGHT = 168;
+const GRID_ROW_HEIGHT = 216;
 /** 网格项最小宽度 */
 const GRID_ITEM_MIN_WIDTH = 132;
 /** 网格间距 */

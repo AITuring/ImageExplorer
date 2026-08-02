@@ -19,7 +19,10 @@
       "modified": "修改时间",
       "error": "加载失败",
       "focus_data": "焦点判断",
-      "focus_position": "位置 {{x}}% × {{y}}%",
+      "focus_regions": "锐度区域 {{count}} 个",
+      "focus_region_position": "中心位置 {{x}}% × {{y}}%",
+      "focus_region_size": "区域大小 {{width}}% × {{height}}%",
+      "focus_full_frame": "全域清晰 · 疑似焦点合成",
       "focus_confidence": "置信度 {{value}}%",
       "focus_method": "清晰度估算",
       "focus_unavailable": "暂无数据"

@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
@@ -12,7 +12,7 @@ pub struct ImageDimensions {
 /// A compact subset of camera metadata used by icon view. Values remain
 /// optional because macOS may not expose every MakerNote field for every RAW
 /// format.
-#[derive(Serialize, Clone, Default)]
+#[derive(Deserialize, Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageMetadata {
     pub width: Option<u32>,
@@ -607,6 +607,73 @@ fn parse_mdls_u32(output: &str, key: &str) -> Option<u32> {
     })
 }
 
+#[cfg(target_os = "macos")]
+fn read_image_metadata_with_imageio(path: &str) -> Option<ImageMetadata> {
+    use std::ffi::CString;
+
+    extern "C" {
+        fn imageexplorer_image_metadata(path: *const std::ffi::c_char, length: *mut usize)
+            -> *mut u8;
+        fn imageexplorer_free_thumbnail(buffer: *mut u8);
+    }
+
+    let path = CString::new(path.as_bytes()).ok()?;
+    let mut length = 0usize;
+    let buffer = unsafe { imageexplorer_image_metadata(path.as_ptr(), &mut length) };
+    if buffer.is_null() || length == 0 {
+        return None;
+    }
+
+    let bytes = unsafe { std::slice::from_raw_parts(buffer, length).to_vec() };
+    unsafe { imageexplorer_free_thumbnail(buffer) };
+    serde_json::from_slice(&bytes).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn merge_image_metadata(primary: &mut ImageMetadata, fallback: ImageMetadata) {
+    if primary.width.is_none() {
+        primary.width = fallback.width;
+    }
+    if primary.height.is_none() {
+        primary.height = fallback.height;
+    }
+    if primary.make.is_none() {
+        primary.make = fallback.make;
+    }
+    if primary.model.is_none() {
+        primary.model = fallback.model;
+    }
+    if primary.lens.is_none() {
+        primary.lens = fallback.lens;
+    }
+    if primary.iso.is_none() {
+        primary.iso = fallback.iso;
+    }
+    if primary.shutter_speed.is_none() {
+        primary.shutter_speed = fallback.shutter_speed;
+    }
+    if primary.aperture.is_none() {
+        primary.aperture = fallback.aperture;
+    }
+    if primary.focal_length.is_none() {
+        primary.focal_length = fallback.focal_length;
+    }
+    if primary.captured_at.is_none() {
+        primary.captured_at = fallback.captured_at;
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn image_metadata_needs_fallback(metadata: &ImageMetadata) -> bool {
+    metadata.make.is_none()
+        || metadata.model.is_none()
+        || metadata.lens.is_none()
+        || metadata.iso.is_none()
+        || metadata.shutter_speed.is_none()
+        || metadata.aperture.is_none()
+        || metadata.focal_length.is_none()
+}
+
 /// Read EXIF-like fields through Spotlight's metadata importer. This keeps
 /// RAW decoding off the React thread and gracefully returns `None` when the
 /// importer does not expose metadata for a particular file.
@@ -619,6 +686,16 @@ pub fn read_image_metadata(path: String) -> Result<Option<ImageMetadata>, String
 
     #[cfg(target_os = "macos")]
     {
+        // ImageIO reads the EXIF dictionaries embedded in RAW files directly.
+        // Spotlight's mdls importer remains a fallback for formats whose
+        // ImageIO property dictionary is incomplete.
+        let mut imageio_metadata = read_image_metadata_with_imageio(&path);
+        if let Some(metadata) = imageio_metadata.as_ref() {
+            if !image_metadata_needs_fallback(metadata) {
+                return Ok(imageio_metadata);
+            }
+        }
+
         let output = std::process::Command::new("/usr/bin/mdls")
             .args([
                 "-name",
@@ -647,7 +724,7 @@ pub fn read_image_metadata(path: String) -> Result<Option<ImageMetadata>, String
             .map_err(|error| error.to_string())?;
 
         if !output.status.success() {
-            return Ok(None);
+            return Ok(imageio_metadata);
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -675,7 +752,12 @@ pub fn read_image_metadata(path: String) -> Result<Option<ImageMetadata>, String
             && metadata.focal_length.is_none()
             && metadata.captured_at.is_none()
         {
-            return Ok(None);
+            return Ok(imageio_metadata);
+        }
+
+        if let Some(ref mut imageio_metadata) = imageio_metadata {
+            merge_image_metadata(imageio_metadata, metadata);
+            return Ok(Some(imageio_metadata.clone()));
         }
 
         return Ok(Some(metadata));

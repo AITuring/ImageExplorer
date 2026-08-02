@@ -2,22 +2,37 @@ import { IMAGE_EXTENSIONS } from "@/constants/fileTypes";
 import type { FileEntry } from "@/types";
 import { loadFileThumbnail } from "@/lib/iconCache";
 
-const ANALYSIS_VERSION = 2;
+const ANALYSIS_VERSION = 4;
 const ANALYSIS_SIZE = 160;
-const FINGERPRINT_SIZE = 16;
+// Keep more spatial detail than the thumbnail shown in the grid. A 24x24
+// fingerprint is still cheap at 160px, but prevents different crops of the
+// same artwork from collapsing into one view group.
+const FINGERPRINT_SIZE = 24;
+const HASH_SIZE = 16;
 // A finer grid keeps the marker useful on small previews without decoding the
 // full RAW. The analysis canvas is only 160px, so this remains inexpensive.
 const FOCUS_GRID_SIZE = 8;
+const MAX_FOCUS_REGIONS = 5;
 const MAX_CONCURRENT_ANALYSIS = 1;
 
 const ANALYZABLE_EXTENSIONS = new Set(
   IMAGE_EXTENSIONS.filter((extension) => extension !== "svg" && extension !== "psd")
 );
 
-export interface FocusPoint {
-  /** Estimated sharpest-region coordinates, normalized from top-left. */
+export type FocusAnalysisKind = "localized" | "multiple" | "full-frame" | "unavailable";
+
+export interface FocusRegion {
+  /** Region bounds normalized from top-left. */
   x: number;
   y: number;
+  width: number;
+  height: number;
+  confidence: number;
+}
+
+export interface FocusAnalysis {
+  kind: FocusAnalysisKind;
+  regions: FocusRegion[];
   confidence: number;
 }
 
@@ -27,8 +42,9 @@ export interface PhotoAnalysisRecord {
   imageHeight: number;
   fingerprint: number[];
   hashBits: number[];
-  /** A thumbnail-derived estimate; null when the image has no clear peak. */
-  focusPoint: FocusPoint | null;
+  edgeFingerprint: number[];
+  /** Thumbnail-derived sharp regions; unavailable when the image has no clear peak. */
+  focusAnalysis: FocusAnalysis;
   groupId: number | null;
 }
 
@@ -49,7 +65,8 @@ interface RawPhotoFeatures {
   imageHeight: number;
   fingerprint: number[];
   hashBits: number[];
-  focusPoint: FocusPoint | null;
+  edgeFingerprint: number[];
+  focusAnalysis: FocusAnalysis;
 }
 
 interface CachedAnalysis {
@@ -119,6 +136,155 @@ function normalizeFingerprint(values: number[]) {
   return values.map((value) => clamp((value - mean) / deviation, -3, 3) / 3);
 }
 
+function unavailableFocusAnalysis(): FocusAnalysis {
+  return { kind: "unavailable", regions: [], confidence: 0 };
+}
+
+function buildFocusAnalysis(
+  tileScores: Array<{ score: number; x: number; y: number }>
+): FocusAnalysis {
+  if (tileScores.length === 0) return unavailableFocusAnalysis();
+
+  let sum = 0;
+  let minimum = Number.POSITIVE_INFINITY;
+  let maximum = 0;
+  for (const tile of tileScores) {
+    sum += tile.score;
+    minimum = Math.min(minimum, tile.score);
+    maximum = Math.max(maximum, tile.score);
+  }
+
+  // A nearly flat thumbnail does not contain enough information for a useful
+  // focus cue. Avoid drawing a confident box on blank or failed decodes.
+  if (!Number.isFinite(minimum) || maximum < 2) return unavailableFocusAnalysis();
+
+  const mean = sum / tileScores.length;
+  let variance = 0;
+  for (const tile of tileScores) {
+    const delta = tile.score - mean;
+    variance += delta * delta;
+  }
+  const deviation = Math.sqrt(variance / tileScores.length);
+  const threshold = Math.min(
+    maximum,
+    Math.max(mean + deviation * 0.35, mean + (maximum - mean) * 0.42, maximum * 0.55)
+  );
+
+  const tileCount = FOCUS_GRID_SIZE * FOCUS_GRID_SIZE;
+  const selected = new Array<boolean>(tileCount).fill(false);
+  let selectedCount = 0;
+  let strongestIndex = 0;
+  tileScores.forEach((tile, index) => {
+    if (tile.score > tileScores[strongestIndex].score) strongestIndex = index;
+    if (tile.score >= threshold) {
+      selected[index] = true;
+      selectedCount += 1;
+    }
+  });
+  if (selectedCount === 0) {
+    selected[strongestIndex] = true;
+    selectedCount = 1;
+  }
+
+  const visited = new Array<boolean>(tileCount).fill(false);
+  const components: Array<number[]> = [];
+  const directions = [
+    [-1, -1],
+    [0, -1],
+    [1, -1],
+    [-1, 0],
+    [1, 0],
+    [-1, 1],
+    [0, 1],
+    [1, 1],
+  ];
+
+  for (let index = 0; index < tileCount; index += 1) {
+    if (!selected[index] || visited[index]) continue;
+    const component: number[] = [];
+    const queue = [index];
+    visited[index] = true;
+
+    while (queue.length > 0) {
+      const current = queue.pop();
+      if (current === undefined) continue;
+      component.push(current);
+      const currentX = current % FOCUS_GRID_SIZE;
+      const currentY = Math.floor(current / FOCUS_GRID_SIZE);
+
+      for (const [offsetX, offsetY] of directions) {
+        const nextX = currentX + offsetX;
+        const nextY = currentY + offsetY;
+        if (nextX < 0 || nextX >= FOCUS_GRID_SIZE || nextY < 0 || nextY >= FOCUS_GRID_SIZE) {
+          continue;
+        }
+        const next = nextY * FOCUS_GRID_SIZE + nextX;
+        if (selected[next] && !visited[next]) {
+          visited[next] = true;
+          queue.push(next);
+        }
+      }
+    }
+
+    components.push(component);
+  }
+
+  const regions = components
+    .map((component): FocusRegion => {
+      let minX = FOCUS_GRID_SIZE;
+      let minY = FOCUS_GRID_SIZE;
+      let maxX = 0;
+      let maxY = 0;
+      let totalScore = 0;
+
+      for (const index of component) {
+        const tile = tileScores[index];
+        minX = Math.min(minX, tile.x);
+        minY = Math.min(minY, tile.y);
+        maxX = Math.max(maxX, tile.x);
+        maxY = Math.max(maxY, tile.y);
+        totalScore += tile.score;
+      }
+
+      const componentMean = totalScore / Math.max(component.length, 1);
+      const contrast = (componentMean - mean) / Math.max(maximum - mean, 1);
+      const confidence = clamp(contrast * (0.65 + Math.min(component.length / 4, 1) * 0.35), 0, 1);
+
+      return {
+        x: minX / FOCUS_GRID_SIZE,
+        y: minY / FOCUS_GRID_SIZE,
+        width: (maxX - minX + 1) / FOCUS_GRID_SIZE,
+        height: (maxY - minY + 1) / FOCUS_GRID_SIZE,
+        confidence,
+      };
+    })
+    .sort((first, second) => {
+      const firstArea = first.width * first.height;
+      const secondArea = second.width * second.height;
+      return second.confidence - first.confidence || secondArea - firstArea;
+    })
+    .slice(0, MAX_FOCUS_REGIONS);
+
+  const coverage = selectedCount / tileCount;
+  // A broad, connected sharpness mask is more consistent with a focus-stack
+  // composite than with one localized AF plane. It is intentionally labelled
+  // “suspected” in the UI because the final image cannot prove its provenance.
+  if (coverage >= 0.68 && maximum >= 4) {
+    return {
+      kind: "full-frame",
+      regions: [],
+      confidence: clamp(coverage * (mean / Math.max(maximum, 1)), 0, 1),
+    };
+  }
+
+  if (regions.length === 0) return unavailableFocusAnalysis();
+  return {
+    kind: regions.length > 1 ? "multiple" : "localized",
+    regions,
+    confidence: regions[0].confidence,
+  };
+}
+
 function createFeatures(image: HTMLImageElement, path: string): RawPhotoFeatures {
   const canvas = document.createElement("canvas");
   canvas.width = ANALYSIS_SIZE;
@@ -158,20 +324,20 @@ function createFeatures(image: HTMLImageElement, path: string): RawPhotoFeatures
   }
 
   const hashBits: number[] = [];
-  for (let row = 0; row < 8; row += 1) {
-    for (let column = 0; column < 8; column += 1) {
+  for (let row = 0; row < HASH_SIZE; row += 1) {
+    for (let column = 0; column < HASH_SIZE; column += 1) {
       const leftX = clamp(
-        Math.floor(contentLeft + ((column + 0.25) * contentWidth) / 8),
+        Math.floor(contentLeft + ((column + 0.25) * contentWidth) / HASH_SIZE),
         0,
         ANALYSIS_SIZE - 1
       );
       const rightX = clamp(
-        Math.floor(contentLeft + ((column + 1.25) * contentWidth) / 8),
+        Math.floor(contentLeft + ((column + 1.25) * contentWidth) / HASH_SIZE),
         0,
         ANALYSIS_SIZE - 1
       );
       const sampleY = clamp(
-        Math.floor(contentTop + ((row + 0.5) * contentHeight) / 8),
+        Math.floor(contentTop + ((row + 0.5) * contentHeight) / HASH_SIZE),
         0,
         ANALYSIS_SIZE - 1
       );
@@ -182,7 +348,7 @@ function createFeatures(image: HTMLImageElement, path: string): RawPhotoFeatures
   }
 
   // Camera-maker AF regions are not consistently exposed by Quick Look, so
-  // the first pass uses the strongest local edge-energy peak as a visual cue.
+  // the first pass uses local edge energy to estimate sharp regions.
   const tileWidth = Math.max(8, Math.floor(contentWidth / FOCUS_GRID_SIZE));
   const tileHeight = Math.max(8, Math.floor(contentHeight / FOCUS_GRID_SIZE));
   const tileScores: Array<{ score: number; x: number; y: number }> = [];
@@ -213,21 +379,8 @@ function createFeatures(image: HTMLImageElement, path: string): RawPhotoFeatures
     }
   }
 
-  tileScores.sort((a, b) => b.score - a.score);
-  const best = tileScores[0];
-  const second = tileScores[1];
-  const focusSeparation =
-    best && second ? (best.score - second.score) / Math.max(best.score, 1) : 0;
-  // Always return the strongest tile for a decoded image. Even a low-detail
-  // frame gets a visible, honest center-ish cue instead of silently losing
-  // the marker; decode failures still return no record at all.
-  const focusPoint = best
-    ? {
-        x: clamp((best.x + 0.5) / FOCUS_GRID_SIZE, 0, 1),
-        y: clamp((best.y + 0.5) / FOCUS_GRID_SIZE, 0, 1),
-        confidence: clamp(focusSeparation * 4, 0, 1),
-      }
-    : null;
+  const edgeFingerprint = normalizeFingerprint(tileScores.map((tile) => tile.score));
+  const focusAnalysis = buildFocusAnalysis(tileScores);
 
   return {
     path,
@@ -235,7 +388,8 @@ function createFeatures(image: HTMLImageElement, path: string): RawPhotoFeatures
     imageHeight: image.naturalHeight,
     fingerprint: normalizeFingerprint(fingerprintValues),
     hashBits,
-    focusPoint,
+    edgeFingerprint,
+    focusAnalysis,
   };
 }
 
@@ -285,10 +439,12 @@ function isSameView(first: RawPhotoFeatures, second: RawPhotoFeatures) {
 
   const visualDistance = fingerprintDistance(first.fingerprint, second.fingerprint);
   const hashDistanceValue = hashDistance(first.hashBits, second.hashBits);
+  const edgeDistance = fingerprintDistance(first.edgeFingerprint, second.edgeFingerprint);
 
-  // The low-resolution fingerprint handles exposure and focus changes; the
-  // dHash guard keeps nearby but different compositions from being merged.
-  return (visualDistance <= 0.62 && hashDistanceValue <= 0.28) || visualDistance <= 0.38;
+  // Require all three signals. The old visual-only fallback was too permissive
+  // for different crops of the same artwork: grayscale tone could match even
+  // when the composition and edge layout had changed substantially.
+  return visualDistance <= 0.42 && hashDistanceValue <= 0.16 && edgeDistance <= 0.38;
 }
 
 function buildGroups(
@@ -299,6 +455,7 @@ function buildGroups(
   const candidates: Array<{
     representative: RawPhotoFeatures;
     members: PhotoAnalysisEntry[];
+    memberFeatures: RawPhotoFeatures[];
   }> = [];
 
   for (const item of entries) {
@@ -307,13 +464,16 @@ function buildGroups(
       continue;
     }
 
-    const matchingGroup = candidates.find((candidate) =>
-      isSameView(candidate.representative, features)
+    const matchingGroup = candidates.find(
+      (candidate) =>
+        isSameView(candidate.representative, features) &&
+        candidate.memberFeatures.every((member) => isSameView(member, features))
     );
     if (matchingGroup) {
       matchingGroup.members.push(item);
+      matchingGroup.memberFeatures.push(features);
     } else {
-      candidates.push({ representative: features, members: [item] });
+      candidates.push({ representative: features, members: [item], memberFeatures: [features] });
     }
   }
 

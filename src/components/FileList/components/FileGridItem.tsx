@@ -1,10 +1,11 @@
 import { memo, useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import type { FileEntry } from "@/types/index";
 import { FileThumbnail } from "@/components/FileThumbnail";
-import { FocusPointOverlay } from "@/components/FocusPointOverlay";
-import { getContainedFocusPointPosition } from "@/lib/focusPoint";
+import { FocusRegionOverlay } from "@/components/FocusRegionOverlay";
+import { getContainedFocusRegionPosition } from "@/lib/focusPoint";
 import type { PhotoAnalysisRecord } from "@/lib/photoAnalysis";
-import { getPhotoMetadataLines } from "@/lib/photoMetadata";
+import { getPhotoMetadataSummary } from "@/lib/photoMetadata";
 import { usePhotoMetadata } from "@/hooks/usePhotoMetadata";
 import { Input } from "@/components/ui/input";
 
@@ -39,19 +40,17 @@ export const FileGridItem = memo(function FileGridItem({
   photoGroupColor,
 }: FileGridItemProps) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const { t } = useTranslation();
   const photoMetadata = usePhotoMetadata(entry);
-  const metadataLines = getPhotoMetadataLines(photoMetadata);
+  const metadataSummary = getPhotoMetadataSummary(photoMetadata);
   const thumbnailSize = 80;
-  const focusPosition =
-    photoAnalysis?.focusPoint && photoAnalysis.imageWidth > 0 && photoAnalysis.imageHeight > 0
-      ? getContainedFocusPointPosition({
-          point: photoAnalysis.focusPoint,
-          containerWidth: thumbnailSize,
-          containerHeight: thumbnailSize,
-          imageWidth: photoAnalysis.imageWidth,
-          imageHeight: photoAnalysis.imageHeight,
-        })
-      : null;
+  const focusRegions =
+    photoAnalysis &&
+    photoAnalysis.imageWidth > 0 &&
+    photoAnalysis.imageHeight > 0 &&
+    photoAnalysis.focusAnalysis.kind !== "full-frame"
+      ? photoAnalysis.focusAnalysis.regions
+      : [];
 
   useEffect(() => {
     if (!isEditing) return;
@@ -82,9 +81,19 @@ export const FileGridItem = memo(function FileGridItem({
             entry.is_dir ? "h-16 w-16 text-blue-500" : "text-muted-foreground h-16 w-16"
           }
         />
-        {focusPosition && (
-          <FocusPointOverlay point={photoAnalysis?.focusPoint} position={focusPosition} />
-        )}
+        {photoAnalysis &&
+          focusRegions.map((region) => (
+            <FocusRegionOverlay
+              key={`${region.x}-${region.y}-${region.width}-${region.height}`}
+              position={getContainedFocusRegionPosition({
+                region,
+                containerWidth: thumbnailSize,
+                containerHeight: thumbnailSize,
+                imageWidth: photoAnalysis.imageWidth,
+                imageHeight: photoAnalysis.imageHeight,
+              })}
+            />
+          ))}
       </div>
       {isEditing ? (
         <Input
@@ -127,15 +136,52 @@ export const FileGridItem = memo(function FileGridItem({
           >
             {entry.name}
           </span>
-          {metadataLines.length > 0 && (
+          {photoAnalysis?.focusAnalysis.kind === "full-frame" && (
             <div
-              className="text-muted-foreground/85 mt-0.5 line-clamp-2 w-full overflow-hidden px-1 text-[10px] leading-3.5"
-              title={metadataLines.join("\n")}
-              aria-label={metadataLines.join(", ")}
+              className="mt-1 max-w-full truncate px-1 text-[9px] leading-3 text-cyan-700/80 dark:text-cyan-200/80"
+              title={t("common.quick_look.focus_full_frame")}
+              aria-label={t("common.quick_look.focus_full_frame")}
             >
-              {metadataLines.map((line, index) => (
-                <div key={`${line}-${index}`} className="truncate whitespace-nowrap">
-                  {line}
+              {t("common.quick_look.focus_full_frame")}
+            </div>
+          )}
+          {metadataSummary && (
+            <div
+              className="text-foreground/70 mt-1 flex w-full flex-col items-center gap-0.5 px-1 text-[10px] leading-3.5"
+              title={[
+                metadataSummary.dimensions,
+                metadataSummary.exposure.join(" · "),
+                ...metadataSummary.camera,
+              ]
+                .filter(Boolean)
+                .join("\n")}
+              aria-label={[
+                metadataSummary.dimensions,
+                metadataSummary.exposure.join(", "),
+                ...metadataSummary.camera,
+              ]
+                .filter(Boolean)
+                .join(", ")}
+            >
+              {metadataSummary.dimensions && (
+                <div className="font-mono leading-4 tabular-nums">{metadataSummary.dimensions}</div>
+              )}
+              {metadataSummary.exposure.length > 0 && (
+                <div className="flex max-w-full flex-wrap justify-center gap-x-1.5 gap-y-0.5 text-center font-medium tabular-nums">
+                  {metadataSummary.exposure.map((value) => (
+                    <span key={value} className="whitespace-nowrap">
+                      {value}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {metadataSummary.camera.map((value) => (
+                <div
+                  key={value}
+                  className="w-full max-w-full truncate text-center leading-4 whitespace-nowrap"
+                  title={value}
+                >
+                  {value}
                 </div>
               ))}
             </div>

@@ -1,23 +1,25 @@
-import type { FocusPoint } from "@/lib/photoAnalysis";
+import type { FocusRegion } from "@/lib/photoAnalysis";
 
-export interface FocusPointPosition {
+export interface FocusRegionPosition {
   left: number;
   top: number;
+  width: number;
+  height: number;
 }
 
-export function getContainedFocusPointPosition({
-  point,
+export function getContainedFocusRegionPosition({
+  region,
   containerWidth,
   containerHeight,
   imageWidth,
   imageHeight,
 }: {
-  point: FocusPoint;
+  region: FocusRegion;
   containerWidth: number;
   containerHeight: number;
   imageWidth: number;
   imageHeight: number;
-}): FocusPointPosition {
+}): FocusRegionPosition {
   const scale = Math.min(containerWidth / imageWidth, containerHeight / imageHeight);
   const displayedWidth = imageWidth * scale;
   const displayedHeight = imageHeight * scale;
@@ -25,7 +27,9 @@ export function getContainedFocusPointPosition({
   const offsetY = (containerHeight - displayedHeight) / 2;
 
   return {
-    left: ((offsetX + point.x * displayedWidth) / containerWidth) * 100,
-    top: ((offsetY + point.y * displayedHeight) / containerHeight) * 100,
+    left: ((offsetX + region.x * displayedWidth) / containerWidth) * 100,
+    top: ((offsetY + region.y * displayedHeight) / containerHeight) * 100,
+    width: ((region.width * displayedWidth) / containerWidth) * 100,
+    height: ((region.height * displayedHeight) / containerHeight) * 100,
   };
 }

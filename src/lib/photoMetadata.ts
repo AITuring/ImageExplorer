@@ -14,6 +14,12 @@ export interface PhotoMetadata {
   capturedAt: string | null;
 }
 
+export interface PhotoMetadataSummary {
+  dimensions: string | null;
+  exposure: string[];
+  camera: string[];
+}
+
 const metadataCache = new Map<string, PhotoMetadata | null>();
 const pendingMetadata = new Map<string, Promise<PhotoMetadata | null>>();
 const metadataQueue: Array<{
@@ -103,8 +109,10 @@ function formatShutterSpeed(value: string | null) {
   return `${number}s`;
 }
 
-export function getPhotoMetadataLines(metadata: PhotoMetadata | null | undefined) {
-  if (!metadata) return [];
+export function getPhotoMetadataSummary(
+  metadata: PhotoMetadata | null | undefined
+): PhotoMetadataSummary | null {
+  if (!metadata) return null;
 
   const exposureLine = [
     metadata.iso ? `ISO ${firstNumber(metadata.iso) ?? metadata.iso}` : null,
@@ -114,7 +122,9 @@ export function getPhotoMetadataLines(metadata: PhotoMetadata | null | undefined
   ].filter(Boolean) as string[];
   const dimensionLine =
     metadata.width && metadata.height ? `${metadata.width} × ${metadata.height}` : null;
-  const cameraLine = [metadata.model || metadata.make, metadata.lens].filter(Boolean).join(" · ");
-
-  return [[dimensionLine, ...exposureLine].filter(Boolean).join(" · "), cameraLine].filter(Boolean);
+  return {
+    dimensions: dimensionLine,
+    exposure: exposureLine,
+    camera: [metadata.model || metadata.make, metadata.lens].filter(Boolean) as string[],
+  };
 }

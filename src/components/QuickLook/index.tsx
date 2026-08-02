@@ -14,10 +14,10 @@ import { useTranslation } from "react-i18next";
 import { X, ExternalLink, File, Loader2, ChevronLeft, ChevronRight } from "lucide-react";
 import { SmartIcon } from "@/components/SmartIcon";
 import { FileThumbnail } from "@/components/FileThumbnail";
-import { FocusPointOverlay } from "@/components/FocusPointOverlay";
+import { FocusRegionOverlay } from "@/components/FocusRegionOverlay";
 import { iconCache, loadFileThumbnail } from "@/lib/iconCache";
 import type { FileEntry } from "@/types/index";
-import type { PhotoAnalysisRecord, FocusPoint } from "@/lib/photoAnalysis";
+import type { FocusAnalysis, PhotoAnalysisRecord } from "@/lib/photoAnalysis";
 import {
   isTextFile,
   isImageFile,
@@ -75,7 +75,8 @@ const FocusAnalysisDetails = memo(function FocusAnalysisDetails({
   analysis?: PhotoAnalysisRecord;
 }) {
   const { t } = useTranslation();
-  const point = analysis?.focusPoint;
+  const focusAnalysis = analysis?.focusAnalysis;
+  const region = focusAnalysis?.regions[0];
 
   return (
     <div
@@ -84,17 +85,40 @@ const FocusAnalysisDetails = memo(function FocusAnalysisDetails({
       aria-live="polite"
     >
       <span className="text-foreground font-medium">{t("common.quick_look.focus_data")}</span>
-      {point ? (
+      {focusAnalysis?.kind === "full-frame" ? (
+        <>
+          <span>{t("common.quick_look.focus_full_frame")}</span>
+          <span>
+            {t("common.quick_look.focus_confidence", {
+              value: Math.round(focusAnalysis.confidence * 100),
+            })}
+          </span>
+          <span>{t("common.quick_look.focus_method")}</span>
+        </>
+      ) : focusAnalysis && region ? (
         <>
           <span>
-            {t("common.quick_look.focus_position", {
-              x: Math.round(point.x * 100),
-              y: Math.round(point.y * 100),
+            {t("common.quick_look.focus_regions", {
+              count: focusAnalysis.regions.length,
+            })}
+          </span>
+          {focusAnalysis.regions.length === 1 && (
+            <span>
+              {t("common.quick_look.focus_region_position", {
+                x: Math.round((region.x + region.width / 2) * 100),
+                y: Math.round((region.y + region.height / 2) * 100),
+              })}
+            </span>
+          )}
+          <span>
+            {t("common.quick_look.focus_region_size", {
+              width: Math.round(region.width * 100),
+              height: Math.round(region.height * 100),
             })}
           </span>
           <span>
             {t("common.quick_look.focus_confidence", {
-              value: Math.round(point.confidence * 100),
+              value: Math.round(focusAnalysis.confidence * 100),
             })}
           </span>
           <span>{t("common.quick_look.focus_method")}</span>
@@ -119,7 +143,7 @@ interface ZoomableImagePreviewProps {
   onBrowserImageError: () => void;
   onZoomDisplayChange: (zoom: number) => void;
   onCommittedZoomChange: (zoom: number) => void;
-  focusPoint?: FocusPoint | null;
+  focusAnalysis?: FocusAnalysis | null;
 }
 
 interface ZoomableImageElementProps {
@@ -130,7 +154,7 @@ interface ZoomableImageElementProps {
   isZooming: boolean;
   onLoad: (image: HTMLImageElement) => void;
   onError?: () => void;
-  focusPoint?: FocusPoint | null;
+  focusAnalysis?: FocusAnalysis | null;
 }
 
 const ZoomableImageElement = memo(function ZoomableImageElement({
@@ -141,9 +165,9 @@ const ZoomableImageElement = memo(function ZoomableImageElement({
   isZooming,
   onLoad,
   onError,
-  focusPoint,
+  focusAnalysis,
 }: ZoomableImageElementProps) {
-  const focusPosition = focusPoint ? { left: focusPoint.x * 100, top: focusPoint.y * 100 } : null;
+  const focusRegions = focusAnalysis?.kind === "full-frame" ? [] : (focusAnalysis?.regions ?? []);
   const frameStyle: CSSProperties = {
     ...(fittedImageSize
       ? {
@@ -171,9 +195,17 @@ const ZoomableImageElement = memo(function ZoomableImageElement({
         onLoad={(event) => onLoad(event.currentTarget)}
         onError={onError}
       />
-      {focusPoint && focusPosition && (
-        <FocusPointOverlay point={focusPoint} position={focusPosition} />
-      )}
+      {focusRegions.map((region) => (
+        <FocusRegionOverlay
+          key={`${region.x}-${region.y}-${region.width}-${region.height}`}
+          position={{
+            left: region.x * 100,
+            top: region.y * 100,
+            width: region.width * 100,
+            height: region.height * 100,
+          }}
+        />
+      ))}
     </div>
   );
 });
@@ -191,7 +223,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
   onBrowserImageError,
   onZoomDisplayChange,
   onCommittedZoomChange,
-  focusPoint,
+  focusAnalysis,
 }: ZoomableImagePreviewProps) {
   const [previewViewport, setPreviewViewport] = useState({ width: 0, height: 0 });
   const [imageZoom, setImageZoom] = useState(1);
@@ -467,7 +499,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
               imageZoom={imageZoom}
               isZooming={isZooming}
               onLoad={onImageLoadDimensions}
-              focusPoint={focusPoint}
+              focusAnalysis={focusAnalysis}
             />
           ) : (
             <div
@@ -494,12 +526,19 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
                 fallbackClassName="text-muted-foreground h-40 w-40"
                 onImageLoad={onImageLoadDimensions}
               />
-              {focusPoint && fittedImageSize && (
-                <FocusPointOverlay
-                  point={focusPoint}
-                  position={{ left: focusPoint.x * 100, top: focusPoint.y * 100 }}
-                />
-              )}
+              {focusAnalysis?.kind !== "full-frame" &&
+                fittedImageSize &&
+                focusAnalysis?.regions.map((region) => (
+                  <FocusRegionOverlay
+                    key={`${region.x}-${region.y}-${region.width}-${region.height}`}
+                    position={{
+                      left: region.x * 100,
+                      top: region.y * 100,
+                      width: region.width * 100,
+                      height: region.height * 100,
+                    }}
+                  />
+                ))}
             </div>
           )
         ) : (
@@ -511,7 +550,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
             isZooming={isZooming}
             onLoad={onImageLoadDimensions}
             onError={onBrowserImageError}
-            focusPoint={focusPoint}
+            focusAnalysis={focusAnalysis}
           />
         )}
       </div>
@@ -1047,7 +1086,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
                 onBrowserImageError={handleBrowserImageError}
                 onZoomDisplayChange={updateZoomIndicator}
                 onCommittedZoomChange={setCommittedZoom}
-                focusPoint={photoAnalysis?.get(entry.path)?.focusPoint ?? null}
+                focusAnalysis={photoAnalysis?.get(entry.path)?.focusAnalysis ?? null}
               />
             </div>
             <FocusAnalysisDetails analysis={photoAnalysis?.get(entry.path)} />
