@@ -9,6 +9,24 @@ pub struct ImageDimensions {
     pub height: u32,
 }
 
+/// A compact subset of camera metadata used by icon view. Values remain
+/// optional because macOS may not expose every MakerNote field for every RAW
+/// format.
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageMetadata {
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub make: Option<String>,
+    pub model: Option<String>,
+    pub lens: Option<String>,
+    pub iso: Option<String>,
+    pub shutter_speed: Option<String>,
+    pub aperture: Option<String>,
+    pub focal_length: Option<String>,
+    pub captured_at: Option<String>,
+}
+
 /// 受保护的目录列表（macOS）
 #[cfg(target_os = "macos")]
 const PROTECTED_DIRS: &[&str] = &[
@@ -557,6 +575,115 @@ pub fn read_image_dimensions(path: String) -> Result<ImageDimensions, String> {
     #[cfg(not(target_os = "macos"))]
     {
         Err("Reading image dimensions is only supported on macOS".to_string())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn parse_mdls_value(output: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key} =");
+    output.lines().find_map(|line| {
+        let value = line.trim().strip_prefix(&prefix)?.trim();
+        if value.is_empty() || value == "(null)" || value == "null" {
+            return None;
+        }
+
+        let value = value.trim_matches('"').trim();
+        if value.is_empty() || value == "(null)" {
+            None
+        } else {
+            Some(value.to_string())
+        }
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn parse_mdls_u32(output: &str, key: &str) -> Option<u32> {
+    parse_mdls_value(output, key).and_then(|value| {
+        value
+            .trim_matches(['[', ']'])
+            .split(|character: char| !character.is_ascii_digit())
+            .find(|part| !part.is_empty())
+            .and_then(|part| part.parse::<u32>().ok())
+    })
+}
+
+/// Read EXIF-like fields through Spotlight's metadata importer. This keeps
+/// RAW decoding off the React thread and gracefully returns `None` when the
+/// importer does not expose metadata for a particular file.
+#[tauri::command]
+pub fn read_image_metadata(path: String) -> Result<Option<ImageMetadata>, String> {
+    let path_obj = Path::new(&path);
+    if !path_obj.exists() || !path_obj.is_file() {
+        return Ok(None);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("/usr/bin/mdls")
+            .args([
+                "-name",
+                "kMDItemPixelWidth",
+                "-name",
+                "kMDItemPixelHeight",
+                "-name",
+                "kMDItemAcquisitionMake",
+                "-name",
+                "kMDItemAcquisitionModel",
+                "-name",
+                "kMDItemLensModel",
+                "-name",
+                "kMDItemISOSpeed",
+                "-name",
+                "kMDItemExposureTimeSeconds",
+                "-name",
+                "kMDItemFNumber",
+                "-name",
+                "kMDItemFocalLength",
+                "-name",
+                "kMDItemContentCreationDate",
+                &path,
+            ])
+            .output()
+            .map_err(|error| error.to_string())?;
+
+        if !output.status.success() {
+            return Ok(None);
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let metadata = ImageMetadata {
+            width: parse_mdls_u32(&stdout, "kMDItemPixelWidth"),
+            height: parse_mdls_u32(&stdout, "kMDItemPixelHeight"),
+            make: parse_mdls_value(&stdout, "kMDItemAcquisitionMake"),
+            model: parse_mdls_value(&stdout, "kMDItemAcquisitionModel"),
+            lens: parse_mdls_value(&stdout, "kMDItemLensModel"),
+            iso: parse_mdls_value(&stdout, "kMDItemISOSpeed"),
+            shutter_speed: parse_mdls_value(&stdout, "kMDItemExposureTimeSeconds"),
+            aperture: parse_mdls_value(&stdout, "kMDItemFNumber"),
+            focal_length: parse_mdls_value(&stdout, "kMDItemFocalLength"),
+            captured_at: parse_mdls_value(&stdout, "kMDItemContentCreationDate"),
+        };
+
+        if metadata.width.is_none()
+            && metadata.height.is_none()
+            && metadata.make.is_none()
+            && metadata.model.is_none()
+            && metadata.lens.is_none()
+            && metadata.iso.is_none()
+            && metadata.shutter_speed.is_none()
+            && metadata.aperture.is_none()
+            && metadata.focal_length.is_none()
+            && metadata.captured_at.is_none()
+        {
+            return Ok(None);
+        }
+
+        return Ok(Some(metadata));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(None)
     }
 }
 

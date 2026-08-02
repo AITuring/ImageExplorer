@@ -17,7 +17,12 @@
       "preview": "Quick Look",
       "open": "Open",
       "modified": "Modified",
-      "error": "Failed to load"
+      "error": "Failed to load",
+      "focus_data": "Focus estimate",
+      "focus_position": "Position {{x}}% × {{y}}%",
+      "focus_confidence": "Confidence {{value}}%",
+      "focus_method": "Sharpness estimate",
+      "focus_unavailable": "No data"
     }
   },
   "indexing": {

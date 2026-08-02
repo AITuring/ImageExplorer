@@ -6,7 +6,32 @@
 
 ImageExplorer 将 Windows 资源管理器的高效逻辑带到 macOS：可编辑地址栏、常驻文件夹树、Everything 级极速搜索，同时保持原生 macOS 设计风格。
 
+它也针对实际的摄影筛选流程设计：打开相机照片文件夹，在图标视图中比较一组组相似画面，识别重复视角，查看估算的焦点区域，再把合适的 RAW 送到 Camera Raw 或其他编辑器。
+
 ![ImageExplorer Screenshot](./docs/screenshot.png)
+
+## 摄影筛选工作流
+
+可选的 **视角与焦点识别** 模式会把图标视图变成适合筛 RAW 的 contact sheet。该模式默认关闭，只有从图标视图工具栏主动打开后才会进行识别，因此普通文件夹浏览仍保持轻量、接近 Finder 的体验。
+
+![图标视图中的焦点识别与视角分组](./docs/screenshots/icon-view-focus-analysis.png)
+
+打开后，应用会：
+
+1. 使用低分辨率视觉指纹比较相似画面，并按视角分组；分组不要求文件名连续。
+2. 为每组循环分配不同的背景色，方便快速扫过连拍和重复构图。
+3. 在缩略图上绘制小型焦点方框；空格预览放大时方框会跟随图片缩放，底部会显示位置、置信度和判断方式。
+4. 在文件名下方懒加载 macOS 可读取的 EXIF 摘要，包括尺寸、ISO、光圈、快门、焦段、机身和镜头。
+
+![图标视图中的重复视角高亮](./docs/screenshots/icon-view-focus-groups.png)
+
+![RAW/JPEG 配对缩略图](./docs/screenshots/icon-view-raw-pairs.png)
+
+选中文件后按 **空格** 打开快速预览，可使用左右箭头按钮或 Left/Right 键切换文件，按住 **⌘/Ctrl + 滚轮** 以鼠标指针为中心放大。相邻 RAW 会提前生成预览，连续浏览时减少等待。
+
+![带焦点标记的空格快速预览](./docs/screenshots/quick-look-zoom-focus.png)
+
+> 焦点方框是基于可用预览图清晰度的视觉估算，并不等同于相机 MakerNote 中的真实 AF 区域。界面会显示置信度，建议把它作为筛选辅助，最终仍以全尺寸 RAW 检查为准。
 
 ## 功能特性
 
@@ -16,6 +41,9 @@ ImageExplorer 将 Windows 资源管理器的高效逻辑带到 macOS：可编辑
 - **可调宽侧边栏** — 拖拽分隔条调整宽度，继续拖到边缘可隐藏；隐藏后显示附着小把手，点击或向右轻拖即可恢复，并自动记住设置
 - **极速搜索** — SQLite FTS5 + Rust 驱动的毫秒级全盘搜索，结果面板固定在搜索框下方且不会被文件内容遮挡；搜索结果支持 Finder 风格选中、右键操作和就地重命名
 - **Finder 风格缩略图** — 图标 / 列表视图支持常见相机 RAW 格式的原生缩略图，使用进程内 Quick Look 生成，并带有渐进式加载与缓存，适合大目录浏览
+- **可选照片分析** — 全局识别相似视角、循环分配组颜色，并在缩略图上标出估算焦点；默认关闭，不影响普通文件夹浏览
+- **焦点感知的空格预览** — 支持键盘切换、RAW 渐进式加载、相邻图片预取、指针中心缩放，以及图片下方的焦点判断数据
+- **EXIF 快速查看** — 只对可见图标卡片懒加载，并限制并发数量，在不拖慢网格布局的情况下显示相机参数
 - **Finder 风格选择与重命名** — 使用更接近 Finder 的轻量选中态；在图标 / 列表视图中单击已选中的文件名即可就地重命名，Enter 确认、Escape 取消
 - **多标签页 & 多窗口** — 标签页支持跨窗口拖拽并保留导航历史；脱离成新窗口后仍打开当前目录并保留历史；文件和文件夹也可拖入另一个窗口或其当前目录，移动完成后源窗口与目标窗口自动刷新
 - **Cmd+X 剪切** — 原生剪切支持，告别 Cmd+C → Cmd+Option+V
@@ -78,14 +106,14 @@ pnpm tauri build
 ```text
 src/                    # React 前端
 ├── components/         # UI 组件（FileList、Sidebar、TabBar、TopBar 等）
-├── hooks/              # 自定义 Hooks（useTabs、useSetting、useTheme）
-├── stores/             # Zustand 状态（viewMode、clipboard）
+├── hooks/              # 自定义 Hooks（useTabs、useSetting、useTheme、照片元数据）
+├── stores/             # Zustand 状态（viewMode、clipboard、照片分析开关）
 ├── contexts/           # React Context（tabs、theme）
-├── lib/                # 工具库（i18n、设置管理、窗口管理）
+├── lib/                # 工具库（i18n、设置、缩略图、照片分析、元数据）
 └── locales/            # 国际化翻译（en、zh）
 
 src-tauri/src/          # Rust 后端
-├── commands/           # Tauri 命令（文件系统、搜索、应用、监听）
+├── commands/           # Tauri 命令（文件系统/EXIF、缩略图、搜索、应用、监听）
 ├── db/                 # SQLite 层（schema、索引器、搜索引擎）
 └── index/              # 内存索引（回退方案）
 ```

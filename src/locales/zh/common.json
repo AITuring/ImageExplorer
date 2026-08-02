@@ -17,7 +17,12 @@
       "preview": "快速预览",
       "open": "打开",
       "modified": "修改时间",
-      "error": "加载失败"
+      "error": "加载失败",
+      "focus_data": "焦点判断",
+      "focus_position": "位置 {{x}}% × {{y}}%",
+      "focus_confidence": "置信度 {{value}}%",
+      "focus_method": "清晰度估算",
+      "focus_unavailable": "暂无数据"
     }
   },
   "indexing": {

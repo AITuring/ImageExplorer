@@ -4,6 +4,8 @@ import { FileThumbnail } from "@/components/FileThumbnail";
 import { FocusPointOverlay } from "@/components/FocusPointOverlay";
 import { getContainedFocusPointPosition } from "@/lib/focusPoint";
 import type { PhotoAnalysisRecord } from "@/lib/photoAnalysis";
+import { getPhotoMetadataLines } from "@/lib/photoMetadata";
+import { usePhotoMetadata } from "@/hooks/usePhotoMetadata";
 import { Input } from "@/components/ui/input";
 
 interface FileGridItemProps {
@@ -37,6 +39,8 @@ export const FileGridItem = memo(function FileGridItem({
   photoGroupColor,
 }: FileGridItemProps) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const photoMetadata = usePhotoMetadata(entry);
+  const metadataLines = getPhotoMetadataLines(photoMetadata);
   const thumbnailSize = 80;
   const focusPosition =
     photoAnalysis?.focusPoint && photoAnalysis.imageWidth > 0 && photoAnalysis.imageHeight > 0
@@ -123,6 +127,19 @@ export const FileGridItem = memo(function FileGridItem({
           >
             {entry.name}
           </span>
+          {metadataLines.length > 0 && (
+            <div
+              className="text-muted-foreground/85 mt-0.5 line-clamp-2 w-full overflow-hidden px-1 text-[10px] leading-3.5"
+              title={metadataLines.join("\n")}
+              aria-label={metadataLines.join(", ")}
+            >
+              {metadataLines.map((line, index) => (
+                <div key={`${line}-${index}`} className="truncate whitespace-nowrap">
+                  {line}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

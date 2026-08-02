@@ -69,6 +69,43 @@ function getPreviewZoomFactor(value: number) {
   return 3;
 }
 
+const FocusAnalysisDetails = memo(function FocusAnalysisDetails({
+  analysis,
+}: {
+  analysis?: PhotoAnalysisRecord;
+}) {
+  const { t } = useTranslation();
+  const point = analysis?.focusPoint;
+
+  return (
+    <div
+      className="bg-muted/30 text-muted-foreground flex min-h-7 w-full shrink-0 items-center justify-center gap-x-3 gap-y-1 rounded-md border px-3 py-1 text-[11px] leading-4"
+      role="status"
+      aria-live="polite"
+    >
+      <span className="text-foreground font-medium">{t("common.quick_look.focus_data")}</span>
+      {point ? (
+        <>
+          <span>
+            {t("common.quick_look.focus_position", {
+              x: Math.round(point.x * 100),
+              y: Math.round(point.y * 100),
+            })}
+          </span>
+          <span>
+            {t("common.quick_look.focus_confidence", {
+              value: Math.round(point.confidence * 100),
+            })}
+          </span>
+          <span>{t("common.quick_look.focus_method")}</span>
+        </>
+      ) : (
+        <span>{t("common.quick_look.focus_unavailable")}</span>
+      )}
+    </div>
+  );
+});
+
 interface ZoomableImagePreviewProps {
   entry: FileEntry;
   viewportSize: { width: number; height: number };
@@ -116,7 +153,7 @@ const ZoomableImageElement = memo(function ZoomableImageElement({
           maxHeight: "none",
         }
       : {}),
-    transform: `translateZ(0) scale(${imageZoom})`,
+    transform: `translate3d(0, 0, 0) scale(${imageZoom})`,
     transformOrigin: "center center",
     willChange: "transform",
     backfaceVisibility: "hidden",
@@ -251,7 +288,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
 
     commitZoomTimeoutRef.current = window.setTimeout(() => {
       onCommittedZoomChange(imageZoomRef.current);
-    }, 220);
+    }, 320);
 
     return () => {
       if (commitZoomTimeoutRef.current) {
@@ -440,11 +477,11 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
                   ? {
                       width: `${fittedImageSize.width}px`,
                       height: `${fittedImageSize.height}px`,
-                      transform: `translateZ(0) scale(${imageZoom})`,
+                      transform: `translate3d(0, 0, 0) scale(${imageZoom})`,
                       transformOrigin: "center center",
                     }
                   : {
-                      transform: `translateZ(0) scale(${imageZoom})`,
+                      transform: `translate3d(0, 0, 0) scale(${imageZoom})`,
                       transformOrigin: "center center",
                     }
               }
@@ -560,6 +597,40 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
   const canNavigate = quickLookEntries.length > 1;
   const previewZoomFactor = useMemo(() => getPreviewZoomFactor(committedZoom), [committedZoom]);
   const isRawImage = Boolean(entry && RAW_EXTENSIONS.has((entry.extension || "").toLowerCase()));
+
+  useEffect(() => {
+    if (!entry || previewType !== "image") {
+      return;
+    }
+
+    const candidates = [previousEntry, nextEntry].filter((candidate): candidate is FileEntry =>
+      Boolean(candidate && !candidate.is_dir && isImageFile(candidate.extension))
+    );
+    if (candidates.length === 0) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => {
+      for (const candidate of candidates) {
+        const extension = (candidate.extension || "").toLowerCase();
+        // Browser-native JPEG/PNG decoding is already cheap. Prioritize RAW and
+        // formats that need the native thumbnail bridge so arrow navigation can
+        // reuse a nearby preview immediately.
+        if (isBrowserSupportedImage(extension) && !RAW_EXTENSIONS.has(extension)) {
+          continue;
+        }
+
+        const cacheKey = `quicklook-prefetch:${candidate.path}:${candidate.modified ?? 0}:${candidate.size}:768`;
+        void loadFileThumbnail(cacheKey, candidate.path, 768, true, controller.signal);
+      }
+    }, 90);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [entry, nextEntry, previewType, previousEntry]);
 
   const nativePreviewRequestSize = useMemo(() => {
     if (previewType !== "image" || !entry) {
@@ -960,21 +1031,27 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     switch (previewType) {
       case "image":
         return (
-          <ZoomableImagePreview
-            entry={entry}
-            viewportSize={viewportSize}
-            imageDimensions={imageDimensions}
-            nativePreviewSrc={nativePreviewSrc}
-            fallbackSrc={fallbackSrc}
-            fileSrc={fileSrc}
-            useNativeImagePreview={useNativeImagePreview}
-            progressivePreviewRequestSize={progressivePreviewRequestSize}
-            onImageLoadDimensions={handleImageLoadDimensions}
-            onBrowserImageError={handleBrowserImageError}
-            onZoomDisplayChange={updateZoomIndicator}
-            onCommittedZoomChange={setCommittedZoom}
-            focusPoint={photoAnalysis?.get(entry.path)?.focusPoint ?? null}
-          />
+          <div className="flex h-full min-h-0 w-full flex-col gap-1">
+            <div className="min-h-0 w-full flex-1">
+              <ZoomableImagePreview
+                key={entry.path}
+                entry={entry}
+                viewportSize={viewportSize}
+                imageDimensions={imageDimensions}
+                nativePreviewSrc={nativePreviewSrc}
+                fallbackSrc={fallbackSrc}
+                fileSrc={fileSrc}
+                useNativeImagePreview={useNativeImagePreview}
+                progressivePreviewRequestSize={progressivePreviewRequestSize}
+                onImageLoadDimensions={handleImageLoadDimensions}
+                onBrowserImageError={handleBrowserImageError}
+                onZoomDisplayChange={updateZoomIndicator}
+                onCommittedZoomChange={setCommittedZoom}
+                focusPoint={photoAnalysis?.get(entry.path)?.focusPoint ?? null}
+              />
+            </div>
+            <FocusAnalysisDetails analysis={photoAnalysis?.get(entry.path)} />
+          </div>
         );
 
       case "video":
