@@ -94,6 +94,7 @@ export const FileGridItem = memo(function FileGridItem({
             <FocusRegionOverlay
               key={`${region.x}-${region.y}-${region.width}-${region.height}`}
               variant={focusOverlayVariant}
+              showCenterPoint={cameraAfRegions !== null && !cameraAfMetadata?.exact}
               position={getContainedFocusRegionPosition({
                 region,
                 containerWidth: thumbnailSize,

@@ -240,14 +240,14 @@ fn is_raw_for_native_thumbnail(path: &Path) -> bool {
 fn generate_image_thumbnail_with_sips(
     path: &Path,
     size: f64,
-    prefer_embedded: bool,
 ) -> Option<String> {
-    // Embedded previews keep the large-folder path fast. sips is reserved for
-    // the full Quick Look path, where a high-resolution RAW render is worth
-    // the extra decode cost.
+    // RAW must stay on the ImageIO/Quick Look path. Although `sips` accepts
+    // many RAW extensions, its output can be the camera's small embedded JPEG
+    // (then enlarged by the browser), which makes Space preview look blurry at
+    // 200%+ zoom. ImageIO is the path that requests a size-bounded RAW decode.
     if path.is_dir()
         || !is_image_for_native_thumbnail(path)
-        || (is_raw_for_native_thumbnail(path) && (prefer_embedded || size < 1024.0))
+        || is_raw_for_native_thumbnail(path)
     {
         return None;
     }
@@ -610,9 +610,7 @@ pub async fn get_file_thumbnail(
 
     #[cfg(target_os = "macos")]
     {
-        if let Some(base64) =
-            generate_image_thumbnail_with_sips(path_obj, size_val, prefer_embedded)
-        {
+        if let Some(base64) = generate_image_thumbnail_with_sips(path_obj, size_val) {
             crate::cache::set_icon_cache(image_cache_key.clone(), base64.clone());
             return Some(base64);
         }

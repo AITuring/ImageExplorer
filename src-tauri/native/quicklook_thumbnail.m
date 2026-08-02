@@ -1,4 +1,5 @@
 #import <CoreGraphics/CoreGraphics.h>
+#import <CoreImage/CoreImage.h>
 #import <Foundation/Foundation.h>
 #import <ImageIO/ImageIO.h>
 #import <QuickLook/QuickLook.h>
@@ -28,6 +29,59 @@ static CGImageRef imageexplorer_create_imageio_preview(NSURL *fileURL, uint32_t 
     );
     CFRelease(source);
     return image;
+}
+
+// ImageIO's RAW thumbnail path is allowed to choose a camera-embedded JPEG on
+// some macOS/RAW decoder combinations even when a large max pixel size was
+// requested. CIRAWFilter is the explicit sensor-data path: it reports the
+// native RAW size and renders a size-bounded demosaiced image instead of
+// enlarging the embedded preview.
+static CGImageRef imageexplorer_create_coreimage_raw_preview(NSURL *fileURL, uint32_t size) {
+    NSString *extension = fileURL.pathExtension.lowercaseString;
+    NSSet<NSString *> *rawExtensions = [NSSet setWithObjects:
+        @"arw", @"cr2", @"cr3", @"nef", @"nrw", @"raf", @"orf", @"rw2",
+        @"pef", @"srw", @"dcr", @"kdc", @"3fr", @"iiq", @"x3f", @"dng", nil
+    ];
+    if (![rawExtensions containsObject:extension]) {
+        return NULL;
+    }
+
+    if (@available(macOS 12.0, *)) {
+        CIRAWFilter *rawFilter = [CIRAWFilter filterWithImageURL:fileURL];
+        if (rawFilter == nil || rawFilter.nativeSize.width <= 0 || rawFilter.nativeSize.height <= 0) {
+            return NULL;
+        }
+
+        NSNumber *orientationValue = rawFilter.properties[(NSString *)kCGImagePropertyOrientation];
+        if (orientationValue != nil) {
+            NSInteger orientation = orientationValue.integerValue;
+            if (orientation >= 1 && orientation <= 8) {
+                rawFilter.orientation = (CGImagePropertyOrientation)orientation;
+            }
+        }
+
+        CGFloat nativeMax = MAX(rawFilter.nativeSize.width, rawFilter.nativeSize.height);
+        CGFloat scale = MIN(1.0, (CGFloat)size / nativeMax);
+        rawFilter.scaleFactor = MAX(0.01, scale);
+        rawFilter.draftModeEnabled = NO;
+
+        CIImage *outputImage = rawFilter.outputImage;
+        if (outputImage == nil) {
+            return NULL;
+        }
+
+        CIContext *context = [CIContext contextWithOptions:@{
+            kCIContextUseSoftwareRenderer: @NO,
+            kCIContextHighQualityDownsample: @YES,
+        }];
+        if (context == nil) {
+            return NULL;
+        }
+
+        return [context createCGImage:outputImage fromRect:outputImage.extent];
+    }
+
+    return NULL;
 }
 
 static CGImageRef imageexplorer_create_embedded_preview(NSURL *fileURL, uint32_t size) {
@@ -85,11 +139,17 @@ uint8_t *imageexplorer_quicklook_thumbnail(
         NSURL *fileURL = [NSURL fileURLWithPath:filePath];
         // Grid thumbnails and focus analysis should use the camera-embedded JPEG
         // whenever possible. Decoding the full RAW source for every small card
-        // can stall a large folder for tens of seconds. Full ImageIO decoding
-        // remains available for Quick Look and files without an embedded preview.
-        CGImageRef image = preferEmbedded
-            ? imageexplorer_create_embedded_preview(fileURL, size)
-            : imageexplorer_create_imageio_preview(fileURL, size);
+        // can stall a large folder for tens of seconds. Core Image RAW decoding
+        // is reserved for Quick Look; ImageIO remains the compatibility fallback.
+        CGImageRef image = NULL;
+        if (!preferEmbedded) {
+            image = imageexplorer_create_coreimage_raw_preview(fileURL, size);
+        }
+        if (image == NULL) {
+            image = preferEmbedded
+                ? imageexplorer_create_embedded_preview(fileURL, size)
+                : imageexplorer_create_imageio_preview(fileURL, size);
+        }
         if (image == NULL && preferEmbedded) {
             image = imageexplorer_create_imageio_preview(fileURL, size);
         }

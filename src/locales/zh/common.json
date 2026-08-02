@@ -30,8 +30,11 @@
       "focus_method": "多尺度锐度估算（非相机 AF）",
       "focus_unavailable": "暂无数据",
       "focus_camera_af": "相机 AF 区域",
+      "focus_camera_af_regions": "相机 AF 区域 {{count}} 个",
+      "focus_camera_af_center": "AF 中心点 {{x}}% × {{y}}%",
+      "focus_camera_af_size": "显示框大小 {{width}}% × {{height}}%",
       "focus_camera_af_exact": "Sony MakerNote 坐标",
-      "focus_camera_af_approx": "相机坐标（区域尺寸近似）",
+      "focus_camera_af_approx": "AF 中心点（显示框为近似）",
       "focus_camera_af_unavailable": "相机未记录可绘制 AF 坐标"
     }
   },

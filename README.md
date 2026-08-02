@@ -31,6 +31,10 @@ uses ExifTool to read `FocusLocation`/`FocusFrameSize` (and the documented
 boxes and labelled **Camera AF**. A dashed amber box means the file did not
 provide a drawable camera rectangle and the app is showing its separate
 sharpness estimate instead; it is never presented as the camera's AF result.
+Sony AF metadata may contain only the selected area's center point: in that
+case the cyan box is explicitly marked as an approximate display frame and a
+small dot marks the recorded center. Only `FocusLocation` together with
+`FocusFrameSize` is treated as an exact camera rectangle.
 
 Install ExifTool on macOS with `brew install exiftool`, or set
 `IMAGEEXPLORER_EXIFTOOL`/`EXIFTOOL_PATH` to a bundled or standalone executable.
@@ -57,7 +61,7 @@ Press **Space** to open Quick Look, use the arrow buttons or Left/Right keys to 
 - **Everything-Style Search** — Millisecond-level full-disk search powered by SQLite FTS5 + Rust, with an anchored result panel that stays above the file content and supports Finder-like selection, context-menu actions, and inline rename
 - **Finder-Like Thumbnails** — Native thumbnail previews in icon/list views, including common camera RAW formats, generated through in-process Quick Look with progressive loading and caching for large folders
 - **Optional Photo Analysis** — Group similar viewpoints globally, cycle distinct group colors, and mark an estimated focus region without changing the default lightweight browsing mode
-- **Focus-Aware Quick Look** — Space-bar preview with keyboard navigation, progressive RAW loading, adjacent-image prefetching, pointer-centered zoom, and focus data beneath the image
+- **Focus-Aware Quick Look** — Space-bar preview with Core Image RAW decoding, progressive loading, adjacent-image prefetching, pointer-centered zoom, and focus data beneath the image
 - **EXIF-at-a-Glance** — Lazy, bounded-concurrency metadata loading for visible icon cards so camera settings appear without delaying folder layout
 - **Finder-Like Selection & Rename** — Subtle native-style selection states; in icon/list views, click a selected filename to rename it inline (Enter confirms, Escape cancels)
 - **Multi-Tab & Multi-Window** — Drag tabs between windows while preserving their navigation history; detached tabs open with their current folder and history; move files and folders into another window or its current folder, with source and destination views refreshed after completion

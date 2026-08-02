@@ -7,6 +7,7 @@ fn main() {
             .compile("imageexplorer_quicklook_thumbnail");
 
         println!("cargo:rustc-link-lib=framework=QuickLook");
+        println!("cargo:rustc-link-lib=framework=CoreImage");
         println!("cargo:rustc-link-lib=framework=ImageIO");
         println!("cargo:rustc-link-lib=framework=CoreGraphics");
     }

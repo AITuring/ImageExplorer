@@ -101,20 +101,20 @@ const FocusAnalysisDetails = memo(function FocusAnalysisDetails({
       {cameraAfMetadata?.source === "camera-maker-note" && cameraAfRegions?.length ? (
         <>
           <span>
-            {t("common.quick_look.focus_regions", {
+            {t("common.quick_look.focus_camera_af_regions", {
               count: cameraAfRegions.length,
             })}
           </span>
           {cameraAfRegions.length === 1 && (
             <span>
-              {t("common.quick_look.focus_region_position", {
+              {t("common.quick_look.focus_camera_af_center", {
                 x: Math.round((region.x + region.width / 2) * 100),
                 y: Math.round((region.y + region.height / 2) * 100),
               })}
             </span>
           )}
           <span>
-            {t("common.quick_look.focus_region_size", {
+            {t("common.quick_look.focus_camera_af_size", {
               width: Math.round(region.width * 100),
               height: Math.round(region.height * 100),
             })}
@@ -262,6 +262,7 @@ const ZoomableImageElement = memo(function ZoomableImageElement({
         <FocusRegionOverlay
           key={`${region.x}-${region.y}-${region.width}-${region.height}`}
           variant={cameraAfRegions !== null ? "camera" : "estimate"}
+          showCenterPoint={cameraAfRegions !== null && !cameraAfMetadata?.exact}
           position={{
             left: region.x * 100,
             top: region.y * 100,
@@ -600,6 +601,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
                   <FocusRegionOverlay
                     key={`${region.x}-${region.y}-${region.width}-${region.height}`}
                     variant={cameraAfRegions !== null ? "camera" : "estimate"}
+                    showCenterPoint={cameraAfRegions !== null && !cameraAfMetadata?.exact}
                     position={{
                       left: region.x * 100,
                       top: region.y * 100,
@@ -776,7 +778,10 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     if (isRawImage) {
       // RAW 预览直接请求一张足够清晰的图，避免先显示 384px 缩略图后一直
       // 停留在模糊状态；列表缩略图仍然小尺寸，空格预览只解码当前文件。
-      return Math.min(MAX_RAW_PREVIEW_SIZE, Math.max(1536, baseSize));
+      // Keep the first full RAW frame above the 1.5x zoom threshold even on a
+      // 1x external display; a 1536px render is visibly soft in a large Quick
+      // Look window before the next zoom-triggered request arrives.
+      return Math.min(MAX_RAW_PREVIEW_SIZE, Math.max(3072, baseSize));
     }
 
     if (extension === "psd") {
@@ -799,7 +804,16 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
 
     const extension = (entry.extension || "").toLowerCase();
     if (isRawImage) {
-      return 768;
+      // A 768px RAW placeholder is visibly soft as soon as the user zooms.
+      // Quick Look only has one active image, so start with enough pixels for
+      // the fitted viewport while the larger zoom-specific render decodes.
+      const devicePixelRatio =
+        typeof window === "undefined" ? 1 : Math.min(window.devicePixelRatio || 1, 2);
+      const viewportMax = Math.max(viewportSize.width, viewportSize.height);
+      return Math.min(
+        2048,
+        snapThumbnailSize(Math.max(1024, Math.round(viewportMax * devicePixelRatio)))
+      );
     }
 
     if (extension === "psd") {
@@ -807,7 +821,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     }
 
     return 384;
-  }, [entry, isRawImage, previewType]);
+  }, [entry, isRawImage, previewType, viewportSize.height, viewportSize.width]);
 
   const cachedNativePreview = useMemo(() => {
     if (!entry) {

@@ -30,8 +30,11 @@
       "focus_method": "Multi-scale sharpness estimate (not camera AF)",
       "focus_unavailable": "No data",
       "focus_camera_af": "Camera AF area",
+      "focus_camera_af_regions": "Camera AF areas: {{count}}",
+      "focus_camera_af_center": "AF center {{x}}% × {{y}}%",
+      "focus_camera_af_size": "Displayed frame {{width}}% × {{height}}%",
       "focus_camera_af_exact": "Sony MakerNote coordinates",
-      "focus_camera_af_approx": "Camera coordinates (area size approximated)",
+      "focus_camera_af_approx": "AF center point (displayed frame is approximate)",
       "focus_camera_af_unavailable": "Camera did not record drawable AF coordinates"
     }
   },
