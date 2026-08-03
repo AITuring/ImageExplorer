@@ -6,7 +6,12 @@ use tauri::{AppHandle, Emitter};
 
 pub struct WatcherState {
     /// 多路径监听：key 为目录路径，value 为 watcher 实例
-    watchers: HashMap<String, RecommendedWatcher>,
+    watchers: HashMap<String, WatchEntry>,
+}
+
+struct WatchEntry {
+    _watcher: RecommendedWatcher,
+    references: usize,
 }
 
 impl WatcherState {
@@ -39,7 +44,8 @@ pub fn watch_directory(
     let mut watcher_state = state.lock().map_err(|e| e.to_string())?;
 
     // 如果已经在监听该目录，跳过
-    if watcher_state.watchers.contains_key(&path) {
+    if let Some(entry) = watcher_state.watchers.get_mut(&path) {
+        entry.references = entry.references.saturating_add(1);
         return Ok(());
     }
 
@@ -58,7 +64,13 @@ pub fn watch_directory(
         .watch(&path_buf, RecursiveMode::NonRecursive)
         .map_err(|e| e.to_string())?;
 
-    watcher_state.watchers.insert(path.clone(), watcher);
+    watcher_state.watchers.insert(
+        path.clone(),
+        WatchEntry {
+            _watcher: watcher,
+            references: 1,
+        },
+    );
 
     // 在后台线程处理事件
     let app_handle = app.clone();
@@ -86,7 +98,12 @@ pub fn unwatch_directory(
     path: String,
 ) -> Result<(), String> {
     let mut watcher_state = state.lock().map_err(|e| e.to_string())?;
-    watcher_state.watchers.remove(&path);
+    if let Some(entry) = watcher_state.watchers.get_mut(&path) {
+        entry.references = entry.references.saturating_sub(1);
+        if entry.references == 0 {
+            watcher_state.watchers.remove(&path);
+        }
+    }
     Ok(())
 }
 

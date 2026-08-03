@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use base64::Engine as _;
+use serde::{Deserialize, Serialize};
 use std::collections::{hash_map::DefaultHasher, HashSet};
 #[cfg(target_os = "macos")]
 use std::ffi::CString;
@@ -41,7 +41,10 @@ fn close_native_quick_look_process(
                 let _ = child.wait();
                 Ok(())
             }
-            Err(e) => Err(format!("Failed to inspect native Quick Look process: {}", e)),
+            Err(e) => Err(format!(
+                "Failed to inspect native Quick Look process: {}",
+                e
+            )),
         }
     } else {
         Ok(())
@@ -237,18 +240,12 @@ fn is_raw_for_native_thumbnail(path: &Path) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn generate_image_thumbnail_with_sips(
-    path: &Path,
-    size: f64,
-) -> Option<String> {
+fn generate_image_thumbnail_with_sips(path: &Path, size: f64) -> Option<String> {
     // RAW must stay on the ImageIO/Quick Look path. Although `sips` accepts
     // many RAW extensions, its output can be the camera's small embedded JPEG
     // (then enlarged by the browser), which makes Space preview look blurry at
     // 200%+ zoom. ImageIO is the path that requests a size-bounded RAW decode.
-    if path.is_dir()
-        || !is_image_for_native_thumbnail(path)
-        || is_raw_for_native_thumbnail(path)
-    {
+    if path.is_dir() || !is_image_for_native_thumbnail(path) || is_raw_for_native_thumbnail(path) {
         return None;
     }
 
@@ -453,7 +450,7 @@ pub fn get_installed_apps() -> Vec<InstalledApp> {
     // 扫描 /System/Applications (系统应用)
     apps.extend(scan_apps_in_dir(Path::new("/System/Applications")));
     // 按名称排序
-    apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    apps.sort_by_key(|app| app.name.to_lowercase());
     apps
 }
 
@@ -615,11 +612,9 @@ pub async fn get_file_thumbnail(
             return Some(base64);
         }
 
-        if let Some(base64) = generate_quicklook_thumbnail_in_process(
-            path_obj,
-            size_val,
-            prefer_embedded,
-        ) {
+        if let Some(base64) =
+            generate_quicklook_thumbnail_in_process(path_obj, size_val, prefer_embedded)
+        {
             crate::cache::set_icon_cache(image_cache_key.clone(), base64.clone());
             return Some(base64);
         }
@@ -810,7 +805,7 @@ pub fn open_native_quick_look(
             .lock()
             .map_err(|_| "Failed to store native Quick Look process".to_string())?;
         *child_guard = Some(child);
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -829,7 +824,7 @@ pub fn close_native_quick_look(
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        return close_native_quick_look_process(&native_quick_look);
+        close_native_quick_look_process(&native_quick_look)
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -846,7 +841,10 @@ pub fn open_in_terminal_with(path: String, terminal_bundle_id: String) -> Result
     {
         // 验证 terminal_bundle_id 是否在已知终端列表中
         if !TERMINAL_BUNDLE_IDS.contains(&terminal_bundle_id.as_str()) {
-            return Err(format!("Unknown terminal bundle ID: {}", terminal_bundle_id));
+            return Err(format!(
+                "Unknown terminal bundle ID: {}",
+                terminal_bundle_id
+            ));
         }
 
         // 检查是否是需要特殊处理的终端

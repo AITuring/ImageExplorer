@@ -21,20 +21,35 @@ impl IndexBuilder {
 
     /// 全盘扫描并构建索引
     pub fn build(&self, root: &str, app: Option<&tauri::AppHandle>) -> Result<usize, String> {
-        // 先收集所有文件（不持有锁）
-        let files = self.scan_files(root, app);
-        let count = files.len();
-
-        // 批量插入数据库
-        self.batch_insert(&files)?;
-
+        self.set_metadata("index_building", "1")?;
+        self.clear_files()?;
+        let mut batch = Vec::with_capacity(2000);
+        let count = self.scan_files(root, app, |file| {
+            batch.push(file);
+            if batch.len() >= 2000 {
+                self.batch_insert(&batch)?;
+                batch.clear();
+            }
+            Ok(())
+        })?;
+        if !batch.is_empty() {
+            self.batch_insert(&batch)?;
+        }
+        self.rebuild_fts()?;
+        self.set_metadata("index_building", "0")?;
         Ok(count)
     }
 
-    /// 扫描文件系统
-    fn scan_files(&self, root: &str, app: Option<&tauri::AppHandle>) -> Vec<FileRecord> {
-        let mut files = Vec::new();
-
+    /// 扫描文件系统，并按批次交给数据库写入，避免百万文件全部驻留内存。
+    fn scan_files<F>(
+        &self,
+        root: &str,
+        app: Option<&tauri::AppHandle>,
+        mut on_file: F,
+    ) -> Result<usize, String>
+    where
+        F: FnMut(FileRecord) -> Result<(), String>,
+    {
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4)
@@ -92,7 +107,7 @@ impl IndexBuilder {
 
                 let parent_path = path.parent().map(|p| p.to_string_lossy().to_string());
 
-                files.push(FileRecord {
+                on_file(FileRecord {
                     path: path_str,
                     name,
                     name_lower,
@@ -101,7 +116,7 @@ impl IndexBuilder {
                     modified_at: modified,
                     is_dir: path.is_dir(),
                     parent_path,
-                });
+                })?;
 
                 count += 1;
 
@@ -124,19 +139,32 @@ impl IndexBuilder {
             }
         }
 
-        files
+        Ok(count)
+    }
+
+    fn clear_files(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM files", [])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    fn set_metadata(&self, key: &str, value: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT OR REPLACE INTO metadata(key, value) VALUES (?1, ?2)",
+            rusqlite::params![key, value],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     /// 批量插入数据库
     fn batch_insert(&self, files: &[FileRecord]) -> Result<(), String> {
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
 
-        // 开始事务（DELETE 也在事务内，确保原子性）
+        // 每个批次独立事务，避免长事务阻塞搜索和占用过多内存。
         let tx = conn.transaction().map_err(|e| e.to_string())?;
-
-        // 清空现有数据（在事务内）
-        tx.execute("DELETE FROM files", [])
-            .map_err(|e| e.to_string())?;
 
         {
             let mut stmt = tx
@@ -161,12 +189,15 @@ impl IndexBuilder {
             }
         }
 
-        // 重建 FTS 索引
-        tx.execute("INSERT INTO files_fts(files_fts) VALUES('rebuild')", [])
-            .map_err(|e| e.to_string())?;
-
         tx.commit().map_err(|e| e.to_string())?;
 
+        Ok(())
+    }
+
+    fn rebuild_fts(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO files_fts(files_fts) VALUES('rebuild')", [])
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 }

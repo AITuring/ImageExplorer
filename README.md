@@ -91,6 +91,7 @@ The current implementation status is tracked by milestones:
 | M5 | Complete | Trash browsing/restore/empty controls and queued ZIP archive workflows |
 | M6 | Complete | Package, alias, and symbolic-link identification, cross-platform item details, and metadata boundary tests |
 | M7 | Complete | Persistent Favorites and Recent Locations with file-menu and sidebar management |
+| M8 | Complete | Performance hardening, bounded thumbnail cache, watcher lifecycle management, resilient queued operations, disk-space preflight, persistent recovery state, SQLite migrations/integrity repair, updater integration, and release checks |
 
 M3 conflict decisions are applied to the whole pending operation. The default keep-both behavior preserves the existing automatic unique-name fallback. M4 undo removes copied results or moves moved items back to their original directory; deleted items remain available through the operating system Trash.
 
@@ -99,6 +100,18 @@ M5 uses the platform Trash APIs where available and Finder automation on macOS. 
 M6 reloads filesystem metadata when “Get Info” opens so lightweight search-index entries do not hide the real attributes. Packages are identified by directory extension, `.alias` files are marked as aliases, and macOS Finder aliases are detected through Spotlight metadata and resolved through Finder automation. Symbolic links preserve both the link and its target path.
 
 M7 stores Favorites and up to twelve Recent Locations in the application settings store. Favorites are limited to directories so sidebar navigation remains unambiguous; both sections support opening locations from the sidebar, while context menus can remove entries without changing the filesystem.
+
+### Performance and release hardening
+
+- Directory rendering remains virtualized; the backend indexer writes bounded batches instead of retaining a full million-file scan in memory.
+- Copy/move jobs perform a best-effort destination free-space preflight, retry transient I/O/network errors, report recursive directory byte totals, and persist operation snapshots. Queued/running work is marked recoverable after an unexpected restart instead of disappearing.
+- Thumbnail memory is bounded by an LRU cache (entry and byte limits). Directory watchers use reference counting so multiple windows share one watcher and release it when the last view leaves.
+- SQLite uses a versioned migration table, WAL settings, integrity checks, and automatic backup/recreation when the index database is corrupt. A failed/incomplete index build is detected and rebuilt.
+- `pnpm perf:smoke` provides repeatable host filesystem baselines. It intentionally does not claim a Tauri IPC or React P95; device-specific 100k/1M/100GB measurements remain part of release validation.
+- The signed Tauri updater is wired through `tauri-plugin-updater`. Replace the placeholder public key in `src-tauri/tauri.conf.json` and configure `TAURI_SIGNING_PRIVATE_KEY` plus Apple signing/notarization secrets before distributing builds.
+- `pnpm release:check` validates bundle, entitlements, updater metadata, and release prerequisites. The macOS workflow in `.github/workflows/release.yml` performs strict signing/notarization checks when the required Apple secrets are present.
+- The full release gate is documented in [docs/performance-release-checklist.md](./docs/performance-release-checklist.md).
+- Permission behavior and stored-data boundaries are documented in [docs/permissions.md](./docs/permissions.md).
 
 ## Tech Stack
 

@@ -21,6 +21,13 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     console.error("[ErrorBoundary] Uncaught error:", error, errorInfo);
+    try {
+      const crashCount = Number(sessionStorage.getItem("imageexplorer-crash-count") ?? 0);
+      sessionStorage.setItem("imageexplorer-crash-count", String(crashCount + 1));
+    } catch {
+      // Storage can be unavailable in hardened WebViews; the visible recovery
+      // UI still works without the crash counter.
+    }
   }
 
   render() {
@@ -33,7 +40,7 @@ export class ErrorBoundary extends Component<Props, State> {
           </p>
           <button
             className="bg-primary text-primary-foreground rounded-md px-4 py-2 text-sm"
-            onClick={() => this.setState({ hasError: false, error: null })}
+            onClick={() => window.location.reload()}
           >
             Try again
           </button>

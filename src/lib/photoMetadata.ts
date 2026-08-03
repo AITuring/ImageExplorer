@@ -21,6 +21,7 @@ export interface PhotoMetadataSummary {
 }
 
 const metadataCache = new Map<string, PhotoMetadata | null>();
+const MAX_METADATA_CACHE_ENTRIES = 500;
 const pendingMetadata = new Map<string, Promise<PhotoMetadata | null>>();
 const metadataQueue: Array<{
   path: string;
@@ -29,6 +30,16 @@ const metadataQueue: Array<{
 }> = [];
 const MAX_CONCURRENT_METADATA = 2;
 let activeMetadataLoads = 0;
+
+function cacheMetadata(key: string, metadata: PhotoMetadata | null) {
+  metadataCache.delete(key);
+  metadataCache.set(key, metadata);
+  while (metadataCache.size > MAX_METADATA_CACHE_ENTRIES) {
+    const oldest = metadataCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    metadataCache.delete(oldest);
+  }
+}
 
 export function getPhotoMetadataKey(entry: FileEntry) {
   return `${entry.path}:${entry.modified ?? 0}:${entry.size}`;
@@ -48,7 +59,7 @@ function pumpMetadataQueue() {
         return null;
       })
       .then((metadata) => {
-        metadataCache.set(task.cacheKey, metadata);
+        cacheMetadata(task.cacheKey, metadata);
         task.resolve(metadata);
         return metadata;
       })

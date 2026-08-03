@@ -88,6 +88,7 @@ macOS 可通过 `brew install exiftool` 安装 ExifTool，也可以用
 | M5 | 已完成 | 废纸篓浏览/恢复/清空，以及进入任务队列的 ZIP 压缩解压流程 |
 | M6 | 已完成 | Package、Alias、符号链接识别，跨平台详细属性查看，以及元数据边界测试 |
 | M7 | 已完成 | 持久化收藏夹与最近位置，以及文件菜单和侧边栏管理 |
+| M8 | 已完成 | 性能加固、有界缩略图缓存、监听器生命周期管理、可恢复文件操作、磁盘空间预检、操作状态持久化、SQLite 迁移/完整性修复、自动更新接入和发布检查 |
 
 M3 的冲突决策会应用到当前整个任务。默认的“保留两者”会继续使用已有的自动生成不重名路径逻辑。M4 撤销会删除复制出来的结果，或把移动后的项目移回原目录；删除项目仍通过系统废纸篓恢复。
 
@@ -96,6 +97,18 @@ M5 在支持的平台使用系统废纸篓 API，macOS 使用 Finder 自动化�
 M6 的“显示简介”会在打开时重新读取文件系统元数据，避免搜索索引中的轻量条目覆盖真实属性；Package 使用目录扩展名识别，Alias 支持 `.alias` 文件标记，macOS Finder Alias 会通过 Spotlight 元数据识别并通过 Finder 自动化解析目标，符号链接保留链接本身与目标路径。
 
 M7 将收藏夹和最多 12 条最近位置保存到应用设置中。收藏夹只接收文件夹，保证侧边栏导航路径明确；两个区域都支持点击打开，右键菜单可以移除条目且不会修改文件系统内容。
+
+### 7.2 性能与 7.3 发布质量加固
+
+- 文件列表继续使用虚拟化渲染；后台索引器改为分批写入，避免百万文件扫描全部驻留内存。
+- 复制/移动操作增加目标磁盘空间预检、瞬时 I/O/网络错误重试、目录递归字节统计和操作状态持久化。应用异常退出后，排队中/执行中的任务会恢复为可重试失败态，不再静默消失。
+- 缩略图内存缓存采用有界 LRU（同时限制条目数和字节数）；多个窗口共享同一路径 watcher，并在最后一个视图离开后释放监听器。
+- SQLite 使用版本化迁移表、WAL、完整性检查；索引数据库损坏时自动备份并重建，未完成的索引构建也会在下次启动时识别并重建。
+- `pnpm perf:smoke` 提供可重复的主机文件系统基线。它不会冒充 Tauri IPC 或 React P95 测量，10 万目录、100 万索引、100GB 复制仍需在发布机上按清单实测。
+- 已接入 `tauri-plugin-updater` 签名更新流程。发布前必须替换 `src-tauri/tauri.conf.json` 中的占位公钥，并在 CI secrets 配置 `TAURI_SIGNING_PRIVATE_KEY` 以及 Apple 签名/公证密钥。
+- `pnpm release:check` 校验 bundle、entitlements、updater 元数据和发布前置条件；`.github/workflows/release.yml` 在配置 Apple secrets 后执行严格发布检查和构建。
+- 完整发布验收项见 [docs/performance-release-checklist.md](./docs/performance-release-checklist.md)。
+- 权限行为和本地存储边界见 [docs/permissions.md](./docs/permissions.md)。
 
 ## 技术栈
 

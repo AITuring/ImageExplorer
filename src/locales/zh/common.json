@@ -40,6 +40,9 @@
       "focus_camera_af_unavailable": "相机未记录可绘制 AF 坐标"
     }
   },
+  "updates": {
+    "available": "ImageExplorer {{version}} 已发布。现在下载并安装吗？"
+  },
   "indexing": {
     "title": "正在构建文件索引",
     "message": "正在为您的文件建立索引以实现快速搜索，这可能需要一些时间...",

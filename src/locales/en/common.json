@@ -40,6 +40,9 @@
       "focus_camera_af_unavailable": "Camera did not record drawable AF coordinates"
     }
   },
+  "updates": {
+    "available": "ImageExplorer {{version}} is available. Download and install it now?"
+  },
   "indexing": {
     "title": "Building File Index",
     "message": "Indexing your files for fast search. This may take a moment...",

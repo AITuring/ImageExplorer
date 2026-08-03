@@ -1,8 +1,86 @@
 import { invoke } from "@tauri-apps/api/core";
 import { SYSTEM_PATHS } from "@/constants/paths";
 
-// 内存缓存 - 导出以便外部预加载
-export const iconCache: Record<string, string> = {};
+// 有界内存缓存 - 导出一个兼容对象，内部使用 LRU 淘汰，避免大量缩略图
+// 把 WebView 内存无限推高。失败标记也会过期淘汰，不会永久占用缓存槽位。
+const MAX_CACHE_ENTRIES = 1200;
+const MAX_CACHE_BYTES = 64 * 1024 * 1024;
+const iconCacheEntries = new Map<string, string>();
+let iconCacheBytes = 0;
+
+function valueBytes(value: string) {
+  return value.length * 2;
+}
+
+function touchCacheKey(key: string) {
+  const value = iconCacheEntries.get(key);
+  if (value !== undefined) {
+    iconCacheEntries.delete(key);
+    iconCacheEntries.set(key, value);
+  }
+  return value;
+}
+
+function setCacheValue(key: string, value: string) {
+  const previous = iconCacheEntries.get(key);
+  if (previous !== undefined) {
+    iconCacheBytes -= valueBytes(previous);
+    iconCacheEntries.delete(key);
+  }
+  iconCacheEntries.set(key, value);
+  iconCacheBytes += valueBytes(value);
+
+  while (
+    iconCacheEntries.size > MAX_CACHE_ENTRIES ||
+    iconCacheBytes > MAX_CACHE_BYTES
+  ) {
+    const oldest = iconCacheEntries.keys().next().value as string | undefined;
+    if (!oldest) break;
+    const oldestValue = iconCacheEntries.get(oldest);
+    if (oldestValue !== undefined) iconCacheBytes -= valueBytes(oldestValue);
+    iconCacheEntries.delete(oldest);
+  }
+}
+
+function deleteCacheValue(key: string) {
+  const value = iconCacheEntries.get(key);
+  if (value !== undefined) {
+    iconCacheBytes -= valueBytes(value);
+    iconCacheEntries.delete(key);
+    return true;
+  }
+  return false;
+}
+
+// Existing callers intentionally use property access (iconCache[key]). A Proxy
+// keeps that API while enforcing LRU accounting and making Object.entries work.
+export const iconCache = new Proxy<Record<string, string>>({} as Record<string, string>, {
+  get: (_target, key: string | symbol) =>
+    typeof key === "string" ? touchCacheKey(key) : undefined,
+  set: (_target, key: string | symbol, value: string) => {
+    if (typeof key !== "string") return false;
+    setCacheValue(key, value);
+    return true;
+  },
+  deleteProperty: (_target, key: string | symbol) =>
+    typeof key === "string" ? deleteCacheValue(key) : false,
+  has: (_target, key: string | symbol) =>
+    typeof key === "string" ? iconCacheEntries.has(key) : false,
+  ownKeys: () => [...iconCacheEntries.keys()],
+  getOwnPropertyDescriptor: (_target, key: string | symbol) =>
+    typeof key === "string" && iconCacheEntries.has(key)
+      ? { enumerable: true, configurable: true, value: iconCacheEntries.get(key) }
+      : undefined,
+});
+
+export function clearIconCache() {
+  iconCacheEntries.clear();
+  iconCacheBytes = 0;
+}
+
+export function getIconCacheStats() {
+  return { entries: iconCacheEntries.size, bytes: iconCacheBytes };
+}
 
 // 正在加载的图标集合，避免重复请求
 export const loadingIcons = new Set<string>();

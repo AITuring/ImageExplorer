@@ -16,6 +16,8 @@
     "cargo:clippy": "PATH=\"$HOME/.cargo/bin:$PATH\" cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
     "cargo:test": "PATH=\"$HOME/.cargo/bin:$PATH\" cargo test --manifest-path src-tauri/Cargo.toml",
     "cargo:fmt": "PATH=\"$HOME/.cargo/bin:$PATH\" cargo fmt --manifest-path src-tauri/Cargo.toml",
+    "perf:smoke": "node scripts/perf-smoke.mjs",
+    "release:check": "node scripts/release-check.mjs",
     "check:all": "pnpm check && pnpm cargo:check && pnpm cargo:clippy && pnpm cargo:fmt",
     "prepare": "husky"
   },
@@ -38,6 +40,7 @@
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-store": "~2.4.2",
+    "@tauri-apps/plugin-updater": "2.9.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",

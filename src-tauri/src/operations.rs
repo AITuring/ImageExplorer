@@ -1,4 +1,4 @@
-use crate::commands::fs::{copy_file, delete_to_trash, move_file};
+use crate::commands::fs::{copy_file_resumable, delete_to_trash, get_disk_space, move_file};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
@@ -12,7 +12,7 @@ use tauri::{AppHandle, Emitter, State};
 
 static NEXT_OPERATION_ID: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OperationKind {
     Copy,
@@ -22,7 +22,7 @@ pub enum OperationKind {
     Extract,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OperationStatus {
     Queued,
@@ -32,7 +32,7 @@ pub enum OperationStatus {
     Cancelled,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UndoStatus {
     None,
@@ -59,7 +59,7 @@ pub struct OperationConflict {
     pub destination_is_dir: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationSnapshot {
     pub id: String,
     pub kind: OperationKind,
@@ -112,11 +112,80 @@ enum QueueJob {
     },
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct OperationManager {
     records: Arc<Mutex<HashMap<String, OperationRecord>>>,
     queue: Arc<Mutex<VecDeque<QueueJob>>>,
     worker_running: Arc<AtomicBool>,
+}
+
+fn operation_state_path() -> std::path::PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("com.hyperexplorer.app")
+        .join("operations.json")
+}
+
+fn persist_snapshot_map(records: &HashMap<String, OperationRecord>) {
+    let snapshots: Vec<OperationSnapshot> = records
+        .values()
+        .map(|record| {
+            let mut snapshot = record.snapshot.clone();
+            snapshot.current_item = snapshot.current_item.as_deref().map(redact_path);
+            snapshot
+        })
+        .collect();
+    let Ok(payload) = serde_json::to_vec_pretty(&snapshots) else {
+        return;
+    };
+    let path = operation_state_path();
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let temp = path.with_extension("json.tmp");
+    if fs::write(&temp, payload).is_ok() {
+        let _ = fs::rename(temp, path);
+    }
+}
+
+impl Default for OperationManager {
+    fn default() -> Self {
+        let mut records = HashMap::new();
+        if let Ok(payload) = fs::read(operation_state_path()) {
+            if let Ok(mut snapshots) = serde_json::from_slice::<Vec<OperationSnapshot>>(&payload) {
+                for snapshot in &mut snapshots {
+                    if matches!(
+                        snapshot.status,
+                        OperationStatus::Queued | OperationStatus::Running
+                    ) {
+                        snapshot.status = OperationStatus::Failed;
+                        snapshot.cancel_requested = true;
+                        snapshot.finished_at = Some(now_seconds());
+                        snapshot.errors.push(
+                            "Operation interrupted by an application restart; please retry it."
+                                .to_string(),
+                        );
+                    }
+                    records.insert(
+                        snapshot.id.clone(),
+                        OperationRecord {
+                            snapshot: snapshot.clone(),
+                            cancel_requested: Arc::new(AtomicBool::new(snapshot.cancel_requested)),
+                            undo_actions: Vec::new(),
+                        },
+                    );
+                }
+            }
+        }
+        Self {
+            records: Arc::new(Mutex::new(records)),
+            queue: Arc::new(Mutex::new(VecDeque::new())),
+            worker_running: Arc::new(AtomicBool::new(false)),
+        }
+    }
 }
 
 fn now_seconds() -> u64 {
@@ -131,12 +200,79 @@ fn new_operation_id() -> String {
     format!("op-{}-{}", now_seconds(), sequence)
 }
 
-fn source_bytes(paths: &[String]) -> u64 {
-    paths
-        .iter()
-        .filter_map(|path| fs::metadata(path).ok())
-        .map(|metadata| metadata.len())
+fn path_bytes(path: &Path) -> u64 {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if !metadata.is_dir() {
+        return metadata.len();
+    }
+    fs::read_dir(path)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| path_bytes(&entry.path()))
         .sum()
+}
+
+fn source_bytes(paths: &[String]) -> u64 {
+    paths.iter().map(|path| path_bytes(Path::new(path))).sum()
+}
+
+fn is_transient_error(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    [
+        "timed out",
+        "timeout",
+        "temporarily unavailable",
+        "resource busy",
+        "would block",
+        "stale file handle",
+        "input/output error",
+        "network",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
+fn retry_operation<T, F>(mut operation: F) -> Result<T, String>
+where
+    F: FnMut() -> Result<T, String>,
+{
+    let mut last_error = String::new();
+    for attempt in 0..3 {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                last_error = error;
+                if !is_transient_error(&last_error) || attempt == 2 {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(150 * (attempt + 1)));
+            }
+        }
+    }
+    Err(last_error)
+}
+
+fn ensure_destination_space(paths: &[String], destination: &str) -> Result<(), String> {
+    let required = source_bytes(paths);
+    let Some(available) = get_disk_space(destination.to_string())
+        .ok()
+        .and_then(|space| space.available_bytes)
+    else {
+        return Ok(());
+    };
+    let headroom = (required / 100).max(64 * 1024 * 1024);
+    let needed = required.saturating_add(headroom);
+    if available < needed {
+        return Err(format!(
+            "Insufficient disk space: need at least {} bytes, but only {} bytes are available",
+            needed, available
+        ));
+    }
+    Ok(())
 }
 
 fn destination_for(path: &str, destination: &str) -> Result<std::path::PathBuf, String> {
@@ -144,6 +280,23 @@ fn destination_for(path: &str, destination: &str) -> Result<std::path::PathBuf, 
         .file_name()
         .map(|name| Path::new(destination).join(name))
         .ok_or_else(|| format!("Invalid source path: {}", path))
+}
+
+fn redact_path(path: &str) -> String {
+    if let Some(home) = dirs::home_dir() {
+        let home = home.to_string_lossy();
+        if let Some(relative) = path.strip_prefix(home.as_ref()) {
+            return format!("~{}", relative);
+        }
+    }
+    path.to_string()
+}
+
+fn redact_error(error: &str) -> String {
+    if let Some(home) = dirs::home_dir() {
+        return error.replace(home.to_string_lossy().as_ref(), "~");
+    }
+    error.to_string()
 }
 
 pub fn conflicts(paths: Vec<String>, destination: String) -> Vec<OperationConflict> {
@@ -315,6 +468,10 @@ impl OperationManager {
             return Err("A destination directory is required".to_string());
         }
 
+        if matches!(kind, OperationKind::Copy | OperationKind::Move) {
+            ensure_destination_space(&paths, destination.as_deref().unwrap_or_default())?;
+        }
+
         let id = new_operation_id();
         let cancel_requested = Arc::new(AtomicBool::new(false));
         let snapshot = OperationSnapshot {
@@ -345,6 +502,7 @@ impl OperationManager {
                     undo_actions: Vec::new(),
                 },
             );
+            persist_snapshot_map(&records);
         }
         self.emit(&app, &snapshot);
 
@@ -423,6 +581,7 @@ impl OperationManager {
                     undo_actions: Vec::new(),
                 },
             );
+            persist_snapshot_map(&records);
         }
         self.emit(&app, &snapshot);
         {
@@ -521,9 +680,7 @@ impl OperationManager {
                 snapshot.current_item = Some(path.clone());
             });
 
-            let item_bytes = fs::metadata(Path::new(path))
-                .map(|metadata| metadata.len())
-                .unwrap_or(0);
+            let item_bytes = path_bytes(Path::new(path));
 
             let destination_path = job
                 .destination
@@ -556,10 +713,16 @@ impl OperationManager {
 
             if matches!(job.conflict_policy, ConflictPolicy::Replace) {
                 if let Some(destination) = destination_path.as_ref().filter(|path| path.exists()) {
-                    if let Err(error) = delete_to_trash(destination.to_string_lossy().to_string()) {
+                    if let Err(error) = retry_operation(|| {
+                        delete_to_trash(destination.to_string_lossy().to_string())
+                    }) {
                         self.update(app, &job.id, |snapshot| {
                             snapshot.failed_items += 1;
-                            snapshot.errors.push(format!("{}: {}", path, error));
+                            snapshot.errors.push(format!(
+                                "{}: {}",
+                                redact_path(path),
+                                redact_error(&error)
+                            ));
                             snapshot.current_item = None;
                         });
                         continue;
@@ -567,14 +730,49 @@ impl OperationManager {
                 }
             }
 
+            let mut reports_byte_progress = false;
             let result = match job.kind {
-                OperationKind::Copy => {
-                    copy_file(path.clone(), job.destination.clone().unwrap_or_default()).map(Some)
+                OperationKind::Copy => retry_operation(|| {
+                    reports_byte_progress = true;
+                    let mut pending_bytes = 0_u64;
+                    let mut last_emit = std::time::Instant::now();
+                    let result = copy_file_resumable(
+                        path.clone(),
+                        job.destination.clone().unwrap_or_default(),
+                        |delta| {
+                            if cancel_requested.load(Ordering::Acquire) {
+                                return false;
+                            }
+                            pending_bytes = pending_bytes.saturating_add(delta);
+                            if last_emit.elapsed() >= std::time::Duration::from_millis(100) {
+                                let increment = pending_bytes;
+                                pending_bytes = 0;
+                                self.update(app, &job.id, |snapshot| {
+                                    snapshot.completed_bytes =
+                                        snapshot.completed_bytes.saturating_add(increment);
+                                });
+                                last_emit = std::time::Instant::now();
+                            }
+                            true
+                        },
+                    );
+                    if pending_bytes > 0 {
+                        let increment = pending_bytes;
+                        self.update(app, &job.id, |snapshot| {
+                            snapshot.completed_bytes =
+                                snapshot.completed_bytes.saturating_add(increment);
+                        });
+                    }
+                    result
+                })
+                .map(Some),
+                OperationKind::Move => retry_operation(|| {
+                    move_file(path.clone(), job.destination.clone().unwrap_or_default())
+                })
+                .map(Some),
+                OperationKind::Delete => {
+                    retry_operation(|| delete_to_trash(path.clone()).map(|_| ())).map(|_| None)
                 }
-                OperationKind::Move => {
-                    move_file(path.clone(), job.destination.clone().unwrap_or_default()).map(Some)
-                }
-                OperationKind::Delete => delete_to_trash(path.clone()).map(|_| None),
                 OperationKind::Compress | OperationKind::Extract => {
                     Err("Archive operation was routed to the file worker".to_string())
                 }
@@ -614,15 +812,21 @@ impl OperationManager {
                     }
                     self.update(app, &job.id, |snapshot| {
                         snapshot.completed_items += 1;
-                        snapshot.completed_bytes =
-                            snapshot.completed_bytes.saturating_add(item_bytes);
+                        if !reports_byte_progress {
+                            snapshot.completed_bytes =
+                                snapshot.completed_bytes.saturating_add(item_bytes);
+                        }
                         snapshot.current_item = None;
                     });
                 }
                 Err(error) => {
                     self.update(app, &job.id, |snapshot| {
                         snapshot.failed_items += 1;
-                        snapshot.errors.push(format!("{}: {}", path, error));
+                        snapshot.errors.push(format!(
+                            "{}: {}",
+                            redact_path(path),
+                            redact_error(&error)
+                        ));
                         snapshot.current_item = None;
                     });
                 }
@@ -686,7 +890,7 @@ impl OperationManager {
             Err(error) => {
                 self.update(app, &id, |snapshot| {
                     snapshot.failed_items = snapshot.total_items;
-                    snapshot.errors.push(error);
+                    snapshot.errors.push(redact_error(&error));
                     snapshot.current_item = None;
                 });
                 self.finish(app, &id, OperationStatus::Failed);
@@ -746,9 +950,11 @@ impl OperationManager {
                 Err(error) => {
                     self.update(app, &operation_id, |snapshot| {
                         snapshot.undo_status = UndoStatus::Failed;
-                        snapshot
-                            .errors
-                            .push(format!("Undo {}: {}", display_path, error));
+                        snapshot.errors.push(format!(
+                            "Undo {}: {}",
+                            redact_path(&display_path),
+                            redact_error(&error)
+                        ));
                         snapshot.current_item = None;
                     });
                     return;
@@ -782,17 +988,26 @@ impl OperationManager {
     where
         F: FnOnce(&mut OperationSnapshot),
     {
-        let snapshot = {
+        let (snapshot, should_persist) = {
             let Ok(mut records) = self.records.lock() else {
                 return;
             };
             let Some(record) = records.get_mut(id) else {
                 return;
             };
+            let previous_status = record.snapshot.status;
             update(&mut record.snapshot);
             record.snapshot.cancel_requested = record.cancel_requested.load(Ordering::Acquire);
-            record.snapshot.clone()
+            let should_persist = previous_status != record.snapshot.status
+                || record.snapshot.finished_at.is_some()
+                || record.snapshot.completed_items % 25 == 0;
+            (record.snapshot.clone(), should_persist)
         };
+        if should_persist {
+            if let Ok(records) = self.records.lock() {
+                persist_snapshot_map(&records);
+            }
+        }
         self.emit(app, &snapshot);
     }
 
@@ -858,6 +1073,9 @@ impl OperationManager {
             }
             record.snapshot.clone()
         };
+        if let Ok(records) = self.records.lock() {
+            persist_snapshot_map(&records);
+        }
         self.emit(app, &snapshot);
         Ok(())
     }
@@ -889,6 +1107,9 @@ impl OperationManager {
                 actions,
             });
         }
+        if let Ok(records) = self.records.lock() {
+            persist_snapshot_map(&records);
+        }
         self.ensure_worker(app);
         Ok(())
     }
@@ -911,6 +1132,7 @@ impl OperationManager {
             .unwrap_or(false)
         {
             records.remove(id);
+            persist_snapshot_map(&records);
         }
         Ok(())
     }

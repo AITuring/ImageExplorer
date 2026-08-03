@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::fs;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 #[cfg(target_os = "macos")]
 use std::sync::OnceLock;
@@ -144,18 +145,18 @@ fn metadata_details(
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return (
+        (
             Some(metadata.mode()),
             Some(metadata.uid()),
             Some(metadata.gid()),
             None,
-        );
+        )
     }
 
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
-        return (None, None, None, Some(metadata.file_attributes()));
+        (None, None, None, Some(metadata.file_attributes()))
     }
 
     #[cfg(not(any(unix, windows)))]
@@ -199,14 +200,7 @@ fn package_type(path: &Path, is_dir: bool) -> Option<String> {
     let extension = path.extension()?.to_string_lossy().to_lowercase();
     let is_package = matches!(
         extension.as_str(),
-        "app"
-            | "bundle"
-            | "framework"
-            | "plugin"
-            | "kext"
-            | "prefpane"
-            | "appex"
-            | "xpc"
+        "app" | "bundle" | "framework" | "plugin" | "kext" | "prefpane" | "appex" | "xpc"
     );
 
     is_package.then_some(extension)
@@ -556,7 +550,7 @@ fn mounted_volumes_from_foundation() -> Vec<MountedVolume> {
         });
     }
 
-    volumes.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+    volumes.sort_by_key(|volume| volume.name.to_lowercase());
     volumes
 }
 
@@ -590,7 +584,7 @@ fn mounted_volumes_from_mount_directory() -> Result<Vec<MountedVolume>, String> 
         });
     }
 
-    volumes.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+    volumes.sort_by_key(|volume| volume.name.to_lowercase());
     Ok(volumes)
 }
 
@@ -715,7 +709,15 @@ pub fn read_image_dimensions(path: String) -> Result<ImageDimensions, String> {
     #[cfg(target_os = "macos")]
     {
         let output = std::process::Command::new("/usr/bin/sips")
-            .args(["-g", "pixelWidth", "-g", "pixelHeight", "-g", "orientation", &path])
+            .args([
+                "-g",
+                "pixelWidth",
+                "-g",
+                "pixelHeight",
+                "-g",
+                "orientation",
+                &path,
+            ])
             .output()
             .map_err(|e| e.to_string())?;
 
@@ -739,7 +741,7 @@ pub fn read_image_dimensions(path: String) -> Result<ImageDimensions, String> {
             std::mem::swap(&mut width, &mut height);
         }
 
-        return Ok(ImageDimensions { width, height });
+        Ok(ImageDimensions { width, height })
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -782,8 +784,10 @@ fn read_image_metadata_with_imageio(path: &str) -> Option<ImageMetadata> {
     use std::ffi::CString;
 
     extern "C" {
-        fn imageexplorer_image_metadata(path: *const std::ffi::c_char, length: *mut usize)
-            -> *mut u8;
+        fn imageexplorer_image_metadata(
+            path: *const std::ffi::c_char,
+            length: *mut usize,
+        ) -> *mut u8;
         fn imageexplorer_free_thumbnail(buffer: *mut u8);
     }
 
@@ -996,7 +1000,13 @@ fn sony_area_mode(value: Option<&Value>, setting_layout: bool) -> Option<String>
 }
 
 #[cfg(target_os = "macos")]
-fn clamp_af_region(x: f64, y: f64, width: f64, height: f64, confidence: f32) -> Option<CameraAfRegion> {
+fn clamp_af_region(
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    confidence: f32,
+) -> Option<CameraAfRegion> {
     if ![x, y, width, height]
         .iter()
         .all(|value| value.is_finite() && *value >= 0.0)
@@ -1217,7 +1227,9 @@ fn read_sony_camera_af_metadata(path: &str) -> Option<CameraAfMetadata> {
         }
     }
     if regions.is_empty() {
-        if let Some(region) = sony_region_from_flexible_spot(&flexible_spot, &frame_size, orientation) {
+        if let Some(region) =
+            sony_region_from_flexible_spot(&flexible_spot, &frame_size, orientation)
+        {
             regions.push(region);
         }
     }
@@ -1288,8 +1300,8 @@ pub fn read_camera_af_metadata(path: String) -> Result<Option<CameraAfMetadata>,
 
     #[cfg(target_os = "macos")]
     {
-        return Ok(Some(read_sony_camera_af_metadata(&path).unwrap_or_else(|| {
-            CameraAfMetadata {
+        Ok(Some(read_sony_camera_af_metadata(&path).unwrap_or_else(
+            || CameraAfMetadata {
                 source: "unavailable".to_string(),
                 exact: false,
                 regions: Vec::new(),
@@ -1299,8 +1311,8 @@ pub fn read_camera_af_metadata(path: String) -> Result<Option<CameraAfMetadata>,
                 points_used: None,
                 extractor: None,
                 note: Some("未找到 ExifTool 或文件中没有可读取的 Sony MakerNote".to_string()),
-            }
-        })));
+            },
+        )))
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -1450,7 +1462,7 @@ pub fn read_image_metadata(path: String) -> Result<Option<ImageMetadata>, String
             return Ok(Some(imageio_metadata.clone()));
         }
 
-        return Ok(Some(metadata));
+        Ok(Some(metadata))
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -1560,6 +1572,48 @@ pub fn create_file(path: String) -> Result<String, String> {
     Ok(target_path.to_string_lossy().to_string())
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct DiskSpace {
+    pub path: String,
+    pub available_bytes: Option<u64>,
+}
+
+/// Return free space for the filesystem containing `path`. The command is
+/// intentionally best-effort on platforms where the host does not expose a
+/// portable statvfs API; callers should treat `None` as "unknown", not zero.
+#[tauri::command]
+pub fn get_disk_space(path: String) -> Result<DiskSpace, String> {
+    let path_obj = Path::new(&path);
+    let probe = if path_obj.is_dir() {
+        path_obj.to_path_buf()
+    } else {
+        path_obj.parent().unwrap_or(path_obj).to_path_buf()
+    };
+
+    #[cfg(unix)]
+    let available_bytes = std::process::Command::new("df")
+        .args(["-Pk", probe.to_string_lossy().as_ref()])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .nth(1)
+                .and_then(|line| line.split_whitespace().nth(3))
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(|kilobytes| kilobytes.saturating_mul(1024))
+        });
+
+    #[cfg(windows)]
+    let available_bytes = None;
+
+    Ok(DiskSpace {
+        path,
+        available_bytes,
+    })
+}
+
 #[tauri::command]
 pub fn copy_file(src: String, dest_dir: String) -> Result<String, String> {
     let src_path = Path::new(&src);
@@ -1622,15 +1676,143 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
+const COPY_BUFFER_SIZE: usize = 8 * 1024 * 1024;
+
+fn copy_single_resumable<F>(src: &Path, dest: &Path, on_progress: &mut F) -> Result<(), String>
+where
+    F: FnMut(u64) -> bool,
+{
+    let source_size = fs::metadata(src).map_err(|error| error.to_string())?.len();
+    if let Ok(metadata) = fs::metadata(dest) {
+        if metadata.len() == source_size {
+            if source_size > 0 && !on_progress(source_size) {
+                return Err("Operation cancelled".to_string());
+            }
+            return Ok(());
+        }
+    }
+
+    let partial_name = format!(
+        ".{}.imageexplorer-part",
+        dest.file_name().unwrap_or_default().to_string_lossy()
+    );
+    let partial = dest.with_file_name(partial_name);
+    let mut offset = fs::metadata(&partial)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    if offset > source_size {
+        let _ = fs::remove_file(&partial);
+        offset = 0;
+    }
+
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let mut source = fs::File::open(src).map_err(|error| error.to_string())?;
+    source
+        .seek(SeekFrom::Start(offset))
+        .map_err(|error| error.to_string())?;
+    let mut output = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&partial)
+        .map_err(|error| error.to_string())?;
+    let mut buffer = vec![0_u8; COPY_BUFFER_SIZE];
+    loop {
+        let read = source
+            .read(&mut buffer)
+            .map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        output
+            .write_all(&buffer[..read])
+            .map_err(|error| error.to_string())?;
+        if !on_progress(read as u64) {
+            return Err("Operation cancelled".to_string());
+        }
+    }
+    output.flush().map_err(|error| error.to_string())?;
+    output.sync_all().map_err(|error| error.to_string())?;
+    fs::rename(&partial, dest).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn copy_dir_recursive_resumable<F>(
+    src: &Path,
+    dest: &Path,
+    on_progress: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(u64) -> bool,
+{
+    fs::create_dir_all(dest).map_err(|error| error.to_string())?;
+    for entry in fs::read_dir(src).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let src_path = entry.path();
+        let dest_path = dest.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive_resumable(&src_path, &dest_path, on_progress)?;
+        } else {
+            copy_single_resumable(&src_path, &dest_path, on_progress)?;
+        }
+    }
+    Ok(())
+}
+
+/// Copy using an 8 MiB buffer and hidden partial files. A transient failure
+/// leaves the partial file in place so a queued retry resumes from the last
+/// durable offset instead of restarting a large transfer from byte zero.
+pub fn copy_file_resumable<F>(
+    src: String,
+    dest_dir: String,
+    mut on_progress: F,
+) -> Result<String, String>
+where
+    F: FnMut(u64) -> bool,
+{
+    let src_path = Path::new(&src);
+    let dest_dir_path = Path::new(&dest_dir);
+    if !src_path.exists() {
+        return Err(format!("Source does not exist: {}", src));
+    }
+    let file_name = src_path
+        .file_name()
+        .ok_or("Invalid source path")?
+        .to_string_lossy();
+    let dest_path = dest_dir_path.join(&*file_name);
+    let final_dest = if dest_path.exists() && !src_path.is_file() {
+        path_utils::get_unique_path(&dest_path)
+    } else if dest_path.exists() && src_path.is_file() {
+        let partial = dest_path.with_file_name(format!(
+            ".{}.imageexplorer-part",
+            dest_path.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        if partial.exists() {
+            dest_path
+        } else {
+            path_utils::get_unique_path(&dest_path)
+        }
+    } else {
+        dest_path
+    };
+
+    if src_path.is_dir() {
+        copy_dir_recursive_resumable(src_path, &final_dest, &mut on_progress)?;
+    } else {
+        copy_single_resumable(src_path, &final_dest, &mut on_progress)?;
+    }
+    crate::cache::invalidate_dir_cache(&dest_dir);
+    Ok(final_dest.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 pub fn move_file(src: String, dest_dir: String) -> Result<String, String> {
     let src_path = Path::new(&src);
     let dest_dir_path = Path::new(&dest_dir);
 
     // 清除源文件所在目录的缓存
-    let src_parent = src_path
-        .parent()
-        .map(|p| p.to_string_lossy().to_string());
+    let src_parent = src_path.parent().map(|p| p.to_string_lossy().to_string());
 
     let file_name = src_path
         .file_name()
@@ -1662,7 +1844,7 @@ pub fn move_file(src: String, dest_dir: String) -> Result<String, String> {
     }
 
     // Fallback: 先复制，再删除
-    let dest = copy_file(src.clone(), dest_dir)?;
+    let dest = copy_file_resumable(src.clone(), dest_dir, |_| true)?;
 
     if src_path.is_dir() {
         fs::remove_dir_all(src_path).map_err(|e| e.to_string())?;
@@ -1759,7 +1941,9 @@ pub fn batch_rename(
             "suffix" => format!("{}{}{}", old_name, pattern, ext),
             "counter" => {
                 let counter = format!("{}", i + 1);
-                let name = pattern.replace("{counter}", &counter).replace("{name}", &old_name);
+                let name = pattern
+                    .replace("{counter}", &counter)
+                    .replace("{name}", &old_name);
                 format!("{}{}", name, ext)
             }
             _ => {
@@ -1773,7 +1957,10 @@ pub fn batch_rename(
 
         if new_path.exists() && new_path != path_obj {
             failed += 1;
-            errors.push(format!("{}: target '{}' already exists", old_name, new_name));
+            errors.push(format!(
+                "{}: target '{}' already exists",
+                old_name, new_name
+            ));
             continue;
         }
 
@@ -1803,7 +1990,7 @@ pub fn batch_rename(
 
 #[cfg(test)]
 mod file_entry_tests {
-    use super::{get_file_entry, is_alias_entry, package_type};
+    use super::{copy_file_resumable, get_file_entry, is_alias_entry, package_type};
     use std::fs;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1867,6 +2054,48 @@ mod file_entry_tests {
                 .is_some_and(|target| target.ends_with(".hidden.txt")));
             assert!(!link.is_dir);
         }
+
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn resumable_copy_keeps_partial_data_for_retry() {
+        let root = test_root();
+        let destination = root.join("destination");
+        let source = root.join("large.bin");
+        fs::create_dir_all(&destination).expect("create destination");
+        fs::write(&source, vec![7_u8; 1024 * 1024]).expect("write source");
+
+        let mut first_callback = true;
+        let first = copy_file_resumable(
+            source.to_string_lossy().to_string(),
+            destination.to_string_lossy().to_string(),
+            |_| {
+                if first_callback {
+                    first_callback = false;
+                    false
+                } else {
+                    true
+                }
+            },
+        );
+        assert!(first.is_err());
+
+        let mut copied = 0_u64;
+        let final_path = copy_file_resumable(
+            source.to_string_lossy().to_string(),
+            destination.to_string_lossy().to_string(),
+            |bytes| {
+                copied += bytes;
+                true
+            },
+        )
+        .expect("resume copy");
+        assert_eq!(copied, 0);
+        assert_eq!(
+            fs::metadata(final_path).expect("final file").len(),
+            1024 * 1024
+        );
 
         fs::remove_dir_all(root).expect("remove test root");
     }

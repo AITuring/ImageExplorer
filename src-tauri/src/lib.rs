@@ -17,25 +17,25 @@ use commands::apps::{
 };
 use commands::fs::{
     batch_rename, check_full_disk_access, copy_file, create_directory, create_file,
-    delete_to_trash, exists, get_entries, get_file_entry, get_home_dir, get_mounted_volumes,
-    get_parent_dir, move_file, open_file, open_in_terminal, open_url, read_image_base64,
-    read_image_dimensions, read_camera_af_metadata, read_image_metadata, read_text_file, rename,
+    delete_to_trash, exists, get_disk_space, get_entries, get_file_entry, get_home_dir,
+    get_mounted_volumes, get_parent_dir, move_file, open_file, open_in_terminal, open_url,
+    read_camera_af_metadata, read_image_base64, read_image_dimensions, read_image_metadata,
+    read_text_file, rename,
 };
 use commands::search::{get_smart_files, search_files};
 use commands::watcher::{stop_watching, unwatch_directory, watch_directory, WatcherState};
 use db::{Database, IndexBuilder, IndexUpdater, SearchEngine};
 use index::{create_shared_index, IndexedFile, SharedIndex};
 use operations::{
-    cancel_file_operation, clear_file_operation, get_file_operation_conflicts,
-    get_file_operations, start_compress_operation, start_copy_operation,
-    start_delete_operation, start_extract_operation, start_move_operation, undo_file_operation,
-    OperationManager,
+    cancel_file_operation, clear_file_operation, get_file_operation_conflicts, get_file_operations,
+    start_compress_operation, start_copy_operation, start_delete_operation,
+    start_extract_operation, start_move_operation, undo_file_operation, OperationManager,
 };
-use trash_commands::{empty_trash, list_trash, restore_trash_entry};
 use serde::Serialize;
 use std::process::Child;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
+use trash_commands::{empty_trash, list_trash, restore_trash_entry};
 #[cfg(target_os = "macos")]
 use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
 
@@ -250,11 +250,7 @@ fn fallback_to_memory_index(
 }
 
 /// 启动 SQLite 增量监听器（支持优雅关闭）
-fn start_sqlite_watcher(
-    db: SharedDatabase,
-    root: String,
-    stop_rx: std::sync::mpsc::Receiver<()>,
-) {
+fn start_sqlite_watcher(db: SharedDatabase, root: String, stop_rx: std::sync::mpsc::Receiver<()>) {
     use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
     std::thread::spawn(move || {
@@ -307,16 +303,16 @@ fn start_sqlite_watcher(
                             let _ = updater.remove(&path_str);
                         }
                     }
-                    EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
-                        if event.paths.len() == 2 {
-                            let from = &event.paths[0];
-                            let to = &event.paths[1];
-                            let _ = updater.rename(
-                                &from.to_string_lossy(),
-                                &to.to_string_lossy(),
-                                to.is_dir(),
-                            );
-                        }
+                    EventKind::Modify(notify::event::ModifyKind::Name(_))
+                        if event.paths.len() == 2 =>
+                    {
+                        let from = &event.paths[0];
+                        let to = &event.paths[1];
+                        let _ = updater.rename(
+                            &from.to_string_lossy(),
+                            &to.to_string_lossy(),
+                            to.is_dir(),
+                        );
                     }
                     _ => {}
                 },
@@ -360,6 +356,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Mutex::new(WatcherState::new()))
         .manage(Mutex::new(None::<Child>))
         .manage(shared_index.clone())
@@ -447,6 +444,7 @@ pub fn run() {
             get_file_entry,
             get_home_dir,
             get_mounted_volumes,
+            get_disk_space,
             get_parent_dir,
             open_file,
             delete_to_trash,
@@ -507,7 +505,9 @@ pub fn run() {
                         let _ = sender.send(());
                     }
                 }
-                if let Ok(mut native_quick_look) = _app_handle.state::<NativeQuickLookState>().lock() {
+                if let Ok(mut native_quick_look) =
+                    _app_handle.state::<NativeQuickLookState>().lock()
+                {
                     if let Some(mut child) = native_quick_look.take() {
                         let _ = child.kill();
                         let _ = child.wait();

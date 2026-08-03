@@ -131,6 +131,9 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
       if (indexTimer) {
         clearTimeout(indexTimer);
       }
+      if (!currentPath.startsWith(SMART_FOLDER_PREFIX)) {
+        invoke("unwatch_directory", { path: currentPath }).catch(() => undefined);
+      }
     };
   }, [currentPath, loadEntries]);
 

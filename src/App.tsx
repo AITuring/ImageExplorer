@@ -20,6 +20,8 @@ import { TrashDialog } from "@/components/TrashDialog";
 import { FileInfoDialog } from "@/components/FileInfoDialog";
 import { ensureDirectoryAccess } from "@/lib/directoryAccess";
 import { useLocations } from "@/stores/locations";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 
 function App() {
   const [isInitializing, setIsInitializing] = useState(true);
@@ -50,6 +52,30 @@ function App() {
   useEffect(() => {
     void hydrateLocations();
   }, [hydrateLocations]);
+
+  // Check signed update metadata after the first shell is mounted. A failed
+  // check is deliberately non-fatal so offline/network-error startups remain
+  // fully usable.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const update = await check();
+        if (!update || cancelled) return;
+        const accepted = window.confirm(
+          `${t("updates.available", { version: update.version })}`
+        );
+        if (!accepted || cancelled) return;
+        await update.downloadAndInstall();
+        if (!cancelled) await relaunch();
+      } catch (error) {
+        console.warn("[Updater] Update check skipped:", error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
 
   useEffect(() => {
     if (locationsHydrated && activeTab?.path) {

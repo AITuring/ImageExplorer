@@ -1,10 +1,11 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useDeferredValue } from "react";
 import { FileEntry } from "@/types";
 import type { SortDirection, SortField } from "@/types";
 
 export function useFileSort(entries: FileEntry[]) {
   const [sortField, setSortField] = useState<SortField>("name");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const deferredEntries = useDeferredValue(entries);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -21,7 +22,7 @@ export function useFileSort(entries: FileEntry[]) {
   };
 
   const sortedEntries = useMemo(() => {
-    return [...entries].sort((a, b) => {
+    return [...deferredEntries].sort((a, b) => {
       // 始终让文件夹排在前面
       if (a.is_dir !== b.is_dir) {
         return a.is_dir ? -1 : 1;
@@ -48,7 +49,7 @@ export function useFileSort(entries: FileEntry[]) {
 
       return sortDirection === "asc" ? comparison : -comparison;
     });
-  }, [entries, sortField, sortDirection]);
+  }, [deferredEntries, sortField, sortDirection]);
 
   return {
     sortField,

@@ -83,6 +83,17 @@ interface CachedAnalysis {
 }
 
 const featureCache = new Map<string, CachedAnalysis>();
+const MAX_FEATURE_CACHE_ENTRIES = 300;
+
+function cacheFeatures(key: string, features: CachedAnalysis) {
+  featureCache.delete(key);
+  featureCache.set(key, features);
+  while (featureCache.size > MAX_FEATURE_CACHE_ENTRIES) {
+    const oldest = featureCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    featureCache.delete(oldest);
+  }
+}
 
 export function isAnalyzablePhoto(entry: FileEntry): boolean {
   return (
@@ -522,7 +533,7 @@ async function analyzeEntry(entry: FileEntry, key: string, signal: AbortSignal) 
   const image = await decodeThumbnail(base64);
   if (signal.aborted) return null;
   const features = createFeatures(image, entry.path);
-  featureCache.set(key, { key, features });
+  cacheFeatures(key, { key, features });
   return features;
 }
 

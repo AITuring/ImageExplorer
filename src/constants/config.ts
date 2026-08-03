@@ -1,5 +1,6 @@
 // 搜索相关常量
-export const SEARCH_DEBOUNCE_MS = 100;
+// Leave headroom inside the 100 ms interaction target for IPC and SQLite work.
+export const SEARCH_DEBOUNCE_MS = 50;
 
 // UI 相关常量
 export const FOCUS_DELAY_MS = 50;
