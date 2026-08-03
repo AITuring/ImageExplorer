@@ -57,6 +57,16 @@
     "status_cancelled": "已取消",
     "cancel": "取消操作",
     "clear": "清除此记录",
-    "clear_completed": "清除已完成"
+    "clear_completed": "清除已完成",
+    "conflict_title": "发现同名文件",
+    "conflict_description": "目标位置已有 {{count}} 个同名项目，请选择处理方式。",
+    "conflict_existing": "目标已有：{{path}}",
+    "conflict_more": "还有 {{count}} 个项目",
+    "conflict_action": "处理方式",
+    "conflict_keep_both": "保留两者（自动重命名新项目）",
+    "conflict_replace": "替换目标（原项目移到废纸篓）",
+    "conflict_skip": "跳过冲突项目",
+    "conflict_cancel": "取消操作",
+    "conflict_continue": "继续"
   }
 }

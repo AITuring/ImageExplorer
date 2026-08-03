@@ -1,5 +1,5 @@
 use crate::commands::fs::{copy_file, delete_to_trash, move_file};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::Path;
@@ -30,6 +30,22 @@ pub enum OperationStatus {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictPolicy {
+    KeepBoth,
+    Replace,
+    Skip,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OperationConflict {
+    pub source: String,
+    pub destination: String,
+    pub source_is_dir: bool,
+    pub destination_is_dir: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct OperationSnapshot {
     pub id: String,
@@ -38,6 +54,7 @@ pub struct OperationSnapshot {
     pub total_items: usize,
     pub completed_items: usize,
     pub failed_items: usize,
+    pub skipped_items: usize,
     pub total_bytes: u64,
     pub completed_bytes: u64,
     pub current_item: Option<String>,
@@ -57,6 +74,7 @@ struct OperationJob {
     kind: OperationKind,
     paths: Vec<String>,
     destination: Option<String>,
+    conflict_policy: ConflictPolicy,
 }
 
 #[derive(Clone, Default)]
@@ -86,6 +104,37 @@ fn source_bytes(paths: &[String]) -> u64 {
         .sum()
 }
 
+fn destination_for(path: &str, destination: &str) -> Result<std::path::PathBuf, String> {
+    Path::new(path)
+        .file_name()
+        .map(|name| Path::new(destination).join(name))
+        .ok_or_else(|| format!("Invalid source path: {}", path))
+}
+
+pub fn conflicts(paths: Vec<String>, destination: String) -> Vec<OperationConflict> {
+    paths
+        .into_iter()
+        .filter_map(|source| {
+            let target = destination_for(&source, &destination).ok()?;
+            if !target.exists() {
+                return None;
+            }
+            let source_is_dir = fs::metadata(&source)
+                .map(|metadata| metadata.is_dir())
+                .unwrap_or(false);
+            let destination_is_dir = fs::metadata(&target)
+                .map(|metadata| metadata.is_dir())
+                .unwrap_or(false);
+            Some(OperationConflict {
+                source,
+                destination: target.to_string_lossy().to_string(),
+                source_is_dir,
+                destination_is_dir,
+            })
+        })
+        .collect()
+}
+
 impl OperationManager {
     pub fn start(
         &self,
@@ -93,6 +142,7 @@ impl OperationManager {
         kind: OperationKind,
         paths: Vec<String>,
         destination: Option<String>,
+        conflict_policy: Option<ConflictPolicy>,
     ) -> Result<String, String> {
         if paths.is_empty() {
             return Err("No files were selected".to_string());
@@ -113,6 +163,7 @@ impl OperationManager {
             total_items: paths.len(),
             completed_items: 0,
             failed_items: 0,
+            skipped_items: 0,
             total_bytes: source_bytes(&paths),
             completed_bytes: 0,
             current_item: None,
@@ -141,6 +192,7 @@ impl OperationManager {
                 kind,
                 paths,
                 destination,
+                conflict_policy: conflict_policy.unwrap_or(ConflictPolicy::KeepBoth),
             });
         }
 
@@ -222,6 +274,49 @@ impl OperationManager {
             let item_bytes = fs::metadata(Path::new(path))
                 .map(|metadata| metadata.len())
                 .unwrap_or(0);
+
+            let destination_path = job
+                .destination
+                .as_deref()
+                .and_then(|destination| destination_for(path, destination).ok());
+
+            if matches!(job.kind, OperationKind::Move)
+                && destination_path
+                    .as_ref()
+                    .is_some_and(|destination| destination == Path::new(path))
+            {
+                self.update(app, &job.id, |snapshot| {
+                    snapshot.skipped_items += 1;
+                    snapshot.current_item = None;
+                });
+                continue;
+            }
+
+            if destination_path
+                .as_ref()
+                .is_some_and(|destination| destination.exists())
+                && matches!(job.conflict_policy, ConflictPolicy::Skip)
+            {
+                self.update(app, &job.id, |snapshot| {
+                    snapshot.skipped_items += 1;
+                    snapshot.current_item = None;
+                });
+                continue;
+            }
+
+            if matches!(job.conflict_policy, ConflictPolicy::Replace) {
+                if let Some(destination) = destination_path.as_ref().filter(|path| path.exists()) {
+                    if let Err(error) = delete_to_trash(destination.to_string_lossy().to_string()) {
+                        self.update(app, &job.id, |snapshot| {
+                            snapshot.failed_items += 1;
+                            snapshot.errors.push(format!("{}: {}", path, error));
+                            snapshot.current_item = None;
+                        });
+                        continue;
+                    }
+                }
+            }
+
             let result = match job.kind {
                 OperationKind::Copy => {
                     copy_file(path.clone(), job.destination.clone().unwrap_or_default()).map(|_| ())
@@ -388,8 +483,15 @@ pub fn start_copy_operation(
     manager: State<'_, OperationManager>,
     paths: Vec<String>,
     dest_dir: String,
+    conflict_policy: Option<ConflictPolicy>,
 ) -> Result<String, String> {
-    manager.start(app, OperationKind::Copy, paths, Some(dest_dir))
+    manager.start(
+        app,
+        OperationKind::Copy,
+        paths,
+        Some(dest_dir),
+        conflict_policy,
+    )
 }
 
 #[tauri::command]
@@ -398,8 +500,15 @@ pub fn start_move_operation(
     manager: State<'_, OperationManager>,
     paths: Vec<String>,
     dest_dir: String,
+    conflict_policy: Option<ConflictPolicy>,
 ) -> Result<String, String> {
-    manager.start(app, OperationKind::Move, paths, Some(dest_dir))
+    manager.start(
+        app,
+        OperationKind::Move,
+        paths,
+        Some(dest_dir),
+        conflict_policy,
+    )
 }
 
 #[tauri::command]
@@ -408,7 +517,15 @@ pub fn start_delete_operation(
     manager: State<'_, OperationManager>,
     paths: Vec<String>,
 ) -> Result<String, String> {
-    manager.start(app, OperationKind::Delete, paths, None)
+    manager.start(app, OperationKind::Delete, paths, None, None)
+}
+
+#[tauri::command]
+pub fn get_file_operation_conflicts(
+    paths: Vec<String>,
+    dest_dir: String,
+) -> Vec<OperationConflict> {
+    conflicts(paths, dest_dir)
 }
 
 #[tauri::command]
@@ -431,4 +548,41 @@ pub fn clear_file_operation(
     operation_id: String,
 ) -> Result<(), String> {
     manager.clear(&operation_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::conflicts;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn conflicts_reports_existing_destination_items() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be valid")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("imageexplorer-conflict-test-{}", suffix));
+        let source_dir = root.join("source");
+        let destination_dir = root.join("destination");
+        fs::create_dir_all(&source_dir).expect("source directory should be created");
+        fs::create_dir_all(&destination_dir).expect("destination directory should be created");
+        let source = source_dir.join("sample.txt");
+        let destination = destination_dir.join("sample.txt");
+        fs::write(&source, b"source").expect("source file should be written");
+        fs::write(&destination, b"destination").expect("destination file should be written");
+
+        let result = conflicts(
+            vec![source.to_string_lossy().to_string()],
+            destination_dir.to_string_lossy().to_string(),
+        );
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].source, source.to_string_lossy());
+        assert_eq!(result[0].destination, destination.to_string_lossy());
+        assert!(!result[0].source_is_dir);
+        assert!(!result[0].destination_is_dir);
+
+        let _ = fs::remove_dir_all(root);
+    }
 }

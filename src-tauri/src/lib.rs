@@ -25,8 +25,9 @@ use commands::watcher::{stop_watching, unwatch_directory, watch_directory, Watch
 use db::{Database, IndexBuilder, IndexUpdater, SearchEngine};
 use index::{create_shared_index, IndexedFile, SharedIndex};
 use operations::{
-    cancel_file_operation, clear_file_operation, get_file_operations, start_copy_operation,
-    start_delete_operation, start_move_operation, OperationManager,
+    cancel_file_operation, clear_file_operation, get_file_operation_conflicts,
+    get_file_operations, start_copy_operation, start_delete_operation, start_move_operation,
+    OperationManager,
 };
 use serde::Serialize;
 use std::process::Child;
@@ -481,6 +482,7 @@ pub fn run() {
             start_copy_operation,
             start_move_operation,
             start_delete_operation,
+            get_file_operation_conflicts,
             get_file_operations,
             cancel_file_operation,
             clear_file_operation

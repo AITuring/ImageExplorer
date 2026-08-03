@@ -7,6 +7,7 @@ import { useClipboard } from "@/stores/clipboard";
 import { openWithService } from "@/lib/openWith";
 import { isTerminalOperationStatus } from "@/hooks/useOperationCenter";
 import { invalidateCache } from "@/lib/entriesCache";
+import { enqueueFileOperation } from "@/lib/fileOperations";
 
 interface UseFileOperationsOptions {
   currentPath: string;
@@ -92,11 +93,15 @@ export function useFileOperations({
 
     try {
       if (operation === "copy") {
-        await invoke<string>("start_copy_operation", { paths, destDir: currentPath });
+        await enqueueFileOperation({ kind: "copy", paths, destDir: currentPath });
       } else if (operation === "cut") {
-        await invoke<string>("start_move_operation", { paths, destDir: currentPath });
+        const operationId = await enqueueFileOperation({
+          kind: "move",
+          paths,
+          destDir: currentPath,
+        });
         // 剪切语义只应消费一次；实际结果会在进度中心中显示。
-        clipboard.clear();
+        if (operationId) clipboard.clear();
       }
     } catch (error) {
       console.error("Failed to enqueue paste operation:", error);
@@ -173,7 +178,8 @@ export function useFileOperations({
     handleMove: useCallback(
       async (sourcePath: string, targetPath: string) => {
         try {
-          await invoke<string>("start_move_operation", {
+          await enqueueFileOperation({
+            kind: "move",
             paths: [sourcePath],
             destDir: targetPath,
           });

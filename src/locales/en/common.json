@@ -57,6 +57,16 @@
     "status_cancelled": "Cancelled",
     "cancel": "Cancel operation",
     "clear": "Clear record",
-    "clear_completed": "Clear completed"
+    "clear_completed": "Clear completed",
+    "conflict_title": "Name conflict detected",
+    "conflict_description": "There are {{count}} items with the same name in the destination. Choose how to continue.",
+    "conflict_existing": "Existing target: {{path}}",
+    "conflict_more": "{{count}} more items",
+    "conflict_action": "Action",
+    "conflict_keep_both": "Keep both (rename the new item)",
+    "conflict_replace": "Replace target (move the existing item to Trash)",
+    "conflict_skip": "Skip conflicting items",
+    "conflict_cancel": "Cancel operation",
+    "conflict_continue": "Continue"
   }
 }

@@ -26,6 +26,7 @@ import { useClipboard } from "@/stores/clipboard";
 import { usePhotoAnalysisMode } from "@/stores/photoAnalysisMode";
 import { usePhotoAnalysisProgress } from "@/stores/photoAnalysisProgress";
 import { PhotoAnalysisProgressIndicator } from "@/components/PhotoAnalysisProgressIndicator";
+import { enqueueFileOperation } from "@/lib/fileOperations";
 
 // 省略号模式: "start" = 前面省略, "end" = 后面省略
 type EllipsisMode = "start" | "end";
@@ -267,10 +268,14 @@ export function TopBar({ onNavigate }: TopBarProps) {
         try {
           const paths = [...clipboard.paths];
           if (clipboard.operation === "copy") {
-            await invoke("start_copy_operation", { paths, destDir: currentPath });
+            await enqueueFileOperation({ kind: "copy", paths, destDir: currentPath });
           } else if (clipboard.operation === "cut") {
-            await invoke("start_move_operation", { paths, destDir: currentPath });
-            clipboard.clear();
+            const operationId = await enqueueFileOperation({
+              kind: "move",
+              paths,
+              destDir: currentPath,
+            });
+            if (operationId) clipboard.clear();
           }
         } catch (error) {
           console.error("Failed to paste from search results:", error);

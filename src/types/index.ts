@@ -48,6 +48,14 @@ export interface SearchResponse {
 
 export type FileOperationKind = "copy" | "move" | "delete";
 export type FileOperationStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type FileOperationConflictPolicy = "keep_both" | "replace" | "skip";
+
+export interface FileOperationConflict {
+  source: string;
+  destination: string;
+  source_is_dir: boolean;
+  destination_is_dir: boolean;
+}
 
 export interface FileOperationSnapshot {
   id: string;
@@ -56,6 +64,7 @@ export interface FileOperationSnapshot {
   total_items: number;
   completed_items: number;
   failed_items: number;
+  skipped_items: number;
   total_bytes: number;
   completed_bytes: number;
   current_item: string | null;

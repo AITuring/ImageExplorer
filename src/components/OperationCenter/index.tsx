@@ -24,7 +24,11 @@ function progressPercent(operation: FileOperationSnapshot): number {
   if (operation.total_items === 0) return 0;
   return Math.min(
     100,
-    Math.round(((operation.completed_items + operation.failed_items) / operation.total_items) * 100)
+    Math.round(
+      ((operation.completed_items + operation.failed_items + operation.skipped_items) /
+        operation.total_items) *
+        100
+    )
   );
 }
 
@@ -50,7 +54,8 @@ function OperationRow({
           <div className="flex items-center justify-between gap-2 text-sm">
             <span className="font-medium">{t(`operations.kind_${operation.kind}`)}</span>
             <span className="text-muted-foreground text-xs">
-              {operation.completed_items + operation.failed_items}/{operation.total_items}
+              {operation.completed_items + operation.failed_items + operation.skipped_items}/
+              {operation.total_items}
             </span>
           </div>
           <div
