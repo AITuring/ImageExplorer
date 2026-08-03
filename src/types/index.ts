@@ -140,6 +140,8 @@ export interface FileActions {
   onCompress?: (entries: FileEntry[]) => void;
   onExtract?: (entry: FileEntry) => void;
   onGetInfo?: (entry: FileEntry) => void;
+  onToggleFavorite?: (entry: FileEntry) => void;
+  isFavorite?: (entry: FileEntry) => boolean;
   onRename?: (entry: FileEntry) => void;
   onGoToLocation?: (entry: FileEntry) => void;
   onBatchRename?: (entries: FileEntry[]) => void;
@@ -168,4 +170,7 @@ export interface SidebarItemActions {
   onOpenInTerminal: () => void;
   path: string;
   name: string;
+  onToggleFavorite?: () => void;
+  isFavorite?: boolean;
+  onRemoveRecent?: () => void;
 }

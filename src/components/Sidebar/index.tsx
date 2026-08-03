@@ -14,6 +14,8 @@ import {
   Settings,
   HardDrive,
   Trash2,
+  Star,
+  Clock3,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AppContextMenu } from "@/components/AppContextMenu";
@@ -21,6 +23,7 @@ import { SmartIcon } from "@/components/SmartIcon";
 import { filterHiddenEntries } from "@/utils/file";
 import { useSetting } from "@/hooks/useSetting";
 import { useTrashDialog } from "@/stores/trashDialog";
+import { getLocationName, useLocations } from "@/stores/locations";
 
 import { FileEntry, FolderItem, MountedVolume, SidebarItemActions } from "@/types";
 
@@ -36,6 +39,46 @@ const SIDEBAR_KEYBOARD_STEP = 16;
 
 function clampSidebarWidth(width: number) {
   return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, width));
+}
+
+function SidebarLocationRow({
+  path,
+  icon: Icon,
+  onNavigate,
+  onToggleFavorite,
+  isFavorite,
+  onRemoveRecent,
+}: {
+  path: string;
+  icon: typeof Star;
+  onNavigate: (path: string) => void;
+  onToggleFavorite?: () => void;
+  isFavorite?: boolean;
+  onRemoveRecent?: () => void;
+}) {
+  const label = getLocationName(path);
+  const sidebarItemActions: SidebarItemActions = {
+    onOpen: () => onNavigate(path),
+    onOpenInTerminal: () => invoke("open_in_terminal", { path }),
+    path,
+    name: label,
+    onToggleFavorite,
+    isFavorite,
+    onRemoveRecent,
+  };
+
+  return (
+    <AppContextMenu type="sidebar-item" sidebarItemActions={sidebarItemActions}>
+      <button
+        className="hover:bg-accent flex min-h-8 w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
+        onClick={() => onNavigate(path)}
+        title={path}
+      >
+        <Icon className="text-muted-foreground h-4 w-4 shrink-0" aria-hidden="true" />
+        <span className="truncate">{label}</span>
+      </button>
+    </AppContextMenu>
+  );
 }
 
 const getQuickAccess = (t: (key: string) => string, home: string) => {
@@ -238,6 +281,10 @@ function FolderTreeItem({
 export function Sidebar({ onNavigate }: SidebarProps) {
   const { t } = useTranslation();
   const setTrashOpen = useTrashDialog((state) => state.setOpen);
+  const favorites = useLocations((state) => state.favorites);
+  const recentLocations = useLocations((state) => state.recentLocations);
+  const toggleFavorite = useLocations((state) => state.toggleFavorite);
+  const removeRecentLocation = useLocations((state) => state.removeRecentLocation);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [home, setHome] = useState<string>("");
   const [mountedVolumes, setMountedVolumes] = useState<MountedVolume[]>([]);
@@ -466,6 +513,58 @@ export function Sidebar({ onNavigate }: SidebarProps) {
             })}
           </div>
         </div>
+
+        {(favorites.length > 0 || recentLocations.length > 0) && (
+          <div className="border-border/50 border-b p-3">
+            {favorites.length > 0 && (
+              <section aria-labelledby="sidebar-favorites-heading">
+                <h3
+                  id="sidebar-favorites-heading"
+                  className="text-muted-foreground mb-2 px-2 text-xs font-medium"
+                >
+                  {t("sidebar.favorites")}
+                </h3>
+                <div className="space-y-0.5">
+                  {favorites.map((path) => (
+                    <SidebarLocationRow
+                      key={`favorite:${path}`}
+                      path={path}
+                      icon={Star}
+                      onNavigate={onNavigate}
+                      isFavorite
+                      onToggleFavorite={() => void toggleFavorite(path)}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {recentLocations.length > 0 && (
+              <section
+                aria-labelledby="sidebar-recent-heading"
+                className={favorites.length > 0 ? "mt-4 border-t pt-3" : ""}
+              >
+                <h3
+                  id="sidebar-recent-heading"
+                  className="text-muted-foreground mb-2 px-2 text-xs font-medium"
+                >
+                  {t("sidebar.recent")}
+                </h3>
+                <div className="space-y-0.5">
+                  {recentLocations.map((path) => (
+                    <SidebarLocationRow
+                      key={`recent:${path}`}
+                      path={path}
+                      icon={Clock3}
+                      onNavigate={onNavigate}
+                      onRemoveRecent={() => void removeRecentLocation(path)}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
+          </div>
+        )}
 
         {/* 文件夹树 */}
         <div className="flex-1 overflow-auto p-3">

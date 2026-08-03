@@ -19,6 +19,7 @@ import { OperationConflictDialog } from "@/components/OperationConflictDialog";
 import { TrashDialog } from "@/components/TrashDialog";
 import { FileInfoDialog } from "@/components/FileInfoDialog";
 import { ensureDirectoryAccess } from "@/lib/directoryAccess";
+import { useLocations } from "@/stores/locations";
 
 function App() {
   const [isInitializing, setIsInitializing] = useState(true);
@@ -41,7 +42,20 @@ function App() {
 
   const { activeTab, tabs, initTabs, navigate, addTransferredTab, setHomePath, closeTab } =
     useTabs();
+  const hydrateLocations = useLocations((state) => state.hydrate);
+  const addRecentLocation = useLocations((state) => state.addRecentLocation);
+  const locationsHydrated = useLocations((state) => state.hydrated);
   const [fileToSelect, setFileToSelect] = useState<string | null>(null);
+
+  useEffect(() => {
+    void hydrateLocations();
+  }, [hydrateLocations]);
+
+  useEffect(() => {
+    if (locationsHydrated && activeTab?.path) {
+      void addRecentLocation(activeTab.path);
+    }
+  }, [activeTab?.path, addRecentLocation, locationsHydrated]);
 
   const handleNavigate = useCallback(
     async (path: string, selectFile?: string) => {

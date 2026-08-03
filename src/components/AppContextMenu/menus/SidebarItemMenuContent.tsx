@@ -8,7 +8,7 @@ import {
 import { SidebarItemActions } from "@/types";
 import { SYSTEM_PATHS } from "@/constants/paths";
 import { MenuItem } from "../MenuItem";
-import { Terminal } from "lucide-react";
+import { Star, Terminal, X } from "lucide-react";
 
 interface SidebarItemMenuContentProps {
   actions: SidebarItemActions;
@@ -32,6 +32,24 @@ export function SidebarItemMenuContent({ actions }: SidebarItemMenuContentProps)
         label={t("context_menu.open_in_terminal")}
         onClick={() => openWithService.openInDefaultTerminal(actions.path)}
       />
+      {actions.onToggleFavorite && (
+        <MenuItem
+          fallbackIcon={Star}
+          label={t(
+            actions.isFavorite
+              ? "context_menu.remove_from_favorites"
+              : "context_menu.add_to_favorites"
+          )}
+          onClick={actions.onToggleFavorite}
+        />
+      )}
+      {actions.onRemoveRecent && (
+        <MenuItem
+          fallbackIcon={X}
+          label={t("context_menu.remove_from_recent")}
+          onClick={actions.onRemoveRecent}
+        />
+      )}
     </ContextMenuContent>
   );
 }

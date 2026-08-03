@@ -24,6 +24,7 @@ import { filterHiddenEntries } from "@/utils/file";
 import { useSetting } from "@/hooks/useSetting";
 import { useClipboard } from "@/stores/clipboard";
 import { useFileInfoDialog } from "@/stores/fileInfoDialog";
+import { useLocations } from "@/stores/locations";
 import { usePhotoAnalysisMode } from "@/stores/photoAnalysisMode";
 import { usePhotoAnalysisProgress } from "@/stores/photoAnalysisProgress";
 import { PhotoAnalysisProgressIndicator } from "@/components/PhotoAnalysisProgressIndicator";
@@ -76,6 +77,8 @@ export function TopBar({ onNavigate }: TopBarProps) {
   const [showHiddenFiles] = useSetting<boolean>("show_hidden_files", false);
   const clipboard = useClipboard();
   const openFileInfo = useFileInfoDialog((state) => state.open);
+  const favorites = useLocations((state) => state.favorites);
+  const toggleFavorite = useLocations((state) => state.toggleFavorite);
 
   // 搜索状态
   const [searchQuery, setSearchQuery] = useState("");
@@ -323,6 +326,10 @@ export function TopBar({ onNavigate }: TopBarProps) {
         }
       },
       onGetInfo: (entry) => openFileInfo(entry),
+      onToggleFavorite: (entry) => {
+        if (entry.is_dir) void toggleFavorite(entry.path);
+      },
+      isFavorite: (entry) => favorites.includes(entry.path),
       onRename: handleSearchRename,
       onGoToLocation: (entry) => {
         const fallbackParentPath = getParentPath(entry.path);
@@ -341,7 +348,9 @@ export function TopBar({ onNavigate }: TopBarProps) {
       handleSearchRename,
       navigateTo,
       openFileInfo,
+      favorites,
       refreshSearchResults,
+      toggleFavorite,
       t,
     ]
   );

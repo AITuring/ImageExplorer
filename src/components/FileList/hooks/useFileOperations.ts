@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { FileEntry, FileOperationSnapshot } from "@/types";
 import { useClipboard } from "@/stores/clipboard";
 import { useFileInfoDialog } from "@/stores/fileInfoDialog";
+import { useLocations } from "@/stores/locations";
 import { openWithService } from "@/lib/openWith";
 import { isTerminalOperationStatus } from "@/hooks/useOperationCenter";
 import { invalidateCache } from "@/lib/entriesCache";
@@ -30,6 +31,8 @@ export function useFileOperations({
   const { t } = useTranslation();
   const clipboard = useClipboard();
   const openFileInfo = useFileInfoDialog((state) => state.open);
+  const favorites = useLocations((state) => state.favorites);
+  const toggleFavorite = useLocations((state) => state.toggleFavorite);
   const onRefreshRef = useRef(onRefresh);
 
   useEffect(() => {
@@ -160,6 +163,16 @@ export function useFileOperations({
     [openFileInfo]
   );
 
+  const handleToggleFavorite = useCallback(
+    (entry: FileEntry) => {
+      if (!entry.is_dir) return;
+      void toggleFavorite(entry.path);
+    },
+    [toggleFavorite]
+  );
+
+  const isFavorite = useCallback((entry: FileEntry) => favorites.includes(entry.path), [favorites]);
+
   const handleCopyPath = useCallback(async (entry: FileEntry) => {
     try {
       await navigator.clipboard.writeText(entry.path);
@@ -211,6 +224,8 @@ export function useFileOperations({
     handleCompress,
     handleExtract,
     handleGetInfo,
+    handleToggleFavorite,
+    isFavorite,
     handleCopyPath,
     handleNewFile,
     handleNewFolder,

@@ -17,6 +17,7 @@ import {
   Copy,
   FolderPlus,
   Info,
+  Star,
   Link,
   Pencil,
   PackageOpen,
@@ -162,6 +163,18 @@ export function FileMenuContent({ entry, selectedEntries, actions }: FileMenuCon
           label={t("context_menu.get_info")}
           shortcut="⌘I"
           onClick={() => actions.onGetInfo?.(entry)}
+        />
+      )}
+
+      {actions.onToggleFavorite && entry.is_dir && (
+        <MenuItem
+          fallbackIcon={Star}
+          label={t(
+            actions.isFavorite?.(entry)
+              ? "context_menu.remove_from_favorites"
+              : "context_menu.add_to_favorites"
+          )}
+          onClick={() => actions.onToggleFavorite?.(entry)}
         />
       )}
 
