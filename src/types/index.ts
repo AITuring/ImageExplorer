@@ -12,6 +12,10 @@ export interface FileEntry {
   is_symlink?: boolean;
   /** Resolved symbolic-link target, when available. */
   symlink_target?: string | null;
+  /** Whether the item is a macOS/Finder alias (or an alias file on other platforms). */
+  is_alias?: boolean;
+  /** Resolved Finder alias target, when available. */
+  alias_target?: string | null;
   /** Whether the item is a platform package such as a .app bundle. */
   is_package?: boolean;
   /** Package extension without the leading dot, when this is a package. */
@@ -135,6 +139,7 @@ export interface FileActions {
   onDelete: (entries: FileEntry[]) => void;
   onCompress?: (entries: FileEntry[]) => void;
   onExtract?: (entry: FileEntry) => void;
+  onGetInfo?: (entry: FileEntry) => void;
   onRename?: (entry: FileEntry) => void;
   onGoToLocation?: (entry: FileEntry) => void;
   onBatchRename?: (entries: FileEntry[]) => void;

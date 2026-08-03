@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
 import { FileEntry, FileOperationSnapshot } from "@/types";
 import { useClipboard } from "@/stores/clipboard";
+import { useFileInfoDialog } from "@/stores/fileInfoDialog";
 import { openWithService } from "@/lib/openWith";
 import { isTerminalOperationStatus } from "@/hooks/useOperationCenter";
 import { invalidateCache } from "@/lib/entriesCache";
@@ -28,6 +29,7 @@ export function useFileOperations({
 }: UseFileOperationsOptions) {
   const { t } = useTranslation();
   const clipboard = useClipboard();
+  const openFileInfo = useFileInfoDialog((state) => state.open);
   const onRefreshRef = useRef(onRefresh);
 
   useEffect(() => {
@@ -151,6 +153,13 @@ export function useFileOperations({
     [t]
   );
 
+  const handleGetInfo = useCallback(
+    (entry: FileEntry) => {
+      openFileInfo(entry);
+    },
+    [openFileInfo]
+  );
+
   const handleCopyPath = useCallback(async (entry: FileEntry) => {
     try {
       await navigator.clipboard.writeText(entry.path);
@@ -201,6 +210,7 @@ export function useFileOperations({
     handleDelete,
     handleCompress,
     handleExtract,
+    handleGetInfo,
     handleCopyPath,
     handleNewFile,
     handleNewFolder,

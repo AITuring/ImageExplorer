@@ -71,6 +71,7 @@ Press **Space** to open Quick Look, use the arrow buttons or Left/Right keys to 
 - **Name Conflict Resolution** — Before copy or move, choose to keep both, replace the existing item by moving it to Trash, skip conflicts, or cancel
 - **Trash Management** — Open the system Trash from the sidebar to browse items, restore them to their original location, or empty the Trash
 - **ZIP Workflows** — Compress selected files/folders to a ZIP or extract a ZIP from the context menu; archive work runs through the operation center
+- **Item Info Inspector** — Use “Get Info” to inspect path, size, timestamps, permissions, ownership, package, alias, and symbolic-link details
 - **QuickLook Preview** — Press Space to preview files (text, images, video, audio, PDF, HEIC, DNG, PSD), with native macOS thumbnail fallback for unsupported formats
 - **Context Menus** — Windows-style right-click with 20+ actions, Finder-like sorting and arranging: "New File", "Open in New Tab" for folders, "Open in Terminal", "Copy Path", etc.
 - **Dark Mode** — Light / Dark / System theme
@@ -87,10 +88,13 @@ The current implementation status is tracked by milestones:
 | M3 | Complete | Same-name conflict dialog with keep-both, replace-to-Trash, skip, and cancel decisions |
 | M4 | Complete | In-memory operation history and one-step undo for completed copy/move actions |
 | M5 | Complete | Trash browsing/restore/empty controls and queued ZIP archive workflows |
+| M6 | Complete | Package, alias, and symbolic-link identification, cross-platform item details, and metadata boundary tests |
 
 M3 conflict decisions are applied to the whole pending operation. The default keep-both behavior preserves the existing automatic unique-name fallback. M4 undo removes copied results or moves moved items back to their original directory; deleted items remain available through the operating system Trash.
 
 M5 uses the platform Trash APIs where available and Finder automation on macOS. ZIP compression uses `ditto` on macOS and `zip`/`unzip` on other platforms.
+
+M6 reloads filesystem metadata when “Get Info” opens so lightweight search-index entries do not hide the real attributes. Packages are identified by directory extension, `.alias` files are marked as aliases, and macOS Finder aliases are detected through Spotlight metadata and resolved through Finder automation. Symbolic links preserve both the link and its target path.
 
 ## Tech Stack
 

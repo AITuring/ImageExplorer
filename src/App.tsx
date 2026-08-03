@@ -17,6 +17,7 @@ import { windowManager } from "@/lib/windowManager";
 import { OperationCenter } from "@/components/OperationCenter";
 import { OperationConflictDialog } from "@/components/OperationConflictDialog";
 import { TrashDialog } from "@/components/TrashDialog";
+import { FileInfoDialog } from "@/components/FileInfoDialog";
 import { ensureDirectoryAccess } from "@/lib/directoryAccess";
 
 function App() {
@@ -241,6 +242,7 @@ function App() {
       <OperationCenter />
       <OperationConflictDialog />
       <TrashDialog />
+      <FileInfoDialog />
 
       {isInitializing ? (
         <div className="flex h-full items-center justify-center">

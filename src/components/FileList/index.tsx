@@ -147,6 +147,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     handleDelete,
     handleCompress,
     handleExtract,
+    handleGetInfo,
     handleCopyPath,
     handleNewFile,
     handleNewFolder,
@@ -413,6 +414,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     onDelete: handleDelete,
     onCompress: handleCompress,
     onExtract: handleExtract,
+    onGetInfo: handleGetInfo,
     onRename: handleStartRename,
     onGoToLocation: currentPath.startsWith(SMART_FOLDER_PREFIX) ? handleGoToLocation : undefined,
     onBatchRename: (entries: FileEntry[]) => {

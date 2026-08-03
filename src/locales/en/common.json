@@ -4,6 +4,8 @@
   "common": {
     "cancel": "Cancel",
     "confirm": "Confirm",
+    "yes": "Yes",
+    "no": "No",
     "loading": "Loading...",
     "folder": "Folder",
     "file": "File",
@@ -87,5 +89,30 @@
     "restore_item": "Restore {{name}}",
     "empty_action": "Empty Trash",
     "empty_confirm": "Empty the Trash permanently? This cannot be undone."
+  },
+  "file_info": {
+    "title": "Item Info",
+    "description": "Inspect detailed attributes for files, folders, packages, aliases, and links.",
+    "kind": "Kind",
+    "folder": "Folder",
+    "file": "File",
+    "path": "Path",
+    "size": "Size",
+    "modified": "Modified",
+    "created": "Created",
+    "accessed": "Accessed",
+    "readonly": "Read-only",
+    "mode": "Permissions",
+    "owner": "Owner / group",
+    "file_attributes": "File attributes",
+    "package": "Package",
+    "package_value": "Package ({{type}})",
+    "package_type": "Package type",
+    "alias": "Alias",
+    "alias_value": "Finder Alias",
+    "alias_target": "Alias target",
+    "symlink": "Symbolic link",
+    "symlink_value": "Symbolic Link",
+    "symlink_target": "Link target"
   }
 }

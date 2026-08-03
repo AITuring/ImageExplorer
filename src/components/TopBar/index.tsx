@@ -23,6 +23,7 @@ import { SEARCH_DEBOUNCE_MS, FOCUS_DELAY_MS } from "@/constants/config";
 import { filterHiddenEntries } from "@/utils/file";
 import { useSetting } from "@/hooks/useSetting";
 import { useClipboard } from "@/stores/clipboard";
+import { useFileInfoDialog } from "@/stores/fileInfoDialog";
 import { usePhotoAnalysisMode } from "@/stores/photoAnalysisMode";
 import { usePhotoAnalysisProgress } from "@/stores/photoAnalysisProgress";
 import { PhotoAnalysisProgressIndicator } from "@/components/PhotoAnalysisProgressIndicator";
@@ -74,6 +75,7 @@ export function TopBar({ onNavigate }: TopBarProps) {
     usePhotoAnalysisProgress();
   const [showHiddenFiles] = useSetting<boolean>("show_hidden_files", false);
   const clipboard = useClipboard();
+  const openFileInfo = useFileInfoDialog((state) => state.open);
 
   // 搜索状态
   const [searchQuery, setSearchQuery] = useState("");
@@ -320,6 +322,7 @@ export function TopBar({ onNavigate }: TopBarProps) {
           alert(t("file_list.error_operation", { error: String(error) }));
         }
       },
+      onGetInfo: (entry) => openFileInfo(entry),
       onRename: handleSearchRename,
       onGoToLocation: (entry) => {
         const fallbackParentPath = getParentPath(entry.path);
@@ -337,6 +340,7 @@ export function TopBar({ onNavigate }: TopBarProps) {
       currentPath,
       handleSearchRename,
       navigateTo,
+      openFileInfo,
       refreshSearchResults,
       t,
     ]

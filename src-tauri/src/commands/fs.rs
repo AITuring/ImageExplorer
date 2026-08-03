@@ -212,6 +212,51 @@ fn package_type(path: &Path, is_dir: bool) -> Option<String> {
     is_package.then_some(extension)
 }
 
+/// Finder aliases are regular files with a special macOS file type. The
+/// extension check also covers aliases exported or copied by other tools and
+/// keeps directory enumeration free of one metadata-process invocation per
+/// item. Resolving the target is deferred to the property inspector.
+fn is_alias_entry(path: &Path) -> bool {
+    path.extension()
+        .map(|extension| extension.to_string_lossy().eq_ignore_ascii_case("alias"))
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn is_native_finder_alias(path: &Path) -> bool {
+    let path_string = path.to_string_lossy();
+    let output = std::process::Command::new("/usr/bin/mdls")
+        .args(["-raw", "-name", "kMDItemContentType", path_string.as_ref()])
+        .output();
+    output
+        .ok()
+        .filter(|value| value.status.success())
+        .map(|value| String::from_utf8_lossy(&value.stdout).trim().to_string())
+        .map(|content_type| content_type == "com.apple.alias-file")
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_finder_alias_target(path: &Path) -> Option<String> {
+    let escaped = path
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let script = format!(
+        "tell application \"Finder\"\nset aliasFile to POSIX file \"{}\" as alias\ntry\nreturn POSIX path of (original item of aliasFile)\non error\nreturn \"\"\nend try\nend tell",
+        escaped
+    );
+    let output = std::process::Command::new("/usr/bin/osascript")
+        .args(["-e", &script])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let target = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!target.is_empty()).then_some(target)
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct FileEntry {
     pub name: String,
@@ -224,6 +269,8 @@ pub struct FileEntry {
     pub is_hidden: bool,
     pub is_symlink: bool,
     pub symlink_target: Option<String>,
+    pub is_alias: bool,
+    pub alias_target: Option<String>,
     pub is_package: bool,
     pub package_type: Option<String>,
     pub created: Option<u64>,
@@ -339,6 +386,8 @@ fn load_directory_entries(path: &str) -> Result<Vec<FileEntry>, String> {
                     is_hidden,
                     is_symlink,
                     symlink_target,
+                    is_alias: is_alias_entry(&file_path),
+                    alias_target: None,
                     is_package: package_type.is_some(),
                     package_type,
                     created,
@@ -361,6 +410,94 @@ fn load_directory_entries(path: &str) -> Result<Vec<FileEntry>, String> {
     });
 
     Ok(entries)
+}
+
+/// Read one entry without requiring callers to load its parent directory.
+/// This is used by the property inspector for search results, whose lightweight
+/// index records intentionally omit filesystem metadata.
+#[tauri::command]
+pub fn get_file_entry(path: String) -> Result<FileEntry, String> {
+    let file_path = Path::new(&path);
+    let metadata = file_path
+        .symlink_metadata()
+        .map_err(|error| format!("Failed to read metadata for {}: {}", path, error))?;
+    let target_metadata = if metadata.file_type().is_symlink() {
+        fs::metadata(file_path).ok()
+    } else {
+        Some(metadata.clone())
+    };
+    let is_symlink = metadata.file_type().is_symlink();
+    let is_dir = target_metadata
+        .as_ref()
+        .map(|value| value.is_dir())
+        .unwrap_or(false);
+    let name = file_path
+        .file_name()
+        .ok_or_else(|| "Invalid file path".to_string())?
+        .to_string_lossy()
+        .to_string();
+    let package_type = package_type(file_path, is_dir);
+    #[cfg(target_os = "macos")]
+    let native_alias = is_native_finder_alias(file_path);
+    #[cfg(target_os = "macos")]
+    let resolved_alias_target = (is_alias_entry(file_path) || native_alias)
+        .then(|| resolve_finder_alias_target(file_path))
+        .flatten();
+    #[cfg(not(target_os = "macos"))]
+    let native_alias = false;
+    #[cfg(not(target_os = "macos"))]
+    let resolved_alias_target: Option<String> = None;
+    let (mode, uid, gid, file_attributes) = metadata_details(&metadata);
+    let symlink_target = is_symlink
+        .then(|| {
+            fs::read_link(file_path)
+                .ok()
+                .map(|target| target.to_string_lossy().to_string())
+        })
+        .flatten();
+    let mut readonly = target_metadata
+        .as_ref()
+        .map(|value| value.permissions().readonly())
+        .unwrap_or(true);
+    if !readonly {
+        readonly = path_utils::is_protected_path(file_path);
+    }
+
+    Ok(FileEntry {
+        name: name.clone(),
+        path: path.clone(),
+        is_dir,
+        size: if is_dir {
+            0
+        } else {
+            target_metadata
+                .as_ref()
+                .map(|value| value.len())
+                .unwrap_or(0)
+        },
+        modified: system_time_seconds(Some(metadata.modified())),
+        extension: if is_dir {
+            None
+        } else {
+            file_path
+                .extension()
+                .map(|value| value.to_string_lossy().to_string())
+        },
+        readonly,
+        is_hidden: is_hidden_entry(&name, Some(&metadata)),
+        is_symlink,
+        symlink_target,
+        is_alias: is_alias_entry(file_path) || native_alias || resolved_alias_target.is_some(),
+        alias_target: resolved_alias_target,
+        is_package: package_type.is_some(),
+        package_type,
+        created: system_time_seconds(Some(metadata.created())),
+        accessed: system_time_seconds(Some(metadata.accessed())),
+        mode,
+        uid,
+        gid,
+        file_attributes,
+    })
 }
 
 #[tauri::command]
@@ -1662,4 +1799,75 @@ pub fn batch_rename(
         failed,
         errors,
     })
+}
+
+#[cfg(test)]
+mod file_entry_tests {
+    use super::{get_file_entry, is_alias_entry, package_type};
+    use std::fs;
+    use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_root() -> std::path::PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("imageexplorer-file-entry-{stamp}"))
+    }
+
+    #[test]
+    fn package_and_alias_detection_is_case_insensitive_and_directory_scoped() {
+        assert_eq!(
+            package_type(Path::new("/tmp/Editor.APP"), true),
+            Some("app".to_string())
+        );
+        assert_eq!(package_type(Path::new("/tmp/Editor.app"), false), None);
+        assert!(is_alias_entry(Path::new("/tmp/Project.ALIAS")));
+        assert!(!is_alias_entry(Path::new("/tmp/Project")));
+    }
+
+    #[test]
+    fn file_entry_preserves_extended_metadata_and_symlink_identity() {
+        let root = test_root();
+        fs::create_dir_all(&root).expect("create test root");
+        let file = root.join(".hidden.txt");
+        fs::write(&file, b"metadata").expect("write test file");
+        let package = root.join("Editor.app");
+        fs::create_dir(&package).expect("create package directory");
+        let alias = root.join("Shortcut.alias");
+        fs::write(&alias, b"alias placeholder").expect("write alias marker");
+
+        let entry = get_file_entry(file.to_string_lossy().to_string()).expect("read file entry");
+        assert!(entry.is_hidden);
+        assert!(!entry.is_dir);
+        assert_eq!(entry.size, 8);
+        assert!(entry.modified.is_some());
+        assert!(entry.created.is_some() || entry.accessed.is_some());
+
+        let package_entry =
+            get_file_entry(package.to_string_lossy().to_string()).expect("read package entry");
+        assert!(package_entry.is_dir);
+        assert!(package_entry.is_package);
+        assert_eq!(package_entry.package_type.as_deref(), Some("app"));
+
+        let alias_entry =
+            get_file_entry(alias.to_string_lossy().to_string()).expect("read alias entry");
+        assert!(alias_entry.is_alias);
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&file, root.join("file-link")).expect("create symlink");
+            let link = get_file_entry(root.join("file-link").to_string_lossy().to_string())
+                .expect("read symlink entry");
+            assert!(link.is_symlink);
+            assert!(link
+                .symlink_target
+                .as_deref()
+                .is_some_and(|target| target.ends_with(".hidden.txt")));
+            assert!(!link.is_dir);
+        }
+
+        fs::remove_dir_all(root).expect("remove test root");
+    }
 }

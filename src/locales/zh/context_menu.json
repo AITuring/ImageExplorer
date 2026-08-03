@@ -8,6 +8,7 @@
   "copy_path": "复制路径",
   "compress_zip": "压缩为 ZIP",
   "extract_zip": "解压 ZIP",
+  "get_info": "显示简介",
   "copy": "复制",
   "cut": "剪切",
   "paste": "粘贴",

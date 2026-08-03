@@ -4,6 +4,8 @@
   "common": {
     "cancel": "取消",
     "confirm": "确定",
+    "yes": "是",
+    "no": "否",
     "loading": "加载中...",
     "folder": "文件夹",
     "file": "文件",
@@ -87,5 +89,30 @@
     "restore_item": "恢复 {{name}}",
     "empty_action": "清空废纸篓",
     "empty_confirm": "确定要永久清空废纸篓吗？此操作无法撤销。"
+  },
+  "file_info": {
+    "title": "项目属性",
+    "description": "查看文件、文件夹、Package、Alias 和链接的详细属性。",
+    "kind": "类型",
+    "folder": "文件夹",
+    "file": "文件",
+    "path": "路径",
+    "size": "大小",
+    "modified": "修改时间",
+    "created": "创建时间",
+    "accessed": "访问时间",
+    "readonly": "只读",
+    "mode": "权限",
+    "owner": "所有者 / 组",
+    "file_attributes": "文件属性",
+    "package": "Package",
+    "package_value": "Package（{{type}}）",
+    "package_type": "Package 类型",
+    "alias": "Alias",
+    "alias_value": "Finder Alias",
+    "alias_target": "Alias 目标",
+    "symlink": "符号链接",
+    "symlink_value": "Symbolic Link",
+    "symlink_target": "链接目标"
   }
 }

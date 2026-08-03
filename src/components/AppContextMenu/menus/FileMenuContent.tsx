@@ -16,6 +16,7 @@ import {
   Clipboard,
   Copy,
   FolderPlus,
+  Info,
   Link,
   Pencil,
   PackageOpen,
@@ -152,6 +153,15 @@ export function FileMenuContent({ entry, selectedEntries, actions }: FileMenuCon
           fallbackIcon={PackageOpen}
           label={t("context_menu.extract_zip")}
           onClick={() => actions.onExtract?.(entry)}
+        />
+      )}
+
+      {actions.onGetInfo && (
+        <MenuItem
+          fallbackIcon={Info}
+          label={t("context_menu.get_info")}
+          shortcut="⌘I"
+          onClick={() => actions.onGetInfo?.(entry)}
         />
       )}
 
