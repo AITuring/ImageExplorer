@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Check, CircleAlert, Clock3, Copy, FolderInput, Trash2, X } from "lucide-react";
+import { Check, CircleAlert, Clock3, Copy, FolderInput, Trash2, Undo2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { FileOperationSnapshot } from "@/types";
@@ -36,15 +36,20 @@ function OperationRow({
   operation,
   onCancel,
   onClear,
+  onUndo,
 }: {
   operation: FileOperationSnapshot;
   onCancel: (id: string) => void;
   onClear: (id: string) => void;
+  onUndo: (id: string) => void;
 }) {
   const { t } = useTranslation();
   const terminal = isTerminalOperationStatus(operation.status);
   const percent = progressPercent(operation);
   const statusKey = `operations.status_${operation.status}`;
+  const canUndo = operation.undo_status === "available" || operation.undo_status === "failed";
+  const undoInProgress = operation.undo_status === "queued" || operation.undo_status === "running";
+  const canClear = terminal && !undoInProgress;
 
   return (
     <div className="border-border/50 space-y-2 border-b px-3 py-3 last:border-b-0">
@@ -76,7 +81,7 @@ function OperationRow({
         ) : (
           <button
             type="button"
-            className="text-muted-foreground hover:text-foreground rounded p-0.5"
+            className="text-muted-foreground hover:text-foreground inline-flex min-h-8 min-w-8 items-center justify-center rounded"
             onClick={() => onCancel(operation.id)}
             aria-label={t("operations.cancel")}
             title={t("operations.cancel")}
@@ -102,10 +107,29 @@ function OperationRow({
         </p>
       )}
 
-      {terminal && (
+      {canUndo && (
         <button
           type="button"
-          className="text-muted-foreground hover:text-foreground text-xs"
+          className="text-primary hover:text-primary/80 inline-flex min-h-8 items-center gap-1 text-xs"
+          onClick={() => onUndo(operation.id)}
+          aria-label={t("operations.undo")}
+          title={t("operations.undo")}
+        >
+          <Undo2 className="h-3.5 w-3.5" aria-hidden="true" />
+          {operation.undo_status === "failed" ? t("operations.undo_retry") : t("operations.undo")}
+        </button>
+      )}
+
+      {operation.undo_status === "queued" || operation.undo_status === "running" ? (
+        <p className="text-muted-foreground text-xs">{t("operations.undo_in_progress")}</p>
+      ) : operation.undo_status === "completed" ? (
+        <p className="text-muted-foreground text-xs">{t("operations.undo_completed")}</p>
+      ) : null}
+
+      {canClear && (
+        <button
+          type="button"
+          className="text-muted-foreground hover:text-foreground inline-flex min-h-8 items-center text-xs"
           onClick={() => onClear(operation.id)}
         >
           {t("operations.clear")}
@@ -117,7 +141,8 @@ function OperationRow({
 
 export function OperationCenter() {
   const { t } = useTranslation();
-  const { operations, cancelOperation, clearOperation, clearCompleted } = useOperationCenter();
+  const { operations, cancelOperation, undoOperation, clearOperation, clearCompleted } =
+    useOperationCenter();
   const activeCount = useMemo(
     () => operations.filter((operation) => !isTerminalOperationStatus(operation.status)).length,
     [operations]
@@ -140,10 +165,15 @@ export function OperationCenter() {
             </span>
           )}
         </div>
-        {operations.some((operation) => isTerminalOperationStatus(operation.status)) && (
+        {operations.some(
+          (operation) =>
+            isTerminalOperationStatus(operation.status) &&
+            operation.undo_status !== "queued" &&
+            operation.undo_status !== "running"
+        ) && (
           <button
             type="button"
-            className="text-muted-foreground hover:text-foreground text-xs"
+            className="text-muted-foreground hover:text-foreground inline-flex min-h-8 items-center text-xs"
             onClick={clearCompleted}
           >
             {t("operations.clear_completed")}
@@ -157,6 +187,7 @@ export function OperationCenter() {
             operation={operation}
             onCancel={cancelOperation}
             onClear={clearOperation}
+            onUndo={undoOperation}
           />
         ))}
       </div>

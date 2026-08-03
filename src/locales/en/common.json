@@ -67,6 +67,10 @@
     "conflict_replace": "Replace target (move the existing item to Trash)",
     "conflict_skip": "Skip conflicting items",
     "conflict_cancel": "Cancel operation",
-    "conflict_continue": "Continue"
+    "conflict_continue": "Continue",
+    "undo": "Undo operation",
+    "undo_retry": "Retry undo",
+    "undo_in_progress": "Undoing…",
+    "undo_completed": "Undone"
   }
 }

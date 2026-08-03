@@ -49,6 +49,13 @@ export interface SearchResponse {
 export type FileOperationKind = "copy" | "move" | "delete";
 export type FileOperationStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type FileOperationConflictPolicy = "keep_both" | "replace" | "skip";
+export type FileOperationUndoStatus =
+  | "none"
+  | "available"
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed";
 
 export interface FileOperationConflict {
   source: string;
@@ -70,6 +77,7 @@ export interface FileOperationSnapshot {
   current_item: string | null;
   errors: string[];
   cancel_requested: boolean;
+  undo_status: FileOperationUndoStatus;
   started_at: number;
   finished_at: number | null;
 }

@@ -67,6 +67,10 @@
     "conflict_replace": "替换目标（原项目移到废纸篓）",
     "conflict_skip": "跳过冲突项目",
     "conflict_cancel": "取消操作",
-    "conflict_continue": "继续"
+    "conflict_continue": "继续",
+    "undo": "撤销操作",
+    "undo_retry": "重试撤销",
+    "undo_in_progress": "正在撤销…",
+    "undo_completed": "已撤销"
   }
 }

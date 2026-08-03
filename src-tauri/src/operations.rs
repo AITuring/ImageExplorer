@@ -30,6 +30,17 @@ pub enum OperationStatus {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UndoStatus {
+    None,
+    Available,
+    Queued,
+    Running,
+    Completed,
+    Failed,
+}
+
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConflictPolicy {
@@ -60,13 +71,21 @@ pub struct OperationSnapshot {
     pub current_item: Option<String>,
     pub errors: Vec<String>,
     pub cancel_requested: bool,
+    pub undo_status: UndoStatus,
     pub started_at: u64,
     pub finished_at: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+enum UndoAction {
+    RemoveCreatedPath { path: String },
+    MoveBack { from: String, to: String },
 }
 
 struct OperationRecord {
     snapshot: OperationSnapshot,
     cancel_requested: Arc<AtomicBool>,
+    undo_actions: Vec<UndoAction>,
 }
 
 struct OperationJob {
@@ -77,10 +96,18 @@ struct OperationJob {
     conflict_policy: ConflictPolicy,
 }
 
+enum QueueJob {
+    Operation(OperationJob),
+    Undo {
+        operation_id: String,
+        actions: Vec<UndoAction>,
+    },
+}
+
 #[derive(Clone, Default)]
 pub struct OperationManager {
     records: Arc<Mutex<HashMap<String, OperationRecord>>>,
-    queue: Arc<Mutex<VecDeque<OperationJob>>>,
+    queue: Arc<Mutex<VecDeque<QueueJob>>>,
     worker_running: Arc<AtomicBool>,
 }
 
@@ -169,6 +196,7 @@ impl OperationManager {
             current_item: None,
             errors: Vec::new(),
             cancel_requested: false,
+            undo_status: UndoStatus::None,
             started_at: now_seconds(),
             finished_at: None,
         };
@@ -180,6 +208,7 @@ impl OperationManager {
                 OperationRecord {
                     snapshot: snapshot.clone(),
                     cancel_requested,
+                    undo_actions: Vec::new(),
                 },
             );
         }
@@ -187,13 +216,13 @@ impl OperationManager {
 
         {
             let mut queue = self.queue.lock().map_err(|e| e.to_string())?;
-            queue.push_back(OperationJob {
+            queue.push_back(QueueJob::Operation(OperationJob {
                 id: id.clone(),
                 kind,
                 paths,
                 destination,
                 conflict_policy: conflict_policy.unwrap_or(ConflictPolicy::KeepBoth),
-            });
+            }));
         }
 
         self.ensure_worker(app);
@@ -222,7 +251,13 @@ impl OperationManager {
                 .and_then(|mut queue| queue.pop_front());
 
             if let Some(job) = job {
-                self.run_job(&app, job);
+                match job {
+                    QueueJob::Operation(job) => self.run_job(&app, job),
+                    QueueJob::Undo {
+                        operation_id,
+                        actions,
+                    } => self.run_undo_job(&app, operation_id, actions),
+                }
                 continue;
             }
 
@@ -319,16 +354,29 @@ impl OperationManager {
 
             let result = match job.kind {
                 OperationKind::Copy => {
-                    copy_file(path.clone(), job.destination.clone().unwrap_or_default()).map(|_| ())
+                    copy_file(path.clone(), job.destination.clone().unwrap_or_default()).map(Some)
                 }
                 OperationKind::Move => {
-                    move_file(path.clone(), job.destination.clone().unwrap_or_default()).map(|_| ())
+                    move_file(path.clone(), job.destination.clone().unwrap_or_default()).map(Some)
                 }
-                OperationKind::Delete => delete_to_trash(path.clone()),
+                OperationKind::Delete => delete_to_trash(path.clone()).map(|_| None),
             };
 
             match result {
-                Ok(()) => {
+                Ok(created_path) => {
+                    if let Some(created_path) = created_path {
+                        let action = match job.kind {
+                            OperationKind::Copy => {
+                                UndoAction::RemoveCreatedPath { path: created_path }
+                            }
+                            OperationKind::Move => UndoAction::MoveBack {
+                                from: path.clone(),
+                                to: created_path,
+                            },
+                            OperationKind::Delete => unreachable!("delete does not return a path"),
+                        };
+                        self.add_undo_action(&job.id, action);
+                    }
                     // 目录监听器按 WebView 注册，跨窗口拖拽时不能只依赖
                     // 单个窗口的 notify watcher；把受影响的目录变化广播给
                     // 所有窗口，让源窗口和目标窗口都立即失效并刷新缓存。
@@ -380,12 +428,88 @@ impl OperationManager {
         self.finish(app, &job.id, status);
     }
 
+    fn run_undo_job(&self, app: &AppHandle, operation_id: String, actions: Vec<UndoAction>) {
+        self.update(app, &operation_id, |snapshot| {
+            snapshot.undo_status = UndoStatus::Running;
+            snapshot.current_item = None;
+        });
+
+        for action in actions.iter().rev() {
+            let (display_path, result) = match action {
+                UndoAction::RemoveCreatedPath { path } => {
+                    (path.clone(), delete_to_trash(path.clone()))
+                }
+                UndoAction::MoveBack { from, to } => {
+                    let result = if Path::new(from).exists() {
+                        Err(format!("Original path already exists: {}", from))
+                    } else if let Some(parent) = Path::new(from).parent() {
+                        move_file(to.clone(), parent.to_string_lossy().to_string()).and_then(
+                            |restored| {
+                                if restored == from.as_str() {
+                                    Ok(())
+                                } else {
+                                    Err(format!("Undo target was renamed to {}", restored))
+                                }
+                            },
+                        )
+                    } else {
+                        Err(format!("Invalid original path: {}", from))
+                    };
+                    (to.clone(), result)
+                }
+            };
+
+            self.update(app, &operation_id, |snapshot| {
+                snapshot.current_item = Some(display_path.clone());
+            });
+
+            match result {
+                Ok(()) => {
+                    if let Some(parent) = Path::new(&display_path).parent() {
+                        let _ = app.emit("dir-change", parent.to_string_lossy().to_string());
+                    }
+                    if let UndoAction::MoveBack { from, .. } = action {
+                        if let Some(parent) = Path::new(from).parent() {
+                            let _ = app.emit("dir-change", parent.to_string_lossy().to_string());
+                        }
+                    }
+                    self.update(app, &operation_id, |snapshot| {
+                        snapshot.current_item = None;
+                    });
+                }
+                Err(error) => {
+                    self.update(app, &operation_id, |snapshot| {
+                        snapshot.undo_status = UndoStatus::Failed;
+                        snapshot
+                            .errors
+                            .push(format!("Undo {}: {}", display_path, error));
+                        snapshot.current_item = None;
+                    });
+                    return;
+                }
+            }
+        }
+
+        self.update(app, &operation_id, |snapshot| {
+            snapshot.undo_status = UndoStatus::Completed;
+            snapshot.current_item = None;
+        });
+    }
+
     fn cancel_flag(&self, id: &str) -> Option<Arc<AtomicBool>> {
         self.records.lock().ok().and_then(|records| {
             records
                 .get(id)
                 .map(|record| record.cancel_requested.clone())
         })
+    }
+
+    fn add_undo_action(&self, id: &str, action: UndoAction) {
+        if let Ok(mut records) = self.records.lock() {
+            if let Some(record) = records.get_mut(id) {
+                record.undo_actions.push(action);
+            }
+        }
     }
 
     fn update<F>(&self, app: &AppHandle, id: &str, update: F)
@@ -407,10 +531,25 @@ impl OperationManager {
     }
 
     fn finish(&self, app: &AppHandle, id: &str, status: OperationStatus) {
+        let has_undo_actions = self
+            .records
+            .lock()
+            .ok()
+            .and_then(|records| {
+                records
+                    .get(id)
+                    .map(|record| !record.undo_actions.is_empty())
+            })
+            .unwrap_or(false);
         self.update(app, id, |snapshot| {
             snapshot.status = status;
             snapshot.current_item = None;
             snapshot.finished_at = Some(now_seconds());
+            snapshot.undo_status = if has_undo_actions {
+                UndoStatus::Available
+            } else {
+                UndoStatus::None
+            };
         });
     }
 
@@ -457,6 +596,37 @@ impl OperationManager {
         Ok(())
     }
 
+    pub fn undo(&self, app: AppHandle, id: &str) -> Result<(), String> {
+        let (snapshot, actions) = {
+            let mut records = self.records.lock().map_err(|e| e.to_string())?;
+            let Some(record) = records.get_mut(id) else {
+                return Err("Operation not found".to_string());
+            };
+            if !matches!(
+                record.snapshot.undo_status,
+                UndoStatus::Available | UndoStatus::Failed
+            ) {
+                return Err("Operation cannot be undone".to_string());
+            }
+            if record.undo_actions.is_empty() {
+                return Err("Operation has no undo actions".to_string());
+            }
+            record.snapshot.undo_status = UndoStatus::Queued;
+            (record.snapshot.clone(), record.undo_actions.clone())
+        };
+
+        self.emit(&app, &snapshot);
+        {
+            let mut queue = self.queue.lock().map_err(|e| e.to_string())?;
+            queue.push_back(QueueJob::Undo {
+                operation_id: id.to_string(),
+                actions,
+            });
+        }
+        self.ensure_worker(app);
+        Ok(())
+    }
+
     pub fn clear(&self, id: &str) -> Result<(), String> {
         let mut records = self.records.lock().map_err(|e| e.to_string())?;
         if records
@@ -467,6 +637,9 @@ impl OperationManager {
                     OperationStatus::Completed
                         | OperationStatus::Failed
                         | OperationStatus::Cancelled
+                ) && !matches!(
+                    record.snapshot.undo_status,
+                    UndoStatus::Queued | UndoStatus::Running
                 )
             })
             .unwrap_or(false)
@@ -540,6 +713,15 @@ pub fn cancel_file_operation(
     operation_id: String,
 ) -> Result<(), String> {
     manager.cancel(&app, &operation_id)
+}
+
+#[tauri::command]
+pub fn undo_file_operation(
+    app: AppHandle,
+    manager: State<'_, OperationManager>,
+    operation_id: String,
+) -> Result<(), String> {
+    manager.undo(app, &operation_id)
 }
 
 #[tauri::command]

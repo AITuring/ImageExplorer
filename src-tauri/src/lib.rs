@@ -27,7 +27,7 @@ use index::{create_shared_index, IndexedFile, SharedIndex};
 use operations::{
     cancel_file_operation, clear_file_operation, get_file_operation_conflicts,
     get_file_operations, start_copy_operation, start_delete_operation, start_move_operation,
-    OperationManager,
+    undo_file_operation, OperationManager,
 };
 use serde::Serialize;
 use std::process::Child;
@@ -485,6 +485,7 @@ pub fn run() {
             get_file_operation_conflicts,
             get_file_operations,
             cancel_file_operation,
+            undo_file_operation,
             clear_file_operation
         ])
         .build(tauri::generate_context!())
