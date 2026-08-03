@@ -6,6 +6,8 @@
   "no_apps_found": "No apps found",
   "other_app": "Other...",
   "copy_path": "Copy Path",
+  "compress_zip": "Compress to ZIP",
+  "extract_zip": "Extract ZIP",
   "copy": "Copy",
   "cut": "Cut",
   "paste": "Paste",

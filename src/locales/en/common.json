@@ -50,6 +50,8 @@
     "kind_copy": "Copy",
     "kind_move": "Move",
     "kind_delete": "Move to Trash",
+    "kind_compress": "Compress ZIP",
+    "kind_extract": "Extract ZIP",
     "status_queued": "Queued",
     "status_running": "In progress",
     "status_completed": "Completed",
@@ -72,5 +74,18 @@
     "undo_retry": "Retry undo",
     "undo_in_progress": "Undoing…",
     "undo_completed": "Undone"
+  },
+  "trash": {
+    "title": "Trash",
+    "description": "View, restore, or empty items in the system Trash.",
+    "count": "{{count}} items",
+    "refresh": "Refresh",
+    "loading": "Loading Trash…",
+    "empty": "Trash is empty",
+    "original_unknown": "Original location unavailable",
+    "restore": "Restore",
+    "restore_item": "Restore {{name}}",
+    "empty_action": "Empty Trash",
+    "empty_confirm": "Empty the Trash permanently? This cannot be undone."
   }
 }

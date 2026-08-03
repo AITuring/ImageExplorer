@@ -6,6 +6,8 @@
   "no_apps_found": "未找到应用",
   "other_app": "其他...",
   "copy_path": "复制路径",
+  "compress_zip": "压缩为 ZIP",
+  "extract_zip": "解压 ZIP",
   "copy": "复制",
   "cut": "剪切",
   "paste": "粘贴",

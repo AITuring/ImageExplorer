@@ -16,6 +16,7 @@ import { useTabShortcuts } from "@/hooks/useTabShortcuts";
 import { windowManager } from "@/lib/windowManager";
 import { OperationCenter } from "@/components/OperationCenter";
 import { OperationConflictDialog } from "@/components/OperationConflictDialog";
+import { TrashDialog } from "@/components/TrashDialog";
 import { ensureDirectoryAccess } from "@/lib/directoryAccess";
 
 function App() {
@@ -239,6 +240,7 @@ function App() {
       <IndexingOverlay />
       <OperationCenter />
       <OperationConflictDialog />
+      <TrashDialog />
 
       {isInitializing ? (
         <div className="flex h-full items-center justify-center">

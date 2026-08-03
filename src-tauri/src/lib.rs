@@ -8,6 +8,7 @@ mod db;
 mod index;
 mod menu;
 mod operations;
+mod trash_commands;
 
 use commands::apps::{
     close_native_quick_look, get_app_icon, get_file_thumbnail, get_file_type_icon,
@@ -26,9 +27,11 @@ use db::{Database, IndexBuilder, IndexUpdater, SearchEngine};
 use index::{create_shared_index, IndexedFile, SharedIndex};
 use operations::{
     cancel_file_operation, clear_file_operation, get_file_operation_conflicts,
-    get_file_operations, start_copy_operation, start_delete_operation, start_move_operation,
-    undo_file_operation, OperationManager,
+    get_file_operations, start_compress_operation, start_copy_operation,
+    start_delete_operation, start_extract_operation, start_move_operation, undo_file_operation,
+    OperationManager,
 };
+use trash_commands::{empty_trash, list_trash, restore_trash_entry};
 use serde::Serialize;
 use std::process::Child;
 use std::sync::{Arc, Mutex};
@@ -482,10 +485,15 @@ pub fn run() {
             start_copy_operation,
             start_move_operation,
             start_delete_operation,
+            start_compress_operation,
+            start_extract_operation,
             get_file_operation_conflicts,
             get_file_operations,
             cancel_file_operation,
             undo_file_operation,
+            list_trash,
+            restore_trash_entry,
+            empty_trash,
             clear_file_operation
         ])
         .build(tauri::generate_context!())

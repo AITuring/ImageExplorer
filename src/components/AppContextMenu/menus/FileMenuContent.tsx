@@ -12,11 +12,13 @@ import { MenuItem } from "../MenuItem";
 import { LoadableOpenWithMenu } from "../LoadableOpenWithMenu";
 import {
   ArrowUpRight,
+  Archive,
   Clipboard,
   Copy,
   FolderPlus,
   Link,
   Pencil,
+  PackageOpen,
   Scissors,
   Terminal,
   Trash2,
@@ -136,6 +138,22 @@ export function FileMenuContent({ entry, selectedEntries, actions }: FileMenuCon
         label={t("context_menu.copy_path")}
         onClick={() => actions.onCopyPath(entry)}
       />
+
+      {actions.onCompress && (
+        <MenuItem
+          fallbackIcon={Archive}
+          label={t("context_menu.compress_zip")}
+          onClick={() => actions.onCompress?.(targets)}
+        />
+      )}
+
+      {actions.onExtract && entry.extension?.toLowerCase() === "zip" && (
+        <MenuItem
+          fallbackIcon={PackageOpen}
+          label={t("context_menu.extract_zip")}
+          onClick={() => actions.onExtract?.(entry)}
+        />
+      )}
 
       {!entry.readonly && (
         <>

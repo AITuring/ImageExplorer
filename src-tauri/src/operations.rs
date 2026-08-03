@@ -18,6 +18,8 @@ pub enum OperationKind {
     Copy,
     Move,
     Delete,
+    Compress,
+    Extract,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -98,6 +100,12 @@ struct OperationJob {
 
 enum QueueJob {
     Operation(OperationJob),
+    Archive {
+        id: String,
+        kind: OperationKind,
+        paths: Vec<String>,
+        destination: String,
+    },
     Undo {
         operation_id: String,
         actions: Vec<UndoAction>,
@@ -160,6 +168,132 @@ pub fn conflicts(paths: Vec<String>, destination: String) -> Vec<OperationConfli
             })
         })
         .collect()
+}
+
+fn unique_archive_path(base: &Path, directory: bool) -> std::path::PathBuf {
+    if !base.exists() {
+        return base.to_path_buf();
+    }
+    let stem = base.file_stem().unwrap_or_default().to_string_lossy();
+    let extension = if directory {
+        String::new()
+    } else {
+        base.extension()
+            .map(|value| format!(".{}", value.to_string_lossy()))
+            .unwrap_or_default()
+    };
+    let mut counter = 1;
+    loop {
+        let candidate = base.with_file_name(format!("{} {}{}", stem, counter, extension));
+        if !candidate.exists() {
+            return candidate;
+        }
+        counter += 1;
+    }
+}
+
+fn run_archive_command(
+    kind: OperationKind,
+    paths: &[String],
+    destination: &str,
+) -> Result<(), String> {
+    if paths.is_empty() {
+        return Err("No archive input was provided".to_string());
+    }
+
+    let output = match kind {
+        OperationKind::Compress => {
+            #[cfg(target_os = "macos")]
+            {
+                std::process::Command::new("/usr/bin/ditto")
+                    .arg("-c")
+                    .arg("-k")
+                    .arg("--sequesterRsrc")
+                    .arg("--keepParent")
+                    .args(paths)
+                    .arg(destination)
+                    .output()
+                    .map_err(|error| error.to_string())?
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let base = Path::new(&paths[0])
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."));
+                let names = paths
+                    .iter()
+                    .map(|path| {
+                        Path::new(path)
+                            .file_name()
+                            .map(|name| name.to_string_lossy().to_string())
+                            .ok_or_else(|| format!("Invalid archive input: {}", path))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                std::process::Command::new("zip")
+                    .current_dir(base)
+                    .arg("-r")
+                    .arg(destination)
+                    .args(names)
+                    .output()
+                    .map_err(|error| error.to_string())?
+            }
+        }
+        OperationKind::Extract => {
+            fs::create_dir_all(destination).map_err(|error| error.to_string())?;
+            #[cfg(target_os = "macos")]
+            {
+                std::process::Command::new("/usr/bin/ditto")
+                    .arg("-x")
+                    .arg("-k")
+                    .arg(&paths[0])
+                    .arg(destination)
+                    .output()
+                    .map_err(|error| error.to_string())?
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let listing = std::process::Command::new("unzip")
+                    .arg("-Z1")
+                    .arg(&paths[0])
+                    .output()
+                    .map_err(|error| error.to_string())?;
+                if !listing.status.success() {
+                    return Err(String::from_utf8_lossy(&listing.stderr).trim().to_string());
+                }
+                for entry in String::from_utf8_lossy(&listing.stdout).lines() {
+                    if Path::new(entry).components().any(|component| {
+                        matches!(
+                            component,
+                            std::path::Component::ParentDir
+                                | std::path::Component::RootDir
+                                | std::path::Component::Prefix(_)
+                        )
+                    }) {
+                        return Err(format!("Unsafe ZIP entry: {}", entry));
+                    }
+                }
+                std::process::Command::new("unzip")
+                    .arg("-o")
+                    .arg(&paths[0])
+                    .arg("-d")
+                    .arg(destination)
+                    .output()
+                    .map_err(|error| error.to_string())?
+            }
+        }
+        _ => return Err("Unsupported archive operation".to_string()),
+    };
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            format!("Archive command exited with {}", output.status)
+        } else {
+            stderr
+        })
+    }
 }
 
 impl OperationManager {
@@ -229,6 +363,81 @@ impl OperationManager {
         Ok(id)
     }
 
+    pub fn start_archive(
+        &self,
+        app: AppHandle,
+        kind: OperationKind,
+        paths: Vec<String>,
+        destination: String,
+    ) -> Result<String, String> {
+        if !matches!(kind, OperationKind::Compress | OperationKind::Extract) {
+            return Err("Unsupported archive operation".to_string());
+        }
+        if paths.is_empty() || destination.is_empty() {
+            return Err("Archive input and destination are required".to_string());
+        }
+        if matches!(kind, OperationKind::Compress)
+            && paths.iter().any(|path| !Path::new(path).exists())
+        {
+            return Err("One or more archive inputs do not exist".to_string());
+        }
+        if matches!(kind, OperationKind::Extract) && !Path::new(&paths[0]).is_file() {
+            return Err("The ZIP archive does not exist".to_string());
+        }
+
+        let final_destination = unique_archive_path(
+            Path::new(&destination),
+            matches!(kind, OperationKind::Extract),
+        );
+        let id = new_operation_id();
+        let cancel_requested = Arc::new(AtomicBool::new(false));
+        let total_items = if matches!(kind, OperationKind::Compress) {
+            paths.len()
+        } else {
+            1
+        };
+        let snapshot = OperationSnapshot {
+            id: id.clone(),
+            kind,
+            status: OperationStatus::Queued,
+            total_items,
+            completed_items: 0,
+            failed_items: 0,
+            skipped_items: 0,
+            total_bytes: source_bytes(&paths),
+            completed_bytes: 0,
+            current_item: None,
+            errors: Vec::new(),
+            cancel_requested: false,
+            undo_status: UndoStatus::None,
+            started_at: now_seconds(),
+            finished_at: None,
+        };
+        {
+            let mut records = self.records.lock().map_err(|e| e.to_string())?;
+            records.insert(
+                id.clone(),
+                OperationRecord {
+                    snapshot: snapshot.clone(),
+                    cancel_requested,
+                    undo_actions: Vec::new(),
+                },
+            );
+        }
+        self.emit(&app, &snapshot);
+        {
+            let mut queue = self.queue.lock().map_err(|e| e.to_string())?;
+            queue.push_back(QueueJob::Archive {
+                id: id.clone(),
+                kind,
+                paths,
+                destination: final_destination.to_string_lossy().to_string(),
+            });
+        }
+        self.ensure_worker(app);
+        Ok(id)
+    }
+
     fn ensure_worker(&self, app: AppHandle) {
         if self
             .worker_running
@@ -253,6 +462,12 @@ impl OperationManager {
             if let Some(job) = job {
                 match job {
                     QueueJob::Operation(job) => self.run_job(&app, job),
+                    QueueJob::Archive {
+                        id,
+                        kind,
+                        paths,
+                        destination,
+                    } => self.run_archive_job(&app, id, kind, paths, destination),
                     QueueJob::Undo {
                         operation_id,
                         actions,
@@ -360,6 +575,9 @@ impl OperationManager {
                     move_file(path.clone(), job.destination.clone().unwrap_or_default()).map(Some)
                 }
                 OperationKind::Delete => delete_to_trash(path.clone()).map(|_| None),
+                OperationKind::Compress | OperationKind::Extract => {
+                    Err("Archive operation was routed to the file worker".to_string())
+                }
             };
 
             match result {
@@ -374,6 +592,9 @@ impl OperationManager {
                                 to: created_path,
                             },
                             OperationKind::Delete => unreachable!("delete does not return a path"),
+                            OperationKind::Compress | OperationKind::Extract => {
+                                unreachable!("archive operation was routed to the file worker")
+                            }
                         };
                         self.add_undo_action(&job.id, action);
                     }
@@ -426,6 +647,51 @@ impl OperationManager {
             })
             .unwrap_or(OperationStatus::Failed);
         self.finish(app, &job.id, status);
+    }
+
+    fn run_archive_job(
+        &self,
+        app: &AppHandle,
+        id: String,
+        kind: OperationKind,
+        paths: Vec<String>,
+        destination: String,
+    ) {
+        let Some(cancel_requested) = self.cancel_flag(&id) else {
+            return;
+        };
+        if cancel_requested.load(Ordering::Acquire) {
+            self.finish(app, &id, OperationStatus::Cancelled);
+            return;
+        }
+
+        self.update(app, &id, |snapshot| {
+            snapshot.status = OperationStatus::Running;
+            snapshot.current_item = paths.first().cloned();
+        });
+
+        let result = run_archive_command(kind, &paths, &destination);
+        match result {
+            Ok(()) => {
+                if let Some(parent) = Path::new(&destination).parent() {
+                    let _ = app.emit("dir-change", parent.to_string_lossy().to_string());
+                }
+                self.update(app, &id, |snapshot| {
+                    snapshot.completed_items = snapshot.total_items;
+                    snapshot.completed_bytes = snapshot.total_bytes;
+                    snapshot.current_item = None;
+                });
+                self.finish(app, &id, OperationStatus::Completed);
+            }
+            Err(error) => {
+                self.update(app, &id, |snapshot| {
+                    snapshot.failed_items = snapshot.total_items;
+                    snapshot.errors.push(error);
+                    snapshot.current_item = None;
+                });
+                self.finish(app, &id, OperationStatus::Failed);
+            }
+        }
     }
 
     fn run_undo_job(&self, app: &AppHandle, operation_id: String, actions: Vec<UndoAction>) {
@@ -691,6 +957,26 @@ pub fn start_delete_operation(
     paths: Vec<String>,
 ) -> Result<String, String> {
     manager.start(app, OperationKind::Delete, paths, None, None)
+}
+
+#[tauri::command]
+pub fn start_compress_operation(
+    app: AppHandle,
+    manager: State<'_, OperationManager>,
+    paths: Vec<String>,
+    dest_path: String,
+) -> Result<String, String> {
+    manager.start_archive(app, OperationKind::Compress, paths, dest_path)
+}
+
+#[tauri::command]
+pub fn start_extract_operation(
+    app: AppHandle,
+    manager: State<'_, OperationManager>,
+    archive_path: String,
+    dest_dir: String,
+) -> Result<String, String> {
+    manager.start_archive(app, OperationKind::Extract, vec![archive_path], dest_dir)
 }
 
 #[tauri::command]

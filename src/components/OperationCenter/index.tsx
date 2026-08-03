@@ -1,5 +1,16 @@
 import { useMemo } from "react";
-import { Check, CircleAlert, Clock3, Copy, FolderInput, Trash2, Undo2, X } from "lucide-react";
+import {
+  Archive,
+  Check,
+  CircleAlert,
+  Clock3,
+  Copy,
+  FolderInput,
+  PackageOpen,
+  Trash2,
+  Undo2,
+  X,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { FileOperationSnapshot } from "@/types";
@@ -15,6 +26,12 @@ function OperationIcon({ kind }: { kind: FileOperationSnapshot["kind"] }) {
   if (kind === "copy") return <Copy className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" />;
   if (kind === "move") {
     return <FolderInput className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" />;
+  }
+  if (kind === "compress") {
+    return <Archive className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" />;
+  }
+  if (kind === "extract") {
+    return <PackageOpen className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" />;
   }
   return <Trash2 className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" />;
 }

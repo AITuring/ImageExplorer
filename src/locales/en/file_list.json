@@ -10,6 +10,7 @@
   "untitled_folder": "untitled folder",
   "error_paste": "Failed to paste: {{error}}",
   "error_delete": "Failed to delete: {{error}}",
+  "error_operation": "File operation failed: {{error}}",
   "error_rename": "Failed to rename: {{error}}",
   "error_path_not_exists": "Path does not exist",
   "permission_title": "Authorize disk access",

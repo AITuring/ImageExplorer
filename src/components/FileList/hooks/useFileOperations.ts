@@ -7,7 +7,11 @@ import { useClipboard } from "@/stores/clipboard";
 import { openWithService } from "@/lib/openWith";
 import { isTerminalOperationStatus } from "@/hooks/useOperationCenter";
 import { invalidateCache } from "@/lib/entriesCache";
-import { enqueueFileOperation } from "@/lib/fileOperations";
+import {
+  enqueueCompressOperation,
+  enqueueExtractOperation,
+  enqueueFileOperation,
+} from "@/lib/fileOperations";
 
 interface UseFileOperationsOptions {
   currentPath: string;
@@ -123,6 +127,30 @@ export function useFileOperations({
     [t]
   );
 
+  const handleCompress = useCallback(
+    async (entries: FileEntry[]) => {
+      try {
+        await enqueueCompressOperation(entries.map((entry) => entry.path));
+      } catch (error) {
+        console.error("Failed to enqueue compression:", error);
+        alert(t("file_list.error_operation", { error: String(error) }));
+      }
+    },
+    [t]
+  );
+
+  const handleExtract = useCallback(
+    async (entry: FileEntry) => {
+      try {
+        await enqueueExtractOperation(entry.path);
+      } catch (error) {
+        console.error("Failed to enqueue extraction:", error);
+        alert(t("file_list.error_operation", { error: String(error) }));
+      }
+    },
+    [t]
+  );
+
   const handleCopyPath = useCallback(async (entry: FileEntry) => {
     try {
       await navigator.clipboard.writeText(entry.path);
@@ -171,6 +199,8 @@ export function useFileOperations({
     handleCut,
     handlePaste,
     handleDelete,
+    handleCompress,
+    handleExtract,
     handleCopyPath,
     handleNewFile,
     handleNewFolder,

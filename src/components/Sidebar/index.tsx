@@ -13,12 +13,14 @@ import {
   Music,
   Settings,
   HardDrive,
+  Trash2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AppContextMenu } from "@/components/AppContextMenu";
 import { SmartIcon } from "@/components/SmartIcon";
 import { filterHiddenEntries } from "@/utils/file";
 import { useSetting } from "@/hooks/useSetting";
+import { useTrashDialog } from "@/stores/trashDialog";
 
 import { FileEntry, FolderItem, MountedVolume, SidebarItemActions } from "@/types";
 
@@ -235,6 +237,7 @@ function FolderTreeItem({
 
 export function Sidebar({ onNavigate }: SidebarProps) {
   const { t } = useTranslation();
+  const setTrashOpen = useTrashDialog((state) => state.setOpen);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [home, setHome] = useState<string>("");
   const [mountedVolumes, setMountedVolumes] = useState<MountedVolume[]>([]);
@@ -523,7 +526,15 @@ export function Sidebar({ onNavigate }: SidebarProps) {
         {/* 设置按钮 */}
         <div className="border-border/50 mt-auto border-t p-3">
           <button
-            className="hover:bg-accent flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
+            className="hover:bg-accent flex min-h-8 w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
+            onClick={() => setTrashOpen(true)}
+            aria-label={t("trash.title")}
+          >
+            <Trash2 className="text-muted-foreground h-4 w-4" aria-hidden="true" />
+            <span>{t("trash.title")}</span>
+          </button>
+          <button
+            className="hover:bg-accent mt-0.5 flex min-h-8 w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
             onClick={(e) => {
               e.stopPropagation();
               setIsSettingsOpen(true);

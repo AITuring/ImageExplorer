@@ -46,7 +46,7 @@ export interface SearchResponse {
   results: SearchResult[];
 }
 
-export type FileOperationKind = "copy" | "move" | "delete";
+export type FileOperationKind = "copy" | "move" | "delete" | "compress" | "extract";
 export type FileOperationStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type FileOperationConflictPolicy = "keep_both" | "replace" | "skip";
 export type FileOperationUndoStatus =
@@ -133,6 +133,8 @@ export interface FileActions {
   onPaste: () => void;
   onCopyPath: (entry: FileEntry) => void;
   onDelete: (entries: FileEntry[]) => void;
+  onCompress?: (entries: FileEntry[]) => void;
+  onExtract?: (entry: FileEntry) => void;
   onRename?: (entry: FileEntry) => void;
   onGoToLocation?: (entry: FileEntry) => void;
   onBatchRename?: (entries: FileEntry[]) => void;

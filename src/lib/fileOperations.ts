@@ -42,3 +42,36 @@ export async function enqueueFileOperation({ kind, paths, destDir }: EnqueueFile
     conflictPolicy: decision as FileOperationConflictPolicy,
   });
 }
+
+function parentPath(path: string): string {
+  const separatorIndex = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return separatorIndex > 0 ? path.slice(0, separatorIndex) : path.slice(0, 1);
+}
+
+function baseName(path: string): string {
+  const separatorIndex = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return path.slice(separatorIndex + 1);
+}
+
+function joinPath(parent: string, name: string): string {
+  const separator = parent.includes("\\") ? "\\" : "/";
+  return `${parent.replace(/[\\/]$/, "")}${separator}${name}`;
+}
+
+export function enqueueCompressOperation(paths: string[]) {
+  if (paths.length === 0) return Promise.resolve(null);
+  const parent = parentPath(paths[0]);
+  const archiveName = paths.length === 1 ? `${baseName(paths[0])}.zip` : "Archive.zip";
+  return invoke<string>("start_compress_operation", {
+    paths,
+    destPath: joinPath(parent, archiveName),
+  });
+}
+
+export function enqueueExtractOperation(archivePath: string) {
+  const name = baseName(archivePath).replace(/\.zip$/i, "") || "Extracted";
+  return invoke<string>("start_extract_operation", {
+    archivePath,
+    destDir: joinPath(parentPath(archivePath), name),
+  });
+}

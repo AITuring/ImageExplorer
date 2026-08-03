@@ -26,7 +26,11 @@ import { useClipboard } from "@/stores/clipboard";
 import { usePhotoAnalysisMode } from "@/stores/photoAnalysisMode";
 import { usePhotoAnalysisProgress } from "@/stores/photoAnalysisProgress";
 import { PhotoAnalysisProgressIndicator } from "@/components/PhotoAnalysisProgressIndicator";
-import { enqueueFileOperation } from "@/lib/fileOperations";
+import {
+  enqueueCompressOperation,
+  enqueueExtractOperation,
+  enqueueFileOperation,
+} from "@/lib/fileOperations";
 
 // 省略号模式: "start" = 前面省略, "end" = 后面省略
 type EllipsisMode = "start" | "end";
@@ -298,6 +302,22 @@ export function TopBar({ onNavigate }: TopBarProps) {
         } catch (error) {
           console.error("Failed to delete search result:", error);
           alert(t("file_list.error_delete", { error: String(error) }));
+        }
+      },
+      onCompress: async (entries) => {
+        try {
+          await enqueueCompressOperation(entries.map((entry) => entry.path));
+        } catch (error) {
+          console.error("Failed to compress search results:", error);
+          alert(t("file_list.error_operation", { error: String(error) }));
+        }
+      },
+      onExtract: async (entry) => {
+        try {
+          await enqueueExtractOperation(entry.path);
+        } catch (error) {
+          console.error("Failed to extract search result:", error);
+          alert(t("file_list.error_operation", { error: String(error) }));
         }
       },
       onRename: handleSearchRename,

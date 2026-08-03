@@ -69,6 +69,8 @@ Press **Space** to open Quick Look, use the arrow buttons or Left/Right keys to 
 - **Queued File Operations** — Copy, move, and trash operations run through a sequential queue with cancellation, progress, errors, history, and a persistent operation center
 - **One-Step Undo** — Completed copy and move operations keep a reversible history entry and can be undone from the operation center; delete operations remain recoverable through the system Trash
 - **Name Conflict Resolution** — Before copy or move, choose to keep both, replace the existing item by moving it to Trash, skip conflicts, or cancel
+- **Trash Management** — Open the system Trash from the sidebar to browse items, restore them to their original location, or empty the Trash
+- **ZIP Workflows** — Compress selected files/folders to a ZIP or extract a ZIP from the context menu; archive work runs through the operation center
 - **QuickLook Preview** — Press Space to preview files (text, images, video, audio, PDF, HEIC, DNG, PSD), with native macOS thumbnail fallback for unsupported formats
 - **Context Menus** — Windows-style right-click with 20+ actions, Finder-like sorting and arranging: "New File", "Open in New Tab" for folders, "Open in Terminal", "Copy Path", etc.
 - **Dark Mode** — Light / Dark / System theme
@@ -84,9 +86,11 @@ The current implementation status is tracked by milestones:
 | M2 | Complete | Copy/move/delete queue, progress center, cancellation, and cross-window refresh events |
 | M3 | Complete | Same-name conflict dialog with keep-both, replace-to-Trash, skip, and cancel decisions |
 | M4 | Complete | In-memory operation history and one-step undo for completed copy/move actions |
-| M5 | Planned | Trash browsing/restore/empty controls and ZIP archive workflows |
+| M5 | Complete | Trash browsing/restore/empty controls and queued ZIP archive workflows |
 
 M3 conflict decisions are applied to the whole pending operation. The default keep-both behavior preserves the existing automatic unique-name fallback. M4 undo removes copied results or moves moved items back to their original directory; deleted items remain available through the operating system Trash.
+
+M5 uses the platform Trash APIs where available and Finder automation on macOS. ZIP compression uses `ditto` on macOS and `zip`/`unzip` on other platforms.
 
 ## Tech Stack
 
