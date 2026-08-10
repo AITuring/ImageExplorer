@@ -28,7 +28,7 @@ use db::{Database, IndexBuilder, IndexUpdater, SearchEngine};
 use index::{create_shared_index, IndexedFile, SharedIndex};
 use operations::{
     cancel_file_operation, clear_file_operation, get_file_operation_conflicts, get_file_operations,
-    start_compress_operation, start_copy_operation, start_delete_operation,
+    retry_file_operation, start_compress_operation, start_copy_operation, start_delete_operation,
     start_extract_operation, start_move_operation, undo_file_operation, OperationManager,
 };
 use serde::Serialize;
@@ -489,6 +489,7 @@ pub fn run() {
             get_file_operation_conflicts,
             get_file_operations,
             cancel_file_operation,
+            retry_file_operation,
             undo_file_operation,
             list_trash,
             restore_trash_entry,

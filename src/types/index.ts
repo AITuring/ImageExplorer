@@ -82,6 +82,7 @@ export interface FileOperationSnapshot {
   errors: string[];
   cancel_requested: boolean;
   undo_status: FileOperationUndoStatus;
+  retryable: boolean;
   started_at: number;
   finished_at: number | null;
 }

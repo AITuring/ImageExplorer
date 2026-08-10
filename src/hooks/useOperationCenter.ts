@@ -7,6 +7,7 @@ const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
 
 export function useOperationCenter() {
   const [operationsById, setOperationsById] = useState<Record<string, FileOperationSnapshot>>({});
+  const [actionErrors, setActionErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -14,20 +15,29 @@ export function useOperationCenter() {
 
     const setup = async () => {
       try {
+        const stopListening = await listen<FileOperationSnapshot>(
+          "file-operation-updated",
+          (event) => {
+            if (cancelled) return;
+            setOperationsById((current) => ({
+              ...current,
+              [event.payload.id]: event.payload,
+            }));
+          }
+        );
+        if (cancelled) {
+          stopListening();
+          return;
+        }
+        unlisten = stopListening;
+
         const snapshots = await invoke<FileOperationSnapshot[]>("get_file_operations");
         if (!cancelled) {
-          setOperationsById(
-            Object.fromEntries(snapshots.map((snapshot) => [snapshot.id, snapshot]))
-          );
+          const loaded = Object.fromEntries(snapshots.map((snapshot) => [snapshot.id, snapshot]));
+          // Listener updates happened after subscription and must not be
+          // overwritten by an older snapshot captured during initialization.
+          setOperationsById((current) => ({ ...loaded, ...current }));
         }
-
-        unlisten = await listen<FileOperationSnapshot>("file-operation-updated", (event) => {
-          if (cancelled) return;
-          setOperationsById((current) => ({
-            ...current,
-            [event.payload.id]: event.payload,
-          }));
-        });
       } catch (error) {
         console.error("Failed to initialize operation center:", error);
       }
@@ -52,16 +62,45 @@ export function useOperationCenter() {
   const cancelOperation = useCallback(async (operationId: string) => {
     try {
       await invoke("cancel_file_operation", { operationId });
+      setActionErrors((current) => {
+        if (!(operationId in current)) return current;
+        const next = { ...current };
+        delete next[operationId];
+        return next;
+      });
     } catch (error) {
       console.error("Failed to cancel operation:", error);
+      setActionErrors((current) => ({ ...current, [operationId]: String(error) }));
+    }
+  }, []);
+
+  const retryOperation = useCallback(async (operationId: string) => {
+    try {
+      await invoke("retry_file_operation", { operationId });
+      setActionErrors((current) => {
+        if (!(operationId in current)) return current;
+        const next = { ...current };
+        delete next[operationId];
+        return next;
+      });
+    } catch (error) {
+      console.error("Failed to retry operation:", error);
+      setActionErrors((current) => ({ ...current, [operationId]: String(error) }));
     }
   }, []);
 
   const undoOperation = useCallback(async (operationId: string) => {
     try {
       await invoke("undo_file_operation", { operationId });
+      setActionErrors((current) => {
+        if (!(operationId in current)) return current;
+        const next = { ...current };
+        delete next[operationId];
+        return next;
+      });
     } catch (error) {
       console.error("Failed to undo operation:", error);
+      setActionErrors((current) => ({ ...current, [operationId]: String(error) }));
     }
   }, []);
 
@@ -73,8 +112,15 @@ export function useOperationCenter() {
         delete next[operationId];
         return next;
       });
+      setActionErrors((current) => {
+        if (!(operationId in current)) return current;
+        const next = { ...current };
+        delete next[operationId];
+        return next;
+      });
     } catch (error) {
       console.error("Failed to clear operation:", error);
+      setActionErrors((current) => ({ ...current, [operationId]: String(error) }));
     }
   }, []);
 
@@ -90,7 +136,9 @@ export function useOperationCenter() {
 
   return {
     operations,
+    actionErrors,
     cancelOperation,
+    retryOperation,
     undoOperation,
     clearOperation,
     clearCompleted,

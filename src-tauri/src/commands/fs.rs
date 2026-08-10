@@ -5,7 +5,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 #[cfg(target_os = "macos")]
 use std::sync::OnceLock;
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Serialize)]
 pub struct ImageDimensions {
@@ -1500,7 +1500,7 @@ pub fn check_full_disk_access() -> bool {
 #[tauri::command]
 pub fn delete_to_trash(path: String) -> Result<(), String> {
     // 防御性检查：文件已不存在则静默成功
-    if !Path::new(&path).exists() {
+    if !path_exists(Path::new(&path)) {
         return Ok(());
     }
     let parent = Path::new(&path)
@@ -1516,7 +1516,7 @@ pub fn delete_to_trash(path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn exists(path: String) -> bool {
-    Path::new(&path).exists()
+    path_exists(Path::new(&path))
 }
 
 #[tauri::command]
@@ -1678,29 +1678,429 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
 
 const COPY_BUFFER_SIZE: usize = 8 * 1024 * 1024;
 
+pub(crate) fn path_exists(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
+}
+
+/// Rename without ever replacing an entry that appeared at `destination`.
+/// The ordinary Unix rename primitive replaces files atomically, which is
+/// unsafe for copy publication and rollback paths that first checked for a
+/// conflict. Use the platform's exclusive rename primitive instead.
+#[cfg(target_os = "macos")]
+pub(crate) fn rename_without_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let source = CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let destination = CString::new(destination.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    // SAFETY: both C strings are NUL-terminated and remain alive for the call.
+    let result =
+        unsafe { libc::renamex_np(source.as_ptr(), destination.as_ptr(), libc::RENAME_EXCL) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn rename_without_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let source = CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let destination = CString::new(destination.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    // SAFETY: both C strings are NUL-terminated and remain alive for the call.
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn rename_without_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "Kernel32")]
+    extern "system" {
+        fn MoveFileW(existing_file_name: *const u16, new_file_name: *const u16) -> i32;
+    }
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    // SAFETY: both UTF-16 strings are NUL-terminated and remain alive for the call.
+    let result = unsafe { MoveFileW(source.as_ptr(), destination.as_ptr()) };
+    if result != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+pub(crate) fn rename_without_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    if path_exists(destination) {
+        return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
+    }
+    fs::rename(source, destination)
+}
+
+fn files_equal(left: &Path, right: &Path) -> Result<bool, String> {
+    let left_metadata = fs::metadata(left).map_err(|error| error.to_string())?;
+    let right_metadata = fs::metadata(right).map_err(|error| error.to_string())?;
+    if !left_metadata.is_file()
+        || !right_metadata.is_file()
+        || left_metadata.len() != right_metadata.len()
+    {
+        return Ok(false);
+    }
+
+    let mut left_file = fs::File::open(left).map_err(|error| error.to_string())?;
+    let mut right_file = fs::File::open(right).map_err(|error| error.to_string())?;
+    let mut left_buffer = vec![0_u8; COPY_BUFFER_SIZE];
+    let mut right_buffer = vec![0_u8; COPY_BUFFER_SIZE];
+    loop {
+        let left_read = left_file
+            .read(&mut left_buffer)
+            .map_err(|error| error.to_string())?;
+        let right_read = right_file
+            .read(&mut right_buffer)
+            .map_err(|error| error.to_string())?;
+        if left_read != right_read || left_buffer[..left_read] != right_buffer[..right_read] {
+            return Ok(false);
+        }
+        if left_read == 0 {
+            return Ok(true);
+        }
+    }
+}
+
+pub(crate) fn paths_equivalent(left: &Path, right: &Path) -> Result<bool, String> {
+    let left_metadata = fs::symlink_metadata(left).map_err(|error| error.to_string())?;
+    let right_metadata = fs::symlink_metadata(right).map_err(|error| error.to_string())?;
+    let left_type = left_metadata.file_type();
+    let right_type = right_metadata.file_type();
+    if left_type.is_symlink() || right_type.is_symlink() {
+        return if left_type.is_symlink() && right_type.is_symlink() {
+            Ok(fs::read_link(left).map_err(|error| error.to_string())?
+                == fs::read_link(right).map_err(|error| error.to_string())?)
+        } else {
+            Ok(false)
+        };
+    }
+    if left_metadata.is_file() || right_metadata.is_file() {
+        return files_equal(left, right);
+    }
+    if !left_metadata.is_dir() || !right_metadata.is_dir() {
+        return Ok(false);
+    }
+
+    let mut left_names = fs::read_dir(left)
+        .map_err(|error| error.to_string())?
+        .map(|entry| {
+            entry
+                .map(|entry| entry.file_name())
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut right_names = fs::read_dir(right)
+        .map_err(|error| error.to_string())?
+        .map(|entry| {
+            entry
+                .map(|entry| entry.file_name())
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    left_names.sort();
+    right_names.sort();
+    if left_names != right_names {
+        return Ok(false);
+    }
+    for name in left_names {
+        if !paths_equivalent(&left.join(&name), &right.join(name))? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn partial_matches_source_prefix(
+    source: &Path,
+    partial: &Path,
+    length: u64,
+) -> Result<bool, String> {
+    if length == 0 {
+        return Ok(true);
+    }
+    let mut source = fs::File::open(source).map_err(|error| error.to_string())?;
+    let mut partial = open_partial_for_read(partial)?;
+    let mut source_buffer = vec![0_u8; COPY_BUFFER_SIZE];
+    let mut partial_buffer = vec![0_u8; COPY_BUFFER_SIZE];
+    let mut remaining = length;
+    while remaining > 0 {
+        let requested = remaining.min(COPY_BUFFER_SIZE as u64) as usize;
+        source
+            .read_exact(&mut source_buffer[..requested])
+            .map_err(|error| error.to_string())?;
+        partial
+            .read_exact(&mut partial_buffer[..requested])
+            .map_err(|error| error.to_string())?;
+        if source_buffer[..requested] != partial_buffer[..requested] {
+            return Ok(false);
+        }
+        remaining -= requested as u64;
+    }
+    Ok(true)
+}
+
+fn open_partial_for_read(path: &Path) -> Result<fs::File, String> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(path).map_err(|error| error.to_string())
+}
+
+fn open_partial_for_append(path: &Path) -> Result<fs::File, String> {
+    let mut options = fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(path).map_err(|error| error.to_string())
+}
+
+fn remove_copy_staging_path(path: &Path) -> Result<(), String> {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return Ok(());
+    };
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        fs::remove_dir_all(path).map_err(|error| error.to_string())
+    } else {
+        fs::remove_file(path).map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn apply_copied_metadata(source: &Path, destination: &Path) -> Result<(), String> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let source_c = CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| "Source path contains NUL".to_string())?;
+    let destination_c = CString::new(destination.as_os_str().as_bytes())
+        .map_err(|_| "Destination path contains NUL".to_string())?;
+    // SAFETY: both C strings are NUL-terminated and remain alive for the call;
+    // a null copyfile state requests the default metadata behavior.
+    let result = unsafe {
+        libc::copyfile(
+            source_c.as_ptr(),
+            destination_c.as_ptr(),
+            std::ptr::null_mut(),
+            libc::COPYFILE_METADATA,
+        )
+    };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ENOTSUP) {
+        let permissions = fs::metadata(source)
+            .map_err(|fallback| fallback.to_string())?
+            .permissions();
+        return fs::set_permissions(destination, permissions)
+            .map_err(|fallback| fallback.to_string());
+    }
+    Err(format!("Could not copy file metadata: {}", error))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn apply_copied_metadata(source: &Path, destination: &Path) -> Result<(), String> {
+    let permissions = fs::metadata(source)
+        .map_err(|error| error.to_string())?
+        .permissions();
+    fs::set_permissions(destination, permissions).map_err(|error| error.to_string())
+}
+
+#[cfg(unix)]
+fn create_symbolic_link(source: &Path, destination: &Path) -> Result<(), String> {
+    use std::os::unix::fs::symlink;
+    let target = fs::read_link(source).map_err(|error| error.to_string())?;
+    symlink(target, destination).map_err(|error| error.to_string())
+}
+
+#[cfg(windows)]
+fn create_symbolic_link(source: &Path, destination: &Path) -> Result<(), String> {
+    use std::os::windows::fs::{symlink_dir, symlink_file, FileTypeExt};
+    let target = fs::read_link(source).map_err(|error| error.to_string())?;
+    let file_type = fs::symlink_metadata(source)
+        .map_err(|error| error.to_string())?
+        .file_type();
+    if file_type.is_symlink_dir() {
+        symlink_dir(target, destination).map_err(|error| error.to_string())
+    } else if file_type.is_symlink_file() {
+        symlink_file(target, destination).map_err(|error| error.to_string())
+    } else {
+        Err("Unsupported Windows symbolic link type".to_string())
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn create_symbolic_link(_source: &Path, _destination: &Path) -> Result<(), String> {
+    Err("Symbolic-link copying is not supported on this platform".to_string())
+}
+
+fn copy_symlink_resumable<F>(
+    source: &Path,
+    destination: &Path,
+    visible_destination: bool,
+    accept_existing_destination: bool,
+    on_progress: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(u64) -> bool,
+{
+    if path_exists(destination) {
+        if paths_equivalent(source, destination)? {
+            return if (accept_existing_destination || !visible_destination) && on_progress(0) {
+                Ok(())
+            } else if visible_destination && !accept_existing_destination {
+                Err(format!(
+                    "Destination already exists: {}",
+                    destination.to_string_lossy()
+                ))
+            } else {
+                Err("Operation cancelled".to_string())
+            };
+        }
+        if visible_destination {
+            return Err(format!(
+                "Destination exists and does not match the source link: {}",
+                destination.to_string_lossy()
+            ));
+        }
+        remove_copy_staging_path(destination)?;
+    }
+
+    let publication_path = if visible_destination {
+        partial_path_for(destination)
+    } else {
+        destination.to_path_buf()
+    };
+    let resumed_staging_link = path_exists(&publication_path);
+    if resumed_staging_link {
+        if !paths_equivalent(source, &publication_path)? {
+            return Err(format!(
+                "Unsafe symbolic-link staging path already exists: {}",
+                publication_path.to_string_lossy()
+            ));
+        }
+    } else {
+        if let Some(parent) = publication_path.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        create_symbolic_link(source, &publication_path)?;
+    }
+
+    let link_bytes = if resumed_staging_link {
+        0
+    } else {
+        fs::symlink_metadata(source)
+            .map_err(|error| error.to_string())?
+            .len()
+    };
+    if !on_progress(link_bytes) {
+        return Err("Operation cancelled".to_string());
+    }
+    if !paths_equivalent(source, &publication_path)? {
+        remove_copy_staging_path(&publication_path)?;
+        return Err("Symbolic-link target changed while it was being copied".to_string());
+    }
+    if visible_destination {
+        rename_without_replace(&publication_path, destination).map_err(|error| {
+            format!(
+                "Could not publish the symbolic link without replacing another item: {}",
+                error
+            )
+        })?;
+    }
+    Ok(())
+}
+
+pub(crate) fn partial_path_for(destination: &Path) -> std::path::PathBuf {
+    destination.with_file_name(format!(
+        ".{}.imageexplorer-part",
+        destination
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+    ))
+}
+
 fn copy_single_resumable<F>(src: &Path, dest: &Path, on_progress: &mut F) -> Result<(), String>
 where
     F: FnMut(u64) -> bool,
 {
-    let source_size = fs::metadata(src).map_err(|error| error.to_string())?.len();
-    if let Ok(metadata) = fs::metadata(dest) {
-        if metadata.len() == source_size {
-            if source_size > 0 && !on_progress(source_size) {
-                return Err("Operation cancelled".to_string());
-            }
-            return Ok(());
+    let source_metadata = fs::metadata(src).map_err(|error| error.to_string())?;
+    let source_size = source_metadata.len();
+    let source_modified = source_metadata.modified().ok();
+    if path_exists(dest) {
+        if !paths_equivalent(src, dest)? {
+            return Err(format!(
+                "Destination exists and does not match the source: {}",
+                dest.to_string_lossy()
+            ));
         }
+        return if on_progress(0) {
+            // A durable destination can exist when an operation completed its
+            // filesystem work immediately before the app exited. Verify its
+            // bytes instead of accepting a same-sized unrelated file.
+            Ok(())
+        } else {
+            Err("Operation cancelled".to_string())
+        };
     }
 
-    let partial_name = format!(
-        ".{}.imageexplorer-part",
-        dest.file_name().unwrap_or_default().to_string_lossy()
-    );
-    let partial = dest.with_file_name(partial_name);
-    let mut offset = fs::metadata(&partial)
-        .map(|metadata| metadata.len())
-        .unwrap_or(0);
-    if offset > source_size {
+    let partial = partial_path_for(dest);
+    let mut offset = match fs::symlink_metadata(&partial) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => metadata.len(),
+        Ok(_) => {
+            return Err(format!(
+                "Unsafe copy staging path already exists: {}",
+                partial.to_string_lossy()
+            ))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(error) => return Err(error.to_string()),
+    };
+    if offset > source_size || !partial_matches_source_prefix(src, &partial, offset)? {
         let _ = fs::remove_file(&partial);
         offset = 0;
     }
@@ -1712,11 +2112,7 @@ where
     source
         .seek(SeekFrom::Start(offset))
         .map_err(|error| error.to_string())?;
-    let mut output = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&partial)
-        .map_err(|error| error.to_string())?;
+    let mut output = open_partial_for_append(&partial)?;
     let mut buffer = vec![0_u8; COPY_BUFFER_SIZE];
     loop {
         let read = source
@@ -1734,7 +2130,19 @@ where
     }
     output.flush().map_err(|error| error.to_string())?;
     output.sync_all().map_err(|error| error.to_string())?;
-    fs::rename(&partial, dest).map_err(|error| error.to_string())?;
+    drop(output);
+    let source_after = source.metadata().map_err(|error| error.to_string())?;
+    if source_after.len() != source_size || source_after.modified().ok() != source_modified {
+        let _ = fs::remove_file(&partial);
+        return Err("Source changed while it was being copied; retry the operation".to_string());
+    }
+    apply_copied_metadata(src, &partial)?;
+    rename_without_replace(&partial, dest).map_err(|error| {
+        format!(
+            "Could not publish the copied file without replacing another item: {}",
+            error
+        )
+    })?;
     Ok(())
 }
 
@@ -1742,68 +2150,212 @@ fn copy_dir_recursive_resumable<F>(
     src: &Path,
     dest: &Path,
     on_progress: &mut F,
+    is_root_staging_directory: bool,
 ) -> Result<(), String>
 where
     F: FnMut(u64) -> bool,
 {
+    if path_exists(dest) && !fs::symlink_metadata(dest).is_ok_and(|metadata| metadata.is_dir()) {
+        if is_root_staging_directory {
+            return Err(format!(
+                "Unsafe directory staging path already exists: {}",
+                dest.to_string_lossy()
+            ));
+        }
+        remove_copy_staging_path(dest)?;
+    }
     fs::create_dir_all(dest).map_err(|error| error.to_string())?;
+
+    // The source may have changed since a cancelled attempt. Remove stale
+    // entries only from this private hidden staging tree before resuming.
+    for entry in fs::read_dir(dest).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if !path_exists(&src.join(entry.file_name())) {
+            remove_copy_staging_path(&entry.path())?;
+        }
+    }
+
     for entry in fs::read_dir(src).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
         let src_path = entry.path();
         let dest_path = dest.join(entry.file_name());
-        if src_path.is_dir() {
-            copy_dir_recursive_resumable(&src_path, &dest_path, on_progress)?;
+        let source_metadata = fs::symlink_metadata(&src_path).map_err(|error| error.to_string())?;
+        if source_metadata.file_type().is_symlink() {
+            copy_symlink_resumable(&src_path, &dest_path, false, true, on_progress)?;
+        } else if source_metadata.is_dir() {
+            copy_dir_recursive_resumable(&src_path, &dest_path, on_progress, false)?;
         } else {
+            if path_exists(&dest_path) && !paths_equivalent(&src_path, &dest_path)? {
+                remove_copy_staging_path(&dest_path)?;
+            }
             copy_single_resumable(&src_path, &dest_path, on_progress)?;
         }
     }
+    apply_copied_metadata(src, dest)?;
     Ok(())
 }
 
-/// Copy using an 8 MiB buffer and hidden partial files. A transient failure
-/// leaves the partial file in place so a queued retry resumes from the last
-/// durable offset instead of restarting a large transfer from byte zero.
-pub fn copy_file_resumable<F>(
+/// Copies `src` to one exact destination path. Incomplete files and
+/// directories are kept under a hidden `.imageexplorer-part` sibling so the
+/// visible destination only appears after the copy is durable.
+pub fn copy_path_resumable<F>(
     src: String,
-    dest_dir: String,
+    destination: String,
+    accept_existing_destination: bool,
     mut on_progress: F,
-) -> Result<String, String>
+) -> Result<(), String>
 where
     F: FnMut(u64) -> bool,
 {
     let src_path = Path::new(&src);
-    let dest_dir_path = Path::new(&dest_dir);
-    if !src_path.exists() {
+    let destination_path = Path::new(&destination);
+    if !path_exists(src_path) {
         return Err(format!("Source does not exist: {}", src));
     }
-    let file_name = src_path
-        .file_name()
-        .ok_or("Invalid source path")?
-        .to_string_lossy();
-    let dest_path = dest_dir_path.join(&*file_name);
-    let final_dest = if dest_path.exists() && !src_path.is_file() {
-        path_utils::get_unique_path(&dest_path)
-    } else if dest_path.exists() && src_path.is_file() {
-        let partial = dest_path.with_file_name(format!(
-            ".{}.imageexplorer-part",
-            dest_path.file_name().unwrap_or_default().to_string_lossy()
-        ));
-        if partial.exists() {
-            dest_path
-        } else {
-            path_utils::get_unique_path(&dest_path)
-        }
-    } else {
-        dest_path
-    };
-
-    if src_path.is_dir() {
-        copy_dir_recursive_resumable(src_path, &final_dest, &mut on_progress)?;
-    } else {
-        copy_single_resumable(src_path, &final_dest, &mut on_progress)?;
+    if src_path == destination_path {
+        return Ok(());
     }
-    crate::cache::invalidate_dir_cache(&dest_dir);
-    Ok(final_dest.to_string_lossy().to_string())
+
+    let source_metadata = fs::symlink_metadata(src_path).map_err(|error| error.to_string())?;
+    if source_metadata.file_type().is_symlink() {
+        return copy_symlink_resumable(
+            src_path,
+            destination_path,
+            true,
+            accept_existing_destination,
+            &mut on_progress,
+        );
+    }
+
+    if source_metadata.is_dir() {
+        let source_canonical = src_path.canonicalize().map_err(|error| error.to_string())?;
+        let destination_parent = destination_path
+            .parent()
+            .ok_or_else(|| format!("Invalid destination path: {}", destination))?;
+        let parent_canonical = destination_parent
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        if parent_canonical.starts_with(&source_canonical) {
+            return Err("Cannot copy a folder into itself".to_string());
+        }
+    }
+
+    if path_exists(destination_path) {
+        if !accept_existing_destination {
+            return Err(format!("Destination already exists: {}", destination));
+        }
+        if !paths_equivalent(src_path, destination_path)? {
+            return Err(format!(
+                "Destination exists and does not match the source: {}",
+                destination
+            ));
+        }
+        if on_progress(0) {
+            return Ok(());
+        }
+        return Err("Operation cancelled".to_string());
+    }
+
+    if let Some(parent) = destination_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    if source_metadata.is_dir() {
+        let partial = partial_path_for(destination_path);
+        copy_dir_recursive_resumable(src_path, &partial, &mut on_progress, true)?;
+        if !on_progress(0) {
+            return Err("Operation cancelled".to_string());
+        }
+        if path_exists(destination_path) {
+            return Err(format!(
+                "Destination appeared while copying: {}",
+                destination
+            ));
+        }
+        rename_without_replace(&partial, destination_path).map_err(|error| {
+            format!(
+                "Could not publish the copied directory without replacing another item: {}",
+                error
+            )
+        })?;
+    } else {
+        copy_single_resumable(src_path, destination_path, &mut on_progress)?;
+    }
+
+    if let Some(parent) = destination_path.parent() {
+        crate::cache::invalidate_dir_cache(&parent.to_string_lossy());
+    }
+    Ok(())
+}
+
+/// Moves `src` to one exact destination. Same-volume moves use an atomic
+/// rename. Cross-volume moves reuse the resumable hidden copy and only remove
+/// the source after the destination is complete and cancellation is checked.
+pub fn move_path_resumable<F>(
+    src: String,
+    destination: String,
+    accept_existing_destination: bool,
+    mut on_progress: F,
+) -> Result<(), String>
+where
+    F: FnMut(u64) -> bool,
+{
+    let src_path = Path::new(&src);
+    let destination_path = Path::new(&destination);
+    if src_path == destination_path {
+        return Ok(());
+    }
+    if !path_exists(src_path) {
+        return Err(format!("Source does not exist: {}", src));
+    }
+
+    let source_parent = src_path.parent().map(|parent| parent.to_path_buf());
+    if rename_without_replace(src_path, destination_path).is_ok() {
+        if let Some(parent) = source_parent.as_deref() {
+            crate::cache::invalidate_dir_cache(&parent.to_string_lossy());
+        }
+        if let Some(parent) = destination_path.parent() {
+            crate::cache::invalidate_dir_cache(&parent.to_string_lossy());
+        }
+        return Ok(());
+    }
+
+    copy_path_resumable(
+        src.clone(),
+        destination.clone(),
+        accept_existing_destination,
+        &mut on_progress,
+    )?;
+    if !on_progress(0) {
+        return Err("Operation cancelled".to_string());
+    }
+    if !paths_equivalent(src_path, destination_path)? {
+        return Err(
+            "Source changed before cross-volume move deletion; the source was retained".to_string(),
+        );
+    }
+
+    let source_metadata = fs::symlink_metadata(src_path).map_err(|error| error.to_string())?;
+    if source_metadata.is_dir() && !source_metadata.file_type().is_symlink() {
+        fs::remove_dir_all(src_path).map_err(|error| {
+            format!(
+                "Destination was copied, but the source directory could not be removed: {}",
+                error
+            )
+        })?;
+    } else {
+        fs::remove_file(src_path).map_err(|error| {
+            format!(
+                "Destination was copied, but the source file could not be removed: {}",
+                error
+            )
+        })?;
+    }
+
+    if let Some(parent) = source_parent.as_deref() {
+        crate::cache::invalidate_dir_cache(&parent.to_string_lossy());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1828,48 +2380,41 @@ pub fn move_file(src: String, dest_dir: String) -> Result<String, String> {
         dest_path
     };
 
-    // 优先尝试原子 rename（同文件系统内）
-    match fs::rename(src_path, &final_dest) {
-        Ok(()) => {
-            // 清除缓存
-            crate::cache::invalidate_dir_cache(&dest_dir);
-            if let Some(parent_path) = src_parent {
-                crate::cache::invalidate_dir_cache(&parent_path);
-            }
-            return Ok(final_dest.to_string_lossy().to_string());
-        }
-        Err(_) => {
-            // rename 失败（跨文件系统），fallback 到 copy+delete
-        }
-    }
-
-    // Fallback: 先复制，再删除
-    let dest = copy_file_resumable(src.clone(), dest_dir, |_| true)?;
-
-    if src_path.is_dir() {
-        fs::remove_dir_all(src_path).map_err(|e| e.to_string())?;
-    } else {
-        fs::remove_file(src_path).map_err(|e| e.to_string())?;
-    }
-
+    move_path_resumable(src, final_dest.to_string_lossy().to_string(), false, |_| {
+        true
+    })?;
     if let Some(parent_path) = src_parent {
         crate::cache::invalidate_dir_cache(&parent_path);
     }
-
-    Ok(dest)
+    Ok(final_dest.to_string_lossy().to_string())
 }
 
 #[tauri::command]
 pub fn rename(path: String, new_name: String) -> Result<(), String> {
     let path_obj = Path::new(&path);
+    validate_file_name(&new_name)?;
+    if fs::symlink_metadata(path_obj).is_err() {
+        return Err("Source does not exist".to_string());
+    }
     let parent = path_obj.parent().ok_or("Invalid path")?;
-    let new_path = parent.join(new_name);
+    let new_path = parent.join(&new_name);
 
-    if new_path.exists() {
-        return Err("Target name already exists".to_string());
+    if new_path == path_obj {
+        return Ok(());
     }
 
-    fs::rename(&path, &new_path).map_err(|e| e.to_string())?;
+    if fs::symlink_metadata(&new_path).is_ok() {
+        if !same_filesystem_entry(path_obj, &new_path) {
+            return Err("Target name already exists".to_string());
+        }
+        // Case-only renames on case-insensitive filesystems resolve both paths
+        // to the same entry and need the native rename behavior.
+        fs::rename(&path, &new_path).map_err(|e| e.to_string())?;
+    } else {
+        rename_without_replace(path_obj, &new_path).map_err(|error| {
+            format!("Could not rename without replacing another item: {}", error)
+        })?;
+    }
     // 清除父目录缓存
     crate::cache::invalidate_dir_cache(&parent.to_string_lossy());
     Ok(())
@@ -1883,6 +2428,128 @@ pub struct BatchRenameResult {
     pub errors: Vec<String>,
 }
 
+const DEFAULT_COUNTER_PATTERN: &str = "{name}_{counter}";
+
+#[derive(Debug)]
+struct RenamePlan {
+    original: std::path::PathBuf,
+    target: std::path::PathBuf,
+    temporary: std::path::PathBuf,
+}
+
+fn validate_file_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("A file name is required".to_string());
+    }
+    if matches!(name, "." | "..") {
+        return Err("The names '.' and '..' are reserved".to_string());
+    }
+    if name.contains(['/', '\\', '\0']) {
+        return Err("A file name cannot contain path separators or NUL".to_string());
+    }
+    let mut components = Path::new(name).components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+    {
+        return Err("The new name must be a single file name".to_string());
+    }
+
+    #[cfg(windows)]
+    {
+        if name.ends_with([' ', '.']) || name.contains(['<', '>', ':', '"', '|', '?', '*']) {
+            return Err("The file name contains characters reserved by Windows".to_string());
+        }
+        let base = name
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_uppercase();
+        let reserved = matches!(
+            base.as_str(),
+            "CON"
+                | "PRN"
+                | "AUX"
+                | "NUL"
+                | "COM1"
+                | "COM2"
+                | "COM3"
+                | "COM4"
+                | "COM5"
+                | "COM6"
+                | "COM7"
+                | "COM8"
+                | "COM9"
+                | "LPT1"
+                | "LPT2"
+                | "LPT3"
+                | "LPT4"
+                | "LPT5"
+                | "LPT6"
+                | "LPT7"
+                | "LPT8"
+                | "LPT9"
+        );
+        if reserved {
+            return Err("The file name is reserved by Windows".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn same_filesystem_entry(left: &Path, right: &Path) -> bool {
+    let (Ok(left_metadata), Ok(right_metadata)) =
+        (fs::symlink_metadata(left), fs::symlink_metadata(right))
+    else {
+        return false;
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        left_metadata.dev() == right_metadata.dev() && left_metadata.ino() == right_metadata.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        fs::canonicalize(left).ok() == fs::canonicalize(right).ok()
+    }
+}
+
+fn rename_collision_key(path: &Path) -> String {
+    let value = path.to_string_lossy().to_string();
+    #[cfg(any(target_os = "macos", windows))]
+    {
+        value.to_lowercase()
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        value
+    }
+}
+
+fn batch_rename_failure(total: usize, errors: Vec<String>) -> BatchRenameResult {
+    BatchRenameResult {
+        success: 0,
+        failed: total,
+        errors,
+    }
+}
+
+fn rollback_staged_renames(plans: &[RenamePlan]) -> Vec<String> {
+    let mut errors = Vec::new();
+    for plan in plans.iter().rev() {
+        if fs::symlink_metadata(&plan.temporary).is_ok() {
+            if let Err(error) = rename_without_replace(&plan.temporary, &plan.original) {
+                errors.push(format!(
+                    "rollback '{}' failed: {}",
+                    plan.original.to_string_lossy(),
+                    error
+                ));
+            }
+        }
+    }
+    errors
+}
+
 /// 批量重命名
 /// mode: "replace" | "prefix" | "suffix" | "counter"
 /// pattern: 替换/前缀/后缀的文本，或计数器格式如 "photo_{counter}"
@@ -1893,17 +2560,35 @@ pub fn batch_rename(
     mode: String,
     find: Option<String>,
 ) -> Result<BatchRenameResult, String> {
-    let mut success = 0;
-    let mut failed = 0;
     let mut errors = Vec::new();
-    let mut parents_to_invalidate = std::collections::HashSet::new();
+    let mut planned_targets = std::collections::HashSet::new();
+    let source_paths = paths
+        .iter()
+        .map(std::path::PathBuf::from)
+        .collect::<Vec<_>>();
+    let effective_pattern = if mode == "counter" && pattern.is_empty() {
+        DEFAULT_COUNTER_PATTERN
+    } else {
+        pattern.as_str()
+    };
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let mut plans = Vec::new();
 
     for (i, path_str) in paths.iter().enumerate() {
         let path_obj = Path::new(path_str);
+        let source_metadata = match fs::symlink_metadata(path_obj) {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                errors.push(format!("{}: source does not exist", path_str));
+                continue;
+            }
+        };
         let parent = match path_obj.parent() {
             Some(p) => p,
             None => {
-                failed += 1;
                 errors.push(format!("{}: invalid path", path_str));
                 continue;
             }
@@ -1913,84 +2598,164 @@ pub fn batch_rename(
         let file_name = match path_obj.file_name() {
             Some(s) => s.to_string_lossy().to_string(),
             None => {
-                failed += 1;
                 errors.push(format!("{}: no filename", path_str));
                 continue;
             }
         };
-        let old_name = path_obj
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| file_name.clone());
-        let ext = path_obj
-            .extension()
-            .map(|e| format!(".{}", e.to_string_lossy()))
-            .unwrap_or_default();
+        let (old_name, ext) = if source_metadata.is_dir() {
+            (file_name.clone(), String::new())
+        } else {
+            (
+                path_obj
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| file_name.clone()),
+                path_obj
+                    .extension()
+                    .map(|e| format!(".{}", e.to_string_lossy()))
+                    .unwrap_or_default(),
+            )
+        };
 
         let new_name = match mode.as_str() {
             "replace" => {
                 let find_str = find.as_deref().unwrap_or("");
                 if find_str.is_empty() {
-                    failed += 1;
                     errors.push(format!("{}: find string is empty", path_str));
                     continue;
                 }
-                format!("{}{}", old_name.replace(find_str, &pattern), ext)
+                format!("{}{}", old_name.replace(find_str, effective_pattern), ext)
             }
-            "prefix" => format!("{}{}{}", pattern, old_name, ext),
-            "suffix" => format!("{}{}{}", old_name, pattern, ext),
+            "prefix" => format!("{}{}{}", effective_pattern, old_name, ext),
+            "suffix" => format!("{}{}{}", old_name, effective_pattern, ext),
             "counter" => {
                 let counter = format!("{}", i + 1);
-                let name = pattern
+                let name = effective_pattern
                     .replace("{counter}", &counter)
                     .replace("{name}", &old_name);
                 format!("{}{}", name, ext)
             }
             _ => {
-                failed += 1;
                 errors.push(format!("{}: unknown mode '{}'", path_str, mode));
                 continue;
             }
         };
 
-        let new_path = parent.join(&new_name);
+        if let Err(error) = validate_file_name(&new_name) {
+            errors.push(format!("{}: {}", file_name, error));
+            continue;
+        }
 
-        if new_path.exists() && new_path != path_obj {
-            failed += 1;
+        let new_path = parent.join(&new_name);
+        let target_key = rename_collision_key(&new_path);
+        if !planned_targets.insert(target_key) {
+            errors.push(format!(
+                "{}: multiple items would be renamed to '{}'",
+                old_name, new_name
+            ));
+            continue;
+        }
+        if fs::symlink_metadata(&new_path).is_ok()
+            && !source_paths
+                .iter()
+                .any(|source| same_filesystem_entry(source, &new_path))
+        {
             errors.push(format!(
                 "{}: target '{}' already exists",
                 old_name, new_name
             ));
             continue;
         }
+        if new_path == path_obj {
+            continue;
+        }
 
-        match fs::rename(path_obj, &new_path) {
-            Ok(()) => {
-                success += 1;
-                parents_to_invalidate.insert(parent.to_string_lossy().to_string());
-            }
-            Err(e) => {
-                failed += 1;
-                errors.push(format!("{}: {}", old_name, e));
-            }
+        let temporary = path_utils::get_unique_path(
+            &parent.join(format!(".imageexplorer-rename-{}-{}", stamp, i)),
+        );
+        plans.push(RenamePlan {
+            original: path_obj.to_path_buf(),
+            target: new_path,
+            temporary,
+        });
+    }
+
+    if !errors.is_empty() {
+        return Ok(batch_rename_failure(paths.len(), errors));
+    }
+
+    for (staged_count, plan) in plans.iter().enumerate() {
+        if let Err(error) = rename_without_replace(&plan.original, &plan.temporary) {
+            errors.push(format!(
+                "could not stage '{}': {}",
+                plan.original.to_string_lossy(),
+                error
+            ));
+            errors.extend(rollback_staged_renames(&plans[..staged_count]));
+            return Ok(batch_rename_failure(paths.len(), errors));
         }
     }
 
-    // 批量清除缓存
-    for parent in &parents_to_invalidate {
-        crate::cache::invalidate_dir_cache(parent);
+    let mut committed_count = 0_usize;
+    for plan in &plans {
+        if fs::symlink_metadata(&plan.target).is_ok() {
+            errors.push(format!(
+                "target appeared during rename: {}",
+                plan.target.to_string_lossy()
+            ));
+        } else if let Err(error) = rename_without_replace(&plan.temporary, &plan.target) {
+            errors.push(format!(
+                "could not rename '{}' to '{}': {}",
+                plan.original.to_string_lossy(),
+                plan.target.to_string_lossy(),
+                error
+            ));
+        } else {
+            committed_count += 1;
+            continue;
+        }
+
+        // Move committed targets back to their private staging paths first,
+        // then restore every source. This also handles rename cycles safely.
+        for committed in plans[..committed_count].iter().rev() {
+            if let Err(error) = rename_without_replace(&committed.target, &committed.temporary) {
+                errors.push(format!(
+                    "could not stage committed target '{}' for rollback: {}",
+                    committed.target.to_string_lossy(),
+                    error
+                ));
+            }
+        }
+        errors.extend(rollback_staged_renames(&plans));
+        return Ok(batch_rename_failure(paths.len(), errors));
+    }
+
+    let mut parents_to_invalidate = std::collections::HashSet::new();
+    for plan in &plans {
+        if let Some(parent) = plan.original.parent() {
+            parents_to_invalidate.insert(parent.to_string_lossy().to_string());
+        }
+        if let Some(parent) = plan.target.parent() {
+            parents_to_invalidate.insert(parent.to_string_lossy().to_string());
+        }
+    }
+    for parent in parents_to_invalidate {
+        crate::cache::invalidate_dir_cache(&parent);
     }
 
     Ok(BatchRenameResult {
-        success,
-        failed,
-        errors,
+        success: paths.len(),
+        failed: 0,
+        errors: Vec::new(),
     })
 }
 
 #[cfg(test)]
 mod file_entry_tests {
-    use super::{copy_file_resumable, get_file_entry, is_alias_entry, package_type};
+    use super::{
+        batch_rename, copy_path_resumable, get_file_entry, is_alias_entry, move_path_resumable,
+        package_type, partial_path_for, rename, rename_without_replace, validate_file_name,
+    };
     use std::fs;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2063,28 +2828,30 @@ mod file_entry_tests {
         let root = test_root();
         let destination = root.join("destination");
         let source = root.join("large.bin");
+        let final_path = destination.join("large.bin");
         fs::create_dir_all(&destination).expect("create destination");
         fs::write(&source, vec![7_u8; 1024 * 1024]).expect("write source");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&source, fs::Permissions::from_mode(0o740))
+                .expect("set source permissions");
+        }
 
         let mut first_callback = true;
-        let first = copy_file_resumable(
+        let first = copy_path_resumable(
             source.to_string_lossy().to_string(),
-            destination.to_string_lossy().to_string(),
-            |_| {
-                if first_callback {
-                    first_callback = false;
-                    false
-                } else {
-                    true
-                }
-            },
+            final_path.to_string_lossy().to_string(),
+            false,
+            |_| !std::mem::take(&mut first_callback),
         );
         assert!(first.is_err());
 
         let mut copied = 0_u64;
-        let final_path = copy_file_resumable(
+        copy_path_resumable(
             source.to_string_lossy().to_string(),
-            destination.to_string_lossy().to_string(),
+            final_path.to_string_lossy().to_string(),
+            true,
             |bytes| {
                 copied += bytes;
                 true
@@ -2093,9 +2860,300 @@ mod file_entry_tests {
         .expect("resume copy");
         assert_eq!(copied, 0);
         assert_eq!(
-            fs::metadata(final_path).expect("final file").len(),
+            fs::metadata(&final_path).expect("final file").len(),
             1024 * 1024
         );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&final_path)
+                    .expect("final file metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o740
+            );
+        }
+
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn existing_same_size_destination_is_verified_and_never_replaced() {
+        let root = test_root();
+        let source = root.join("source.raw");
+        let destination = root.join("destination.raw");
+        fs::create_dir_all(&root).expect("create test root");
+        fs::write(&source, b"AAAA").expect("write source");
+        fs::write(&destination, b"BBBB").expect("write destination");
+
+        let result = copy_path_resumable(
+            source.to_string_lossy().to_string(),
+            destination.to_string_lossy().to_string(),
+            true,
+            |_| true,
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read(&destination).expect("read preserved destination"),
+            b"BBBB"
+        );
+        assert_eq!(fs::read(&source).expect("read source"), b"AAAA");
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn changed_source_invalidates_a_stale_partial_prefix() {
+        let root = test_root();
+        let source = root.join("source.raw");
+        let destination = root.join("destination.raw");
+        fs::create_dir_all(&root).expect("create test root");
+        fs::write(&source, vec![1_u8; 8 * 1024 * 1024 + 1]).expect("write original source");
+
+        let first = copy_path_resumable(
+            source.to_string_lossy().to_string(),
+            destination.to_string_lossy().to_string(),
+            false,
+            |_| false,
+        );
+        assert!(first.is_err());
+        assert!(partial_path_for(&destination).is_file());
+
+        let replacement = vec![2_u8; 8 * 1024 * 1024 + 1];
+        fs::write(&source, &replacement).expect("replace source bytes");
+        copy_path_resumable(
+            source.to_string_lossy().to_string(),
+            destination.to_string_lossy().to_string(),
+            true,
+            |_| true,
+        )
+        .expect("restart copy from the changed source");
+
+        assert_eq!(
+            fs::read(&destination).expect("read copied destination"),
+            replacement
+        );
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn exclusive_rename_does_not_replace_an_existing_item() {
+        let root = test_root();
+        let source = root.join("source.raw");
+        let destination = root.join("destination.raw");
+        fs::create_dir_all(&root).expect("create test root");
+        fs::write(&source, b"source").expect("write source");
+        fs::write(&destination, b"destination").expect("write destination");
+
+        assert!(rename_without_replace(&source, &destination).is_err());
+        assert_eq!(fs::read(&source).expect("read source"), b"source");
+        assert_eq!(
+            fs::read(&destination).expect("read destination"),
+            b"destination"
+        );
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn cancelled_directory_copy_stays_hidden_and_resumes_to_the_same_target() {
+        let root = test_root();
+        let source = root.join("source");
+        let destination = root.join("copied");
+        fs::create_dir_all(&source).expect("create source directory");
+        fs::write(source.join("image.raw"), vec![9_u8; 1024 * 1024]).expect("write source file");
+
+        let cancelled = copy_path_resumable(
+            source.to_string_lossy().to_string(),
+            destination.to_string_lossy().to_string(),
+            false,
+            |_| false,
+        );
+        assert!(cancelled.is_err());
+        assert!(!destination.exists());
+        assert!(partial_path_for(&destination).exists());
+
+        copy_path_resumable(
+            source.to_string_lossy().to_string(),
+            destination.to_string_lossy().to_string(),
+            true,
+            |_| true,
+        )
+        .expect("resume directory copy");
+        assert!(destination.join("image.raw").is_file());
+        assert!(!partial_path_for(&destination).exists());
+
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resumable_directory_copy_preserves_relative_symbolic_links() {
+        use std::os::unix::fs::symlink;
+
+        let root = test_root();
+        let source = root.join("source");
+        let destination = root.join("copied");
+        fs::create_dir_all(&source).expect("create source directory");
+        fs::write(source.join("photo.raw"), b"raw").expect("write source file");
+        symlink("photo.raw", source.join("latest.raw")).expect("create relative symlink");
+
+        copy_path_resumable(
+            source.to_string_lossy().to_string(),
+            destination.to_string_lossy().to_string(),
+            false,
+            |_| true,
+        )
+        .expect("copy directory with symbolic link");
+
+        let copied_link = destination.join("latest.raw");
+        assert!(fs::symlink_metadata(&copied_link)
+            .expect("copied link metadata")
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read_link(&copied_link).expect("read copied link target"),
+            Path::new("photo.raw")
+        );
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn cancelled_cross_volume_style_move_keeps_source_until_retry() {
+        let root = test_root();
+        let source = root.join("source.raw");
+        let destination = root.join("destination.raw");
+        fs::create_dir_all(&root).expect("create test root");
+        fs::write(&source, b"camera data").expect("write source");
+        // A durable destination with the source still present models the
+        // copy-complete/delete-pending point of a cross-volume move.
+        fs::write(&destination, b"camera data").expect("write copied destination");
+
+        let cancelled = move_path_resumable(
+            source.to_string_lossy().to_string(),
+            destination.to_string_lossy().to_string(),
+            true,
+            |_| false,
+        );
+        assert!(cancelled.is_err());
+        assert!(source.exists());
+        assert!(destination.exists());
+
+        move_path_resumable(
+            source.to_string_lossy().to_string(),
+            destination.to_string_lossy().to_string(),
+            true,
+            |_| true,
+        )
+        .expect("retry move deletion");
+        assert!(!source.exists());
+        assert_eq!(
+            fs::read(&destination).expect("read destination"),
+            b"camera data"
+        );
+
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn rename_rejects_path_escape_and_reserved_components() {
+        assert!(validate_file_name("").is_err());
+        assert!(validate_file_name(".").is_err());
+        assert!(validate_file_name("..").is_err());
+        assert!(validate_file_name("../outside.raw").is_err());
+        assert!(validate_file_name("folder/file.raw").is_err());
+
+        let root = test_root();
+        let folder = root.join("folder");
+        let source = folder.join("inside.raw");
+        fs::create_dir_all(&folder).expect("create folder");
+        fs::write(&source, b"raw").expect("write source");
+
+        let result = rename(
+            source.to_string_lossy().to_string(),
+            "../outside.raw".to_string(),
+        );
+        assert!(result.is_err());
+        assert!(source.exists());
+        assert!(!root.join("outside.raw").exists());
+
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn counter_batch_rename_uses_the_preview_default() {
+        let root = test_root();
+        fs::create_dir_all(&root).expect("create test root");
+        let first = root.join("alpha.raw");
+        let second = root.join("beta.raw");
+        fs::write(&first, b"alpha").expect("write first source");
+        fs::write(&second, b"beta").expect("write second source");
+
+        let result = batch_rename(
+            vec![
+                first.to_string_lossy().to_string(),
+                second.to_string_lossy().to_string(),
+            ],
+            String::new(),
+            "counter".to_string(),
+            None,
+        )
+        .expect("rename batch");
+
+        assert_eq!(result.success, 2);
+        assert_eq!(result.failed, 0);
+        assert!(root.join("alpha_1.raw").is_file());
+        assert!(root.join("beta_2.raw").is_file());
+
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn batch_rename_treats_a_directory_dot_as_part_of_its_name() {
+        let root = test_root();
+        fs::create_dir_all(root.join("album.2026")).expect("create dotted directory");
+
+        let result = batch_rename(
+            vec![root.join("album.2026").to_string_lossy().to_string()],
+            "edited-".to_string(),
+            "prefix".to_string(),
+            None,
+        )
+        .expect("rename dotted directory");
+
+        assert_eq!(result.success, 1);
+        assert!(root.join("edited-album.2026").is_dir());
+        assert!(!root.join("album.edited-2026").exists());
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn batch_rename_preflight_prevents_partial_collision_changes() {
+        let root = test_root();
+        fs::create_dir_all(&root).expect("create test root");
+        let first = root.join("cat.raw");
+        let second = root.join("bat.raw");
+        fs::write(&first, b"cat").expect("write first source");
+        fs::write(&second, b"bat").expect("write second source");
+
+        let result = batch_rename(
+            vec![
+                first.to_string_lossy().to_string(),
+                second.to_string_lossy().to_string(),
+            ],
+            "bat".to_string(),
+            "replace".to_string(),
+            Some("cat".to_string()),
+        )
+        .expect("preflight batch");
+
+        assert_eq!(result.success, 0);
+        assert_eq!(result.failed, 2);
+        assert!(first.is_file());
+        assert!(second.is_file());
+        assert_eq!(fs::read(&first).expect("read first"), b"cat");
+        assert_eq!(fs::read(&second).expect("read second"), b"bat");
 
         fs::remove_dir_all(root).expect("remove test root");
     }

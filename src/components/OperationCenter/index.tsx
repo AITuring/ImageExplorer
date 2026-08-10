@@ -7,6 +7,7 @@ import {
   Copy,
   FolderInput,
   PackageOpen,
+  RotateCcw,
   Trash2,
   Undo2,
   X,
@@ -23,42 +24,50 @@ function itemName(path: string | null): string {
 }
 
 function OperationIcon({ kind }: { kind: FileOperationSnapshot["kind"] }) {
-  if (kind === "copy") return <Copy className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" />;
+  if (kind === "copy")
+    return <Copy className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />;
   if (kind === "move") {
-    return <FolderInput className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" />;
+    return (
+      <FolderInput className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+    );
   }
   if (kind === "compress") {
-    return <Archive className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" />;
+    return <Archive className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />;
   }
   if (kind === "extract") {
-    return <PackageOpen className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" />;
+    return (
+      <PackageOpen className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+    );
   }
-  return <Trash2 className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" />;
+  return <Trash2 className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />;
 }
 
 function progressPercent(operation: FileOperationSnapshot): number {
   if (operation.status === "completed") return 100;
   if (operation.total_items === 0) return 0;
-  return Math.min(
-    100,
-    Math.round(
-      ((operation.completed_items + operation.failed_items + operation.skipped_items) /
-        operation.total_items) *
-        100
-    )
-  );
+  const itemPercent =
+    ((operation.completed_items + operation.failed_items + operation.skipped_items) /
+      operation.total_items) *
+    100;
+  const bytePercent =
+    operation.total_bytes > 0 ? (operation.completed_bytes / operation.total_bytes) * 100 : 0;
+  return Math.min(100, Math.round(Math.max(itemPercent, bytePercent)));
 }
 
 function OperationRow({
   operation,
   onCancel,
   onClear,
+  onRetry,
   onUndo,
+  actionError,
 }: {
   operation: FileOperationSnapshot;
   onCancel: (id: string) => void;
   onClear: (id: string) => void;
+  onRetry: (id: string) => void;
   onUndo: (id: string) => void;
+  actionError?: string;
 }) {
   const { t } = useTranslation();
   const terminal = isTerminalOperationStatus(operation.status);
@@ -89,11 +98,11 @@ function OperationRow({
         </div>
         {terminal ? (
           operation.status === "failed" ? (
-            <CircleAlert className="text-destructive h-4 w-4 shrink-0" />
+            <CircleAlert className="text-destructive h-4 w-4 shrink-0" aria-hidden="true" />
           ) : operation.status === "completed" ? (
-            <Check className="h-4 w-4 shrink-0 text-green-500" />
+            <Check className="h-4 w-4 shrink-0 text-green-500" aria-hidden="true" />
           ) : (
-            <X className="text-muted-foreground h-4 w-4 shrink-0" />
+            <X className="text-muted-foreground h-4 w-4 shrink-0" aria-hidden="true" />
           )
         ) : (
           <button
@@ -103,7 +112,7 @@ function OperationRow({
             aria-label={t("operations.cancel")}
             title={t("operations.cancel")}
           >
-            <X className="h-4 w-4" />
+            <X className="h-4 w-4" aria-hidden="true" />
           </button>
         )}
       </div>
@@ -122,6 +131,25 @@ function OperationRow({
         <p className="text-destructive line-clamp-2 text-xs" title={operation.errors.join("\n")}>
           {operation.errors[0]}
         </p>
+      )}
+
+      {actionError && (
+        <p className="text-destructive text-xs" role="alert">
+          {actionError}
+        </p>
+      )}
+
+      {operation.retryable && (
+        <button
+          type="button"
+          className="text-primary hover:text-primary/80 inline-flex min-h-8 items-center gap-1 text-xs"
+          onClick={() => onRetry(operation.id)}
+          aria-label={t("operations.retry")}
+          title={t("operations.retry")}
+        >
+          <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+          {t("operations.retry")}
+        </button>
       )}
 
       {canUndo && (
@@ -158,8 +186,15 @@ function OperationRow({
 
 export function OperationCenter() {
   const { t } = useTranslation();
-  const { operations, cancelOperation, undoOperation, clearOperation, clearCompleted } =
-    useOperationCenter();
+  const {
+    operations,
+    actionErrors,
+    cancelOperation,
+    retryOperation,
+    undoOperation,
+    clearOperation,
+    clearCompleted,
+  } = useOperationCenter();
   const activeCount = useMemo(
     () => operations.filter((operation) => !isTerminalOperationStatus(operation.status)).length,
     [operations]
@@ -169,12 +204,12 @@ export function OperationCenter() {
 
   return (
     <section
-      className="bg-popover text-popover-foreground fixed right-4 bottom-4 z-50 w-[360px] overflow-hidden rounded-xl border shadow-xl"
+      className="bg-popover text-popover-foreground fixed right-4 bottom-4 z-50 w-[min(360px,calc(100vw-2rem))] overflow-hidden rounded-xl border shadow-xl"
       aria-label={t("operations.title")}
     >
       <header className="border-border/50 flex items-center justify-between border-b px-3 py-2.5">
         <div className="flex items-center gap-2 text-sm font-semibold">
-          <Clock3 className="text-muted-foreground h-4 w-4" />
+          <Clock3 className="text-muted-foreground h-4 w-4" aria-hidden="true" />
           {t("operations.title")}
           {activeCount > 0 && (
             <span className="bg-primary/15 text-primary rounded-full px-1.5 py-0.5 text-xs">
@@ -202,8 +237,10 @@ export function OperationCenter() {
           <OperationRow
             key={operation.id}
             operation={operation}
+            actionError={actionErrors[operation.id]}
             onCancel={cancelOperation}
             onClear={clearOperation}
+            onRetry={retryOperation}
             onUndo={undoOperation}
           />
         ))}
