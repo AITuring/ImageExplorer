@@ -30,6 +30,43 @@ interface CachedSourceImage {
 }
 
 const FULL_IMAGE_SELECTION: NormalizedRect = { x: 0, y: 0, width: 1, height: 1 };
+const SHARPNESS_ANALYSIS_VERSION = 1;
+const MAX_CACHED_FULL_IMAGE_RESULTS = 5;
+const fullImageResultCache = new Map<string, SharpnessMaskResult>();
+
+function getFullImageResultCacheKey(entry: FileEntry) {
+  return `${entry.path}\u0000${entry.modified ?? 0}\u0000${entry.size}\u0000${SHARPNESS_ANALYSIS_VERSION}`;
+}
+
+function getCachedFullImageResult(key: string) {
+  const cached = fullImageResultCache.get(key);
+  if (!cached) return null;
+  fullImageResultCache.delete(key);
+  fullImageResultCache.set(key, cached);
+  return cached;
+}
+
+function peekCachedFullImageResult(key: string) {
+  return fullImageResultCache.get(key) ?? null;
+}
+
+function cacheFullImageResult(key: string, result: SharpnessMaskResult) {
+  fullImageResultCache.delete(key);
+  fullImageResultCache.set(key, result);
+  while (fullImageResultCache.size > MAX_CACHED_FULL_IMAGE_RESULTS) {
+    const oldest = fullImageResultCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    fullImageResultCache.delete(oldest);
+  }
+}
+
+function statusForResult(result: SharpnessMaskResult): SharpnessInspectorStatus {
+  return result.highlightedPixels > 0 ? "ready" : "empty";
+}
+
+function isFullImageSelection(selection: NormalizedRect) {
+  return selection.x === 0 && selection.y === 0 && selection.width === 1 && selection.height === 1;
+}
 
 function abortError() {
   return new DOMException("Sharpness analysis was cancelled", "AbortError");
@@ -91,19 +128,23 @@ export function useSharpnessInspector({
   displayedDimensions,
   autoStart = false,
 }: UseSharpnessInspectorOptions) {
+  const analysisKey = getFullImageResultCacheKey(entry);
   const [enabled, setEnabled] = useState(autoStart);
-  const [status, setStatus] = useState<SharpnessInspectorStatus>("waiting");
   const [selectionMode, setSelectionMode] = useState(false);
   const [selection, setSelection] = useState<NormalizedRect | null>(null);
-  const [result, setResult] = useState<SharpnessMaskResult | null>(null);
+  const [result, setResult] = useState<SharpnessMaskResult | null>(() =>
+    peekCachedFullImageResult(analysisKey)
+  );
+  const [status, setStatus] = useState<SharpnessInspectorStatus>(() =>
+    result ? statusForResult(result) : "waiting"
+  );
   const sourceImageRef = useRef<CachedSourceImage | null>(null);
   const displayedImageRef = useRef<HTMLImageElement | null>(null);
-  const autoAnalysisStartedRef = useRef(false);
+  const autoAnalysisStartedRef = useRef(Boolean(result));
   const autoAnalysisFrameRef = useRef<number | null>(null);
   const analysisControllerRef = useRef<AbortController | null>(null);
   const analysisVersionRef = useRef(0);
-  const entryIdentity = `${entry.path}\u0000${entry.modified ?? 0}\u0000${entry.size}\u0000${autoStart}`;
-  const entryIdentityRef = useRef(entryIdentity);
+  const analysisKeyRef = useRef(analysisKey);
 
   const cancelAnalysis = useCallback(() => {
     if (autoAnalysisFrameRef.current !== null) {
@@ -116,21 +157,22 @@ export function useSharpnessInspector({
   }, []);
 
   useEffect(() => {
-    if (entryIdentityRef.current === entryIdentity) {
+    if (analysisKeyRef.current === analysisKey) {
       return;
     }
 
-    entryIdentityRef.current = entryIdentity;
+    analysisKeyRef.current = analysisKey;
+    const cachedResult = getCachedFullImageResult(analysisKey);
     sourceImageRef.current = null;
     displayedImageRef.current = null;
-    autoAnalysisStartedRef.current = false;
+    autoAnalysisStartedRef.current = Boolean(cachedResult);
     cancelAnalysis();
     setEnabled(autoStart);
-    setStatus("waiting");
+    setStatus(cachedResult ? statusForResult(cachedResult) : "waiting");
     setSelectionMode(false);
     setSelection(null);
-    setResult(null);
-  }, [autoStart, cancelAnalysis, entryIdentity]);
+    setResult(cachedResult);
+  }, [analysisKey, autoStart, cancelAnalysis]);
 
   const loadSourceImage = useCallback(
     async (requestedSize: number, signal: AbortSignal) => {
@@ -168,14 +210,20 @@ export function useSharpnessInspector({
   const analyzeSelection = useCallback(
     async (nextSelection: NormalizedRect, preferredImage?: HTMLImageElement | null) => {
       cancelAnalysis();
+      const isFullImage = isFullImageSelection(nextSelection);
+      const cachedResult = isFullImage ? getCachedFullImageResult(analysisKey) : null;
+      if (cachedResult) {
+        autoAnalysisStartedRef.current = true;
+        setSelection(null);
+        setSelectionMode(false);
+        setResult(cachedResult);
+        setStatus(statusForResult(cachedResult));
+        return;
+      }
+
       const version = analysisVersionRef.current;
       const controller = new AbortController();
       analysisControllerRef.current = controller;
-      const isFullImage =
-        nextSelection.x === 0 &&
-        nextSelection.y === 0 &&
-        nextSelection.width === 1 &&
-        nextSelection.height === 1;
       setSelection(isFullImage ? null : nextSelection);
       setSelectionMode(false);
       setResult(null);
@@ -233,8 +281,11 @@ export function useSharpnessInspector({
         }
         if (controller.signal.aborted || version !== analysisVersionRef.current) return;
 
+        if (isFullImage) {
+          cacheFullImageResult(analysisKey, nextResult);
+        }
         setResult(nextResult);
-        setStatus(nextResult.highlightedPixels > 0 ? "ready" : "empty");
+        setStatus(statusForResult(nextResult));
       } catch (error) {
         if (
           controller.signal.aborted ||
@@ -252,7 +303,7 @@ export function useSharpnessInspector({
         }
       }
     },
-    [cancelAnalysis, displayedDimensions, loadSourceImage]
+    [analysisKey, cancelAnalysis, displayedDimensions, loadSourceImage]
   );
 
   const analyzeSelectionRef = useRef(analyzeSelection);

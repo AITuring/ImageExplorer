@@ -45,6 +45,10 @@ export function getPhotoMetadataKey(entry: FileEntry) {
   return `${entry.path}:${entry.modified ?? 0}:${entry.size}`;
 }
 
+export function getCachedPhotoMetadata(entry: FileEntry): PhotoMetadata | null | undefined {
+  return metadataCache.get(getPhotoMetadataKey(entry));
+}
+
 function pumpMetadataQueue() {
   while (activeMetadataLoads < MAX_CONCURRENT_METADATA && metadataQueue.length > 0) {
     const task = metadataQueue.shift();

@@ -34,6 +34,10 @@ export function usePhotoAnalysis(
     progress: INITIAL_PROGRESS,
   });
   const generationRef = useRef(0);
+  const stateRef = useRef(state);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   const analysisEntries = useMemo(
     () => (enabled ? getPhotoAnalysisEntries(entries) : []),
@@ -49,6 +53,14 @@ export function usePhotoAnalysis(
     if (!priorityPath) return [];
     return analysisEntries.filter((item) => item.entry.path === priorityPath);
   }, [analysisEntries, enabled, paused, priorityPath]);
+  const processingSignature = useMemo(
+    () => processingEntries.map((item) => item.key).join("\u001f"),
+    [processingEntries]
+  );
+  const processingEntriesRef = useRef(processingEntries);
+  useEffect(() => {
+    processingEntriesRef.current = processingEntries;
+  }, [processingEntries]);
   const visibleState: PhotoAnalysisState =
     state.signature === analysisSignature
       ? state
@@ -95,8 +107,30 @@ export function usePhotoAnalysis(
   useEffect(() => {
     const generation = ++generationRef.current;
     const controller = new AbortController();
+    const entriesToProcess = processingEntriesRef.current;
 
-    if (!enabled || processingEntries.length === 0) {
+    if (!enabled || entriesToProcess.length === 0) {
+      return () => controller.abort();
+    }
+
+    const currentState = stateRef.current;
+    const hasCurrentState = currentState.signature === analysisSignature;
+    const priorityAlreadyAvailable =
+      paused &&
+      priorityPath !== undefined &&
+      hasCurrentState &&
+      currentState.records.has(priorityPath);
+    const fullAnalysisComplete =
+      !paused &&
+      hasCurrentState &&
+      !currentState.progress.isAnalyzing &&
+      currentState.progress.completed === analysisEntries.length &&
+      currentState.progress.total === analysisEntries.length;
+
+    // Opening Quick Look, resizing it, or receiving an equivalent entries
+    // array must not restart analysis for the same file versions. Existing
+    // results remain valid until path, modification time, or file size changes.
+    if (priorityAlreadyAvailable || fullAnalysisComplete) {
       return () => controller.abort();
     }
 
@@ -115,8 +149,8 @@ export function usePhotoAnalysis(
           records,
           progress: {
             completed,
-            total: processingEntries.length,
-            isAnalyzing: completed < processingEntries.length,
+            total: entriesToProcess.length,
+            isAnalyzing: completed < entriesToProcess.length,
           },
         };
       });
@@ -126,7 +160,7 @@ export function usePhotoAnalysis(
     };
 
     const startTimer = window.setTimeout(() => {
-      void analyzePhotoEntries(processingEntries, controller.signal, publishProgress)
+      void analyzePhotoEntries(entriesToProcess, controller.signal, publishProgress)
         .then((nextRecords) => {
           if (generation !== generationRef.current || controller.signal.aborted) return;
           startTransition(() => {
@@ -139,8 +173,8 @@ export function usePhotoAnalysis(
                 signature: analysisSignature,
                 records,
                 progress: {
-                  completed: processingEntries.length,
-                  total: processingEntries.length,
+                  completed: entriesToProcess.length,
+                  total: entriesToProcess.length,
                   isAnalyzing: false,
                 },
               };
@@ -155,7 +189,7 @@ export function usePhotoAnalysis(
               records: current.signature === analysisSignature ? current.records : EMPTY_RECORDS,
               progress: {
                 completed: 0,
-                total: processingEntries.length,
+                total: entriesToProcess.length,
                 isAnalyzing: false,
               },
             }));
@@ -167,7 +201,14 @@ export function usePhotoAnalysis(
       window.clearTimeout(startTimer);
       controller.abort();
     };
-  }, [analysisSignature, enabled, processingEntries]);
+  }, [
+    analysisEntries.length,
+    analysisSignature,
+    enabled,
+    paused,
+    priorityPath,
+    processingSignature,
+  ]);
 
   return { records: visibleState.records, progress: visibleState.progress };
 }

@@ -1,7 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FileEntry } from "@/types";
 import { isAnalyzablePhoto } from "@/lib/photoAnalysis";
-import { getPhotoMetadataKey, loadPhotoMetadata, type PhotoMetadata } from "@/lib/photoMetadata";
+import {
+  getCachedPhotoMetadata,
+  getPhotoMetadataKey,
+  loadPhotoMetadata,
+  type PhotoMetadata,
+} from "@/lib/photoMetadata";
 
 interface PhotoMetadataState {
   key: string | null;
@@ -9,17 +14,25 @@ interface PhotoMetadataState {
 }
 
 export function usePhotoMetadata(entry: FileEntry) {
-  const metadataKey = useMemo(
-    () => (isAnalyzablePhoto(entry) ? getPhotoMetadataKey(entry) : null),
-    [entry]
-  );
+  const metadataKey = isAnalyzablePhoto(entry) ? getPhotoMetadataKey(entry) : null;
   const [state, setState] = useState<PhotoMetadataState>({ key: null, data: null });
+  const entryRef = useRef(entry);
+  useEffect(() => {
+    entryRef.current = entry;
+  }, [entry]);
+  const cached = metadataKey ? getCachedPhotoMetadata(entry) : undefined;
 
   useEffect(() => {
-    if (!metadataKey) return;
+    const currentEntry = entryRef.current;
+    if (!metadataKey || !currentEntry) return;
+
+    const cachedMetadata = getCachedPhotoMetadata(currentEntry);
+    if (cachedMetadata !== undefined) {
+      return;
+    }
 
     let cancelled = false;
-    void loadPhotoMetadata(entry).then((data) => {
+    void loadPhotoMetadata(currentEntry).then((data) => {
       if (!cancelled) {
         setState({ key: metadataKey, data });
       }
@@ -28,7 +41,8 @@ export function usePhotoMetadata(entry: FileEntry) {
     return () => {
       cancelled = true;
     };
-  }, [entry, metadataKey]);
+  }, [metadataKey]);
 
+  if (cached !== undefined) return cached;
   return state.key === metadataKey ? state.data : null;
 }

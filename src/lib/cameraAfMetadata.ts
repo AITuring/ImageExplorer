@@ -17,30 +17,57 @@ export interface CameraAfMetadata {
   note: string | null;
 }
 
+export type CameraAfLoadPriority = "interactive" | "background";
+
 const cache = new Map<string, CameraAfMetadata | null>();
 const pending = new Map<string, Promise<CameraAfMetadata | null>>();
 const queue: Array<{
   entry: FileEntry;
   key: string;
+  priority: CameraAfLoadPriority;
   resolve: (metadata: CameraAfMetadata | null) => void;
 }> = [];
 let activeRequests = 0;
 const MAX_CONCURRENT_REQUESTS = 2;
+const MAX_CACHE_ENTRIES = 300;
 
 export function getCameraAfMetadataKey(entry: FileEntry) {
   return `${entry.path}:${entry.modified ?? 0}:${entry.size}`;
 }
 
-export function loadCameraAfMetadata(entry: FileEntry): Promise<CameraAfMetadata | null> {
+export function getCachedCameraAfMetadata(entry: FileEntry): CameraAfMetadata | null | undefined {
+  return cache.get(getCameraAfMetadataKey(entry));
+}
+
+function cacheCameraAfMetadata(key: string, metadata: CameraAfMetadata | null) {
+  cache.delete(key);
+  cache.set(key, metadata);
+  while (cache.size > MAX_CACHE_ENTRIES) {
+    const oldest = cache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    cache.delete(oldest);
+  }
+}
+
+export function loadCameraAfMetadata(
+  entry: FileEntry,
+  priority: CameraAfLoadPriority = "background"
+): Promise<CameraAfMetadata | null> {
   const key = getCameraAfMetadataKey(entry);
   const cached = cache.get(key);
   if (cached !== undefined) return Promise.resolve(cached);
 
   const existing = pending.get(key);
-  if (existing) return existing;
+  if (existing) {
+    if (priority === "interactive") {
+      const queuedTask = queue.find((task) => task.key === key);
+      if (queuedTask) queuedTask.priority = "interactive";
+    }
+    return existing;
+  }
 
   const request = new Promise<CameraAfMetadata | null>((resolve) => {
-    queue.push({ entry, key, resolve });
+    queue.push({ entry, key, priority, resolve });
     pumpQueue();
   });
   pending.set(key, request);
@@ -49,7 +76,8 @@ export function loadCameraAfMetadata(entry: FileEntry): Promise<CameraAfMetadata
 
 function pumpQueue() {
   while (activeRequests < MAX_CONCURRENT_REQUESTS && queue.length > 0) {
-    const task = queue.shift();
+    const interactiveIndex = queue.findIndex((task) => task.priority === "interactive");
+    const task = queue.splice(interactiveIndex >= 0 ? interactiveIndex : 0, 1)[0];
     if (!task) return;
 
     activeRequests += 1;
@@ -63,7 +91,7 @@ function pumpQueue() {
         return null;
       })
       .then((metadata) => {
-        cache.set(task.key, metadata);
+        cacheCameraAfMetadata(task.key, metadata);
         task.resolve(metadata);
       })
       .finally(() => {

@@ -18,7 +18,8 @@ import { FileThumbnail } from "@/components/FileThumbnail";
 import { FocusRegionOverlay } from "@/components/FocusRegionOverlay";
 import { SharpnessInspectorToolbar } from "@/components/SharpnessInspectorToolbar";
 import { SharpnessSelectionOverlay } from "@/components/SharpnessSelectionOverlay";
-import { iconCache, loadFileThumbnail } from "@/lib/iconCache";
+import { getLargestCachedFileThumbnail, loadFileThumbnail } from "@/lib/iconCache";
+import { useCameraAfMetadata } from "@/hooks/useCameraAfMetadata";
 import { useSharpnessInspector } from "@/hooks/useSharpnessInspector";
 import type { FileEntry } from "@/types/index";
 import {
@@ -26,11 +27,7 @@ import {
   type FocusAnalysis,
   type PhotoAnalysisRecord,
 } from "@/lib/photoAnalysis";
-import {
-  getCameraAfRegions,
-  loadCameraAfMetadata,
-  type CameraAfMetadata,
-} from "@/lib/cameraAfMetadata";
+import { getCameraAfRegions, type CameraAfMetadata } from "@/lib/cameraAfMetadata";
 import {
   isTextFile,
   isImageFile,
@@ -84,10 +81,16 @@ function snapThumbnailSize(value: number) {
 }
 
 function getPreviewZoomFactor(value: number) {
-  if (value <= 1.2) return 1;
-  if (value <= 1.8) return 1.5;
-  if (value <= 2.8) return 2;
+  if (value <= 1.5) return 1;
+  if (value <= 2.3) return 1.5;
+  if (value <= 3.5) return 2;
   return 3;
+}
+
+function shouldUpgradeNativePreview(currentSize: number, requestedSize: number) {
+  if (currentSize <= 0) return true;
+  if (requestedSize <= currentSize) return false;
+  return requestedSize / currentSize >= 1.45;
 }
 
 const FocusAnalysisDetails = memo(function FocusAnalysisDetails({
@@ -402,10 +405,16 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
       return;
     }
 
+    let resizeFrame: number | null = null;
     const updateSize = () => {
-      setPreviewViewport({
-        width: viewport.clientWidth,
-        height: viewport.clientHeight,
+      if (resizeFrame !== null) return;
+      resizeFrame = window.requestAnimationFrame(() => {
+        resizeFrame = null;
+        const width = viewport.clientWidth;
+        const height = viewport.clientHeight;
+        setPreviewViewport((current) =>
+          current.width === width && current.height === height ? current : { width, height }
+        );
       });
     };
 
@@ -416,6 +425,9 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
 
     return () => {
       observer.disconnect();
+      if (resizeFrame !== null) {
+        window.cancelAnimationFrame(resizeFrame);
+      }
     };
   }, [entry.path]);
 
@@ -625,7 +637,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
           {useNativeImagePreview || !isBrowserSupportedImage(entry.extension) ? (
             nativePreviewSrc ? (
               <ZoomableImageElement
-                entry={{ ...entry, path: `${entry.path}:${nativePreviewSrc}` }}
+                entry={entry}
                 src={nativePreviewSrc}
                 fittedImageSize={fittedImageSize}
                 imageZoom={imageZoom}
@@ -702,6 +714,11 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
 export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }: QuickLookProps) {
   const { t } = useTranslation();
   const isOpen = Boolean(entry);
+  const entryPath = entry?.path ?? null;
+  const entryModified = entry?.modified ?? 0;
+  const entrySize = entry?.size ?? 0;
+  const entryExtension = entry?.extension ?? "";
+  const entryIdentity = entry ? `${entryPath}\u0000${entryModified}\u0000${entrySize}` : null;
 
   const [textContent, setTextContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -715,7 +732,8 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     height: typeof window === "undefined" ? 900 : window.innerHeight,
   }));
   const [committedZoom, setCommittedZoom] = useState(1);
-  const [cameraAfMetadata, setCameraAfMetadata] = useState<CameraAfMetadata | null>(null);
+  const nativePreviewSizeRef = useRef(0);
+  const nativePreviewTargetSizeRef = useRef(0);
   const zoomIndicatorRef = useRef<HTMLSpanElement | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
 
@@ -751,6 +769,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     if (isTextFile(entry.extension) && entry.size < 1024 * 1024) return "text";
     return "icon";
   }, [entry]);
+  const cameraAfMetadata = useCameraAfMetadata(entry, previewType === "image", "interactive");
 
   const dialogSizeClass = useMemo(() => {
     if (!entry) {
@@ -795,23 +814,6 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
   const isRawImage = Boolean(entry && RAW_EXTENSIONS.has((entry.extension || "").toLowerCase()));
 
   useEffect(() => {
-    if (!entry || previewType !== "image" || !isAnalyzablePhoto(entry)) {
-      setCameraAfMetadata(null);
-      return;
-    }
-
-    let cancelled = false;
-    setCameraAfMetadata(null);
-    void loadCameraAfMetadata(entry).then((metadata) => {
-      if (!cancelled) setCameraAfMetadata(metadata);
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [entry, previewType]);
-
-  useEffect(() => {
     if (!entry || previewType !== "image") {
       return;
     }
@@ -846,7 +848,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
   }, [entry, nextEntry, previewType, previousEntry]);
 
   const nativePreviewRequestSize = useMemo(() => {
-    if (previewType !== "image" || !entry) {
+    if (previewType !== "image" || !entryPath) {
       return 768;
     }
 
@@ -857,7 +859,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     const baseSize = snapThumbnailSize(
       Math.max(1024, Math.round(viewportMax * 0.86 * devicePixelRatio * zoomScale))
     );
-    const extension = (entry.extension || "").toLowerCase();
+    const extension = entryExtension.toLowerCase();
 
     if (isRawImage) {
       // RAW 预览直接请求一张足够清晰的图，避免先显示 384px 缩略图后一直
@@ -869,24 +871,33 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     }
 
     if (extension === "psd") {
-      if (entry.size > 400 * 1024 * 1024) {
+      if (entrySize > 400 * 1024 * 1024) {
         return Math.min(2048, baseSize);
       }
-      if (entry.size > 160 * 1024 * 1024) {
+      if (entrySize > 160 * 1024 * 1024) {
         return Math.min(3072, Math.max(1536, baseSize));
       }
       return Math.min(4096, Math.max(2048, baseSize));
     }
 
     return baseSize;
-  }, [entry, isRawImage, previewType, previewZoomFactor, viewportSize.height, viewportSize.width]);
+  }, [
+    entryExtension,
+    entryPath,
+    entrySize,
+    isRawImage,
+    previewType,
+    previewZoomFactor,
+    viewportSize.height,
+    viewportSize.width,
+  ]);
 
   const progressivePreviewRequestSize = useMemo(() => {
-    if (previewType !== "image" || !entry) {
+    if (previewType !== "image" || !entryPath) {
       return 384;
     }
 
-    const extension = (entry.extension || "").toLowerCase();
+    const extension = entryExtension.toLowerCase();
     if (isRawImage) {
       // A 768px RAW placeholder is visibly soft as soon as the user zooms.
       // Quick Look only has one active image, so start with enough pixels for
@@ -901,40 +912,30 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     }
 
     if (extension === "psd") {
-      return entry.size > 120 * 1024 * 1024 ? 512 : 768;
+      return entrySize > 120 * 1024 * 1024 ? 512 : 768;
     }
 
     return 384;
-  }, [entry, isRawImage, previewType, viewportSize.height, viewportSize.width]);
+  }, [
+    entryExtension,
+    entryPath,
+    entrySize,
+    isRawImage,
+    previewType,
+    viewportSize.height,
+    viewportSize.width,
+  ]);
 
   const cachedNativePreview = useMemo(() => {
-    if (!entry) {
+    if (!entryPath) {
       return null;
     }
 
-    const prefix = `file:${entry.path}:${entry.modified ?? 0}:${entry.size}:`;
-    let bestMatch: { size: number; src: string } | null = null;
-
-    for (const [cacheKey, value] of Object.entries(iconCache)) {
-      if (!cacheKey.startsWith(prefix) || value === "failed") {
-        continue;
-      }
-
-      const size = Number(cacheKey.slice(prefix.length));
-      if (!Number.isFinite(size)) {
-        continue;
-      }
-
-      if (!bestMatch || size > bestMatch.size) {
-        bestMatch = {
-          size,
-          src: `data:image/png;base64,${value}`,
-        };
-      }
-    }
-
-    return bestMatch;
-  }, [entry]);
+    const cached = getLargestCachedFileThumbnail(entryPath, entryModified, entrySize);
+    return cached
+      ? { size: cached.requestSize, src: `data:image/png;base64,${cached.base64}` }
+      : null;
+  }, [entryModified, entryPath, entrySize]);
 
   const dialogStyle = useMemo<CSSProperties | undefined>(() => {
     if (previewType !== "image" || !imageDimensions) {
@@ -972,6 +973,20 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     };
   }, [imageDimensions, previewType, viewportSize.height, viewportSize.width]);
 
+  const updateImageDimensions = useCallback((nextDimensions: ImageDimensions) => {
+    if (nextDimensions.width <= 0 || nextDimensions.height <= 0) return;
+    setImageDimensions((current) => {
+      if (!current) return nextDimensions;
+      const currentAspect = current.width / current.height;
+      const nextAspect = nextDimensions.width / nextDimensions.height;
+      const relativeDifference =
+        Math.abs(currentAspect - nextAspect) / Math.max(currentAspect, nextAspect);
+      // Progressive RAW frames commonly change pixel dimensions while keeping
+      // the same image geometry. Preserve the fitted layout in that case.
+      return relativeDifference < 0.002 ? current : nextDimensions;
+    });
+  }, []);
+
   // 当 entry 变化时，重置错误状态
   useEffect(() => {
     setError(null);
@@ -981,8 +996,9 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     setImageDimensions(null);
     setNativePreviewSrc(null);
     setCommittedZoom(1);
-    setCameraAfMetadata(null);
-  }, [entry]);
+    nativePreviewSizeRef.current = 0;
+    nativePreviewTargetSizeRef.current = 0;
+  }, [entryIdentity]);
 
   const updateZoomIndicator = useCallback((zoom: number | null) => {
     if (!zoomIndicatorRef.current) {
@@ -993,18 +1009,29 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
 
   useEffect(() => {
     updateZoomIndicator(previewType === "image" ? 1 : null);
-  }, [entry, previewType, updateZoomIndicator]);
+  }, [entryIdentity, previewType, updateZoomIndicator]);
 
   useEffect(() => {
+    let resizeFrame: number | null = null;
     const handleResize = () => {
-      setViewportSize({
-        width: window.innerWidth,
-        height: window.innerHeight,
+      if (resizeFrame !== null) return;
+      resizeFrame = window.requestAnimationFrame(() => {
+        resizeFrame = null;
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+        setViewportSize((current) =>
+          current.width === width && current.height === height ? current : { width, height }
+        );
       });
     };
 
     window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      if (resizeFrame !== null) {
+        window.cancelAnimationFrame(resizeFrame);
+      }
+    };
   }, []);
 
   // ESC 关闭 + 媒体清理
@@ -1077,16 +1104,16 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
   useEffect(() => {
     // sips 不支持部分 RAW 格式，且在 macOS 上可能启动一个失败的子进程；
     // RAW 的尺寸直接从 Quick Look 缩略图 onLoad 获取。
-    if (!entry || previewType !== "image" || isRawImage) {
+    if (!entryPath || previewType !== "image" || isRawImage) {
       return;
     }
 
     let cancelled = false;
 
-    invoke<ImageDimensions>("read_image_dimensions", { path: entry.path })
+    invoke<ImageDimensions>("read_image_dimensions", { path: entryPath })
       .then((dimensions) => {
         if (!cancelled && dimensions.width > 0 && dimensions.height > 0) {
-          setImageDimensions(dimensions);
+          updateImageDimensions(dimensions);
         }
       })
       .catch(() => {
@@ -1096,87 +1123,86 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     return () => {
       cancelled = true;
     };
-  }, [entry, isRawImage, previewType]);
+  }, [entryIdentity, entryPath, isRawImage, previewType, updateImageDimensions]);
 
   useEffect(() => {
     if (
-      !entry ||
+      !entryPath ||
       previewType !== "image" ||
-      (isBrowserSupportedImage(entry.extension) && !useNativeImagePreview)
+      (isBrowserSupportedImage(entryExtension) && !useNativeImagePreview)
     ) {
       return;
     }
 
     let cancelled = false;
-    const progressiveCacheKey = `file:${entry.path}:${entry.modified ?? 0}:${entry.size}:${progressivePreviewRequestSize}`;
-    const fullCacheKey = `file:${entry.path}:${entry.modified ?? 0}:${entry.size}:${nativePreviewRequestSize}`;
+    const cachePrefix = `file:${entryPath}:${entryModified}:${entrySize}:`;
+    const progressiveCacheKey = `${cachePrefix}${progressivePreviewRequestSize}`;
+    const fullCacheKey = `${cachePrefix}${nativePreviewRequestSize}`;
+
+    const applyPreviewSource = (src: string, requestSize: number) => {
+      if (cancelled || requestSize < nativePreviewSizeRef.current) return;
+      nativePreviewSizeRef.current = requestSize;
+      setNativePreviewSrc((current) => (current === src ? current : src));
+    };
 
     if (cachedNativePreview?.src) {
-      setNativePreviewSrc(cachedNativePreview.src);
+      applyPreviewSource(cachedNativePreview.src, cachedNativePreview.size);
     }
 
-    const applyPreview = (base64: string | null) => {
-      if (!cancelled && base64) {
-        setNativePreviewSrc(`data:image/png;base64,${base64}`);
-      }
-    };
-
-    const loadFullPreview = () => {
-      if (cancelled) {
-        return Promise.resolve();
-      }
-
-      if (cachedNativePreview && cachedNativePreview.size >= nativePreviewRequestSize) {
-        return Promise.resolve();
-      }
-
-      return loadFileThumbnail(fullCacheKey, entry.path, nativePreviewRequestSize).then(
-        applyPreview
+    const loadPreview = (cacheKey: string, requestSize: number) => {
+      const availableSize = Math.max(
+        nativePreviewSizeRef.current,
+        nativePreviewTargetSizeRef.current
       );
+      if (!shouldUpgradeNativePreview(availableSize, requestSize)) {
+        return Promise.resolve();
+      }
+
+      nativePreviewTargetSizeRef.current = requestSize;
+      return loadFileThumbnail(cacheKey, entryPath, requestSize)
+        .then((base64) => {
+          if (base64) {
+            applyPreviewSource(`data:image/png;base64,${base64}`, requestSize);
+          }
+        })
+        .finally(() => {
+          if (nativePreviewTargetSizeRef.current === requestSize) {
+            nativePreviewTargetSizeRef.current = nativePreviewSizeRef.current;
+          }
+        });
     };
 
-    const shouldLoadProgressive =
-      !cachedNativePreview || cachedNativePreview.size < progressivePreviewRequestSize;
+    const loadFullPreview = () => loadPreview(fullCacheKey, nativePreviewRequestSize);
+    const availableSize = Math.max(
+      nativePreviewSizeRef.current,
+      nativePreviewTargetSizeRef.current
+    );
 
-    if (isRawImage) {
-      // 先显示较小的 RAW 预览，再在后台升级到当前缩放所需的尺寸，避免
-      // 空格预览必须等待一次完整的高分辨率解码。
-      if (shouldLoadProgressive) {
-        loadFileThumbnail(progressiveCacheKey, entry.path, progressivePreviewRequestSize)
-          .then(applyPreview)
-          .finally(() => {
-            if (!cancelled) void loadFullPreview();
-          });
-      } else {
-        void loadFullPreview();
-      }
-      return () => {
-        cancelled = true;
-      };
+    // Decode at most one useful upgrade at a time. Small zoom and resize
+    // changes reuse the current frame; a new native decode starts only after
+    // a meaningful resolution step.
+    if (shouldUpgradeNativePreview(availableSize, progressivePreviewRequestSize)) {
+      void loadPreview(progressiveCacheKey, progressivePreviewRequestSize).finally(() => {
+        if (!cancelled) void loadFullPreview();
+      });
+    } else {
+      void loadFullPreview();
     }
-
-    if (shouldLoadProgressive) {
-      loadFileThumbnail(progressiveCacheKey, entry.path, progressivePreviewRequestSize)
-        .then(applyPreview)
-        .finally(() => {
-          if (!cancelled) void loadFullPreview();
-        });
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    void loadFullPreview();
 
     return () => {
       cancelled = true;
+      if (nativePreviewTargetSizeRef.current > nativePreviewSizeRef.current) {
+        nativePreviewTargetSizeRef.current = nativePreviewSizeRef.current;
+      }
     };
   }, [
     cachedNativePreview,
-    entry,
+    entryExtension,
+    entryIdentity,
+    entryModified,
+    entryPath,
+    entrySize,
     nativePreviewRequestSize,
-    isRawImage,
-    previewZoomFactor,
     previewType,
     progressivePreviewRequestSize,
     useNativeImagePreview,
@@ -1184,7 +1210,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
 
   useEffect(() => {
     // 只有文本文件才需要加载内容
-    if (!entry || previewType !== "text") {
+    if (!entryPath || previewType !== "text") {
       return;
     }
 
@@ -1195,7 +1221,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
         setLoading(true);
         setError(null);
         const content = await invoke<string>("read_text_file", {
-          path: entry.path,
+          path: entryPath,
           maxSize: 1024 * 1024,
         });
         if (!cancelled) {
@@ -1218,7 +1244,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     return () => {
       cancelled = true;
     };
-  }, [entry, previewType]);
+  }, [entryIdentity, entryPath, previewType]);
 
   const handleOpen = async () => {
     if (!entry) {
@@ -1233,17 +1259,20 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     }
   };
 
-  const handleImageLoadDimensions = useCallback((image: HTMLImageElement) => {
-    if (image.naturalWidth > 0 && image.naturalHeight > 0) {
-      setImageDimensions({
-        width: image.naturalWidth,
-        height: image.naturalHeight,
-      });
-    }
-  }, []);
+  const handleImageLoadDimensions = useCallback(
+    (image: HTMLImageElement) => {
+      if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+        updateImageDimensions({
+          width: image.naturalWidth,
+          height: image.naturalHeight,
+        });
+      }
+    },
+    [updateImageDimensions]
+  );
 
   const handleBrowserImageError = useCallback(() => {
-    if (!entry) {
+    if (!entryPath) {
       return;
     }
 
@@ -1253,7 +1282,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
       return;
     }
 
-    invoke<string>("read_image_base64", { path: entry.path })
+    invoke<string>("read_image_base64", { path: entryPath })
       .then((base64) => {
         setFallbackSrc(base64);
         setError(null);
@@ -1262,7 +1291,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
         setUseNativeImagePreview(true);
         setError(null);
       });
-  }, [entry, fallbackSrc]);
+  }, [entryPath, fallbackSrc]);
 
   if (!entry) return null;
 

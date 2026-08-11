@@ -30,10 +30,7 @@ function setCacheValue(key: string, value: string) {
   iconCacheEntries.set(key, value);
   iconCacheBytes += valueBytes(value);
 
-  while (
-    iconCacheEntries.size > MAX_CACHE_ENTRIES ||
-    iconCacheBytes > MAX_CACHE_BYTES
-  ) {
+  while (iconCacheEntries.size > MAX_CACHE_ENTRIES || iconCacheBytes > MAX_CACHE_BYTES) {
     const oldest = iconCacheEntries.keys().next().value as string | undefined;
     if (!oldest) break;
     const oldestValue = iconCacheEntries.get(oldest);
@@ -123,6 +120,26 @@ export function getFileThumbnailCacheKey(
 ) {
   const previewKind = preferEmbedded ? ":embedded" : "";
   return `file:${path}:${modified ?? 0}:${fileSize}:${requestSize}${previewKind}`;
+}
+
+export function getLargestCachedFileThumbnail(
+  path: string,
+  modified: number | null | undefined,
+  fileSize: number
+) {
+  const prefix = `file:${path}:${modified ?? 0}:${fileSize}:`;
+  let bestMatch: { requestSize: number; base64: string } | null = null;
+
+  for (const [cacheKey, value] of iconCacheEntries) {
+    if (!cacheKey.startsWith(prefix) || value === "failed") continue;
+    const requestSize = Number(cacheKey.slice(prefix.length));
+    if (!Number.isFinite(requestSize)) continue;
+    if (!bestMatch || requestSize > bestMatch.requestSize) {
+      bestMatch = { requestSize, base64: value };
+    }
+  }
+
+  return bestMatch;
 }
 
 // 注册刷新回调
