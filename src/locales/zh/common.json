@@ -20,6 +20,9 @@
     "photo_analysis_progress_done": "识别整理完成 {{total}} 项",
     "quick_look": {
       "preview": "快速预览",
+      "close": "关闭预览",
+      "previous": "上一项",
+      "next": "下一项",
       "open": "打开",
       "modified": "修改时间",
       "error": "加载失败",
@@ -37,7 +40,25 @@
       "focus_camera_af_size": "显示框大小 {{width}}% × {{height}}%",
       "focus_camera_af_exact": "Sony MakerNote 坐标",
       "focus_camera_af_approx": "AF 中心点（显示框为近似）",
-      "focus_camera_af_unavailable": "相机未记录可绘制 AF 坐标"
+      "focus_camera_af_unavailable": "相机未记录可绘制 AF 坐标",
+      "sharpness_tool": "清晰度",
+      "sharpness_enable": "开启清晰度高亮",
+      "sharpness_disable": "关闭本张照片的清晰度高亮",
+      "sharpness_hint": "打开照片预览时默认分析整张图；也可框选局部，以红色高亮相对更锐的边缘（非相机 AF）",
+      "sharpness_preparing": "预览就绪后自动分析整张图…",
+      "sharpness_select": "拖动框选要检查的区域 · 非相机 AF",
+      "sharpness_analyzing": "正在分析框选区域…",
+      "sharpness_analyzing_full": "正在分析整张图…",
+      "sharpness_ready": "相对锐利边缘 {{value}}% · 非相机 AF",
+      "sharpness_empty": "选区内没有足够明确的锐利细节",
+      "sharpness_empty_full": "整张图中没有足够明确的锐利细节",
+      "sharpness_too_small": "选区太小，请拖大一些",
+      "sharpness_error": "无法分析当前预览，请重新框选或稍后重试",
+      "sharpness_full_image": "分析整张图",
+      "sharpness_full_image_short": "整张",
+      "sharpness_select_area": "框选",
+      "sharpness_reselect": "重选",
+      "sharpness_selection_label": "清晰度检查框选模式。拖动以框选区域；按 Enter 或空格分析整张图；按 Escape 退出框选。"
     }
   },
   "updates": {

@@ -20,6 +20,9 @@
     "photo_analysis_progress_done": "Analysis complete · {{total}} items",
     "quick_look": {
       "preview": "Quick Look",
+      "close": "Close preview",
+      "previous": "Previous item",
+      "next": "Next item",
       "open": "Open",
       "modified": "Modified",
       "error": "Failed to load",
@@ -37,7 +40,25 @@
       "focus_camera_af_size": "Displayed frame {{width}}% × {{height}}%",
       "focus_camera_af_exact": "Sony MakerNote coordinates",
       "focus_camera_af_approx": "AF center point (displayed frame is approximate)",
-      "focus_camera_af_unavailable": "Camera did not record drawable AF coordinates"
+      "focus_camera_af_unavailable": "Camera did not record drawable AF coordinates",
+      "sharpness_tool": "Sharpness",
+      "sharpness_enable": "Enable sharpness highlighting",
+      "sharpness_disable": "Disable sharpness highlighting for this photo",
+      "sharpness_hint": "Analyzes the full image automatically when a photo preview opens; select an area to highlight relatively sharper edges in red (not camera AF)",
+      "sharpness_preparing": "Analyzing the full image when the preview is ready…",
+      "sharpness_select": "Drag to select an area to inspect · not camera AF",
+      "sharpness_analyzing": "Analyzing the selected area…",
+      "sharpness_analyzing_full": "Analyzing the full image…",
+      "sharpness_ready": "Sharper edges {{value}}% · not camera AF",
+      "sharpness_empty": "No clearly sharp detail was found in this selection",
+      "sharpness_empty_full": "No clearly sharp detail was found in the full image",
+      "sharpness_too_small": "Selection is too small; drag a larger area",
+      "sharpness_error": "Unable to analyze the current preview; reselect an area or try again",
+      "sharpness_full_image": "Analyze the full image",
+      "sharpness_full_image_short": "Full",
+      "sharpness_select_area": "Select",
+      "sharpness_reselect": "Reselect",
+      "sharpness_selection_label": "Sharpness area selection mode. Drag to select an area; press Enter or Space to analyze the full image; press Escape to leave selection mode."
     }
   },
   "updates": {

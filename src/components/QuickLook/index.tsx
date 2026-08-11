@@ -6,6 +6,7 @@ import {
   useRef,
   useCallback,
   type CSSProperties,
+  type ReactNode,
   type WheelEvent,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -15,9 +16,16 @@ import { X, ExternalLink, File, Loader2, ChevronLeft, ChevronRight } from "lucid
 import { SmartIcon } from "@/components/SmartIcon";
 import { FileThumbnail } from "@/components/FileThumbnail";
 import { FocusRegionOverlay } from "@/components/FocusRegionOverlay";
+import { SharpnessInspectorToolbar } from "@/components/SharpnessInspectorToolbar";
+import { SharpnessSelectionOverlay } from "@/components/SharpnessSelectionOverlay";
 import { iconCache, loadFileThumbnail } from "@/lib/iconCache";
+import { useSharpnessInspector } from "@/hooks/useSharpnessInspector";
 import type { FileEntry } from "@/types/index";
-import { isAnalyzablePhoto, type FocusAnalysis, type PhotoAnalysisRecord } from "@/lib/photoAnalysis";
+import {
+  isAnalyzablePhoto,
+  type FocusAnalysis,
+  type PhotoAnalysisRecord,
+} from "@/lib/photoAnalysis";
 import {
   getCameraAfRegions,
   loadCameraAfMetadata,
@@ -55,6 +63,14 @@ const THUMBNAIL_SIZE_STEPS = [384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144]
 const MIN_SCROLL_ADJUST_DELTA = 6;
 const MAX_RAW_PREVIEW_SIZE = 6144;
 const RAW_EXTENSIONS = new Set(RAW_IMAGE_EXTENSIONS);
+const DIALOG_FOCUSABLE_SELECTOR = [
+  "button:not([disabled])",
+  "a[href]",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(",");
 
 function clampZoom(value: number) {
   return Math.min(MAX_IMAGE_ZOOM, Math.max(MIN_IMAGE_ZOOM, value));
@@ -215,6 +231,7 @@ interface ZoomableImageElementProps {
   onError?: () => void;
   focusAnalysis?: FocusAnalysis | null;
   cameraAfMetadata?: CameraAfMetadata | null;
+  children?: ReactNode;
 }
 
 const ZoomableImageElement = memo(function ZoomableImageElement({
@@ -227,6 +244,7 @@ const ZoomableImageElement = memo(function ZoomableImageElement({
   onError,
   focusAnalysis,
   cameraAfMetadata,
+  children,
 }: ZoomableImageElementProps) {
   const cameraAfRegions = getCameraAfRegions(cameraAfMetadata);
   const focusRegions =
@@ -271,6 +289,7 @@ const ZoomableImageElement = memo(function ZoomableImageElement({
           }}
         />
       ))}
+      {children}
     </div>
   );
 });
@@ -292,8 +311,6 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
   cameraAfMetadata,
 }: ZoomableImagePreviewProps) {
   const cameraAfRegions = getCameraAfRegions(cameraAfMetadata);
-  const focusRegions =
-    cameraAfRegions ?? (focusAnalysis?.kind === "full-frame" ? [] : (focusAnalysis?.regions ?? []));
   const [previewViewport, setPreviewViewport] = useState({ width: 0, height: 0 });
   const [imageZoom, setImageZoom] = useState(1);
   const [isZooming, setIsZooming] = useState(false);
@@ -315,6 +332,26 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
     rectLeft: number | null;
     rectTop: number | null;
   } | null>(null);
+  const canInspectSharpness = isAnalyzablePhoto(entry);
+  const sharpnessInspector = useSharpnessInspector({
+    entry,
+    displayedDimensions: imageDimensions,
+    autoStart: canInspectSharpness,
+  });
+  const registerSharpnessPreviewImage = sharpnessInspector.registerPreviewImage;
+  const displayedFocusAnalysis = sharpnessInspector.enabled ? null : focusAnalysis;
+  const focusRegions =
+    cameraAfRegions ??
+    (displayedFocusAnalysis?.kind === "full-frame" ? [] : (displayedFocusAnalysis?.regions ?? []));
+  const handleDisplayedImageLoad = useCallback(
+    (image: HTMLImageElement) => {
+      onImageLoadDimensions(image);
+      if (canInspectSharpness) {
+        registerSharpnessPreviewImage(image);
+      }
+    },
+    [canInspectSharpness, onImageLoadDimensions, registerSharpnessPreviewImage]
+  );
 
   const imageViewportSize = useMemo(() => {
     if (previewViewport.width > 0 && previewViewport.height > 0) {
@@ -537,94 +574,126 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
     };
   }, []);
 
+  const sharpnessOverlay = canInspectSharpness ? (
+    <SharpnessSelectionOverlay
+      enabled={sharpnessInspector.enabled}
+      selectionMode={sharpnessInspector.selectionMode}
+      selection={sharpnessInspector.selection}
+      result={sharpnessInspector.result}
+      onSelectionCommit={sharpnessInspector.commitSelection}
+      onSelectionTooSmall={sharpnessInspector.reportTooSmall}
+      onAnalyzeFullImage={sharpnessInspector.analyzeFullImage}
+      onEscape={sharpnessInspector.escape}
+    />
+  ) : null;
+
   return (
-    <div
-      ref={imageViewportRef}
-      className="flex h-full w-full overflow-auto"
-      style={{
-        contain: "layout paint size",
-        isolation: "isolate",
-        overscrollBehavior: "contain",
-      }}
-      onWheel={handleImageWheel}
-    >
+    <div className="relative h-full w-full">
+      {canInspectSharpness ? (
+        <SharpnessInspectorToolbar
+          enabled={sharpnessInspector.enabled}
+          status={sharpnessInspector.status}
+          selectionMode={sharpnessInspector.selectionMode}
+          selection={sharpnessInspector.selection}
+          result={sharpnessInspector.result}
+          onToggle={sharpnessInspector.toggle}
+          onAnalyzeFullImage={sharpnessInspector.analyzeFullImage}
+          onResetSelection={sharpnessInspector.resetSelection}
+        />
+      ) : null}
       <div
-        className="flex min-h-full min-w-full items-center justify-center"
-        style={
-          zoomedCanvasSize
-            ? {
-                width: `${zoomedCanvasSize.width}px`,
-                height: `${zoomedCanvasSize.height}px`,
-              }
-            : undefined
-        }
+        ref={imageViewportRef}
+        className="flex h-full w-full overflow-auto"
+        style={{
+          contain: "layout paint size",
+          isolation: "isolate",
+          overscrollBehavior: "contain",
+        }}
+        onWheel={handleImageWheel}
       >
-        {useNativeImagePreview || !isBrowserSupportedImage(entry.extension) ? (
-          nativePreviewSrc ? (
+        <div
+          className="flex min-h-full min-w-full items-center justify-center"
+          style={
+            zoomedCanvasSize
+              ? {
+                  width: `${zoomedCanvasSize.width}px`,
+                  height: `${zoomedCanvasSize.height}px`,
+                }
+              : undefined
+          }
+        >
+          {useNativeImagePreview || !isBrowserSupportedImage(entry.extension) ? (
+            nativePreviewSrc ? (
+              <ZoomableImageElement
+                entry={{ ...entry, path: `${entry.path}:${nativePreviewSrc}` }}
+                src={nativePreviewSrc}
+                fittedImageSize={fittedImageSize}
+                imageZoom={imageZoom}
+                isZooming={isZooming}
+                onLoad={handleDisplayedImageLoad}
+                focusAnalysis={displayedFocusAnalysis}
+                cameraAfMetadata={cameraAfMetadata}
+              >
+                {sharpnessOverlay}
+              </ZoomableImageElement>
+            ) : (
+              <div
+                className="relative shrink-0"
+                style={
+                  fittedImageSize
+                    ? {
+                        width: `${fittedImageSize.width}px`,
+                        height: `${fittedImageSize.height}px`,
+                        transform: `translate3d(0, 0, 0) scale(${imageZoom})`,
+                        transformOrigin: "center center",
+                      }
+                    : {
+                        transform: `translate3d(0, 0, 0) scale(${imageZoom})`,
+                        transformOrigin: "center center",
+                      }
+                }
+              >
+                <FileThumbnail
+                  entry={entry}
+                  size={320}
+                  requestSizeOverride={progressivePreviewRequestSize}
+                  className={`${fittedImageSize ? "h-full w-full" : "h-auto max-h-full w-auto max-w-full"} object-contain ${isZooming ? "" : "rounded-lg shadow-lg"}`}
+                  fallbackClassName="text-muted-foreground h-40 w-40"
+                  onImageLoad={handleDisplayedImageLoad}
+                />
+                {fittedImageSize &&
+                  focusRegions.map((region) => (
+                    <FocusRegionOverlay
+                      key={`${region.x}-${region.y}-${region.width}-${region.height}`}
+                      variant={cameraAfRegions !== null ? "camera" : "estimate"}
+                      showCenterPoint={cameraAfRegions !== null && !cameraAfMetadata?.exact}
+                      position={{
+                        left: region.x * 100,
+                        top: region.y * 100,
+                        width: region.width * 100,
+                        height: region.height * 100,
+                      }}
+                    />
+                  ))}
+                {sharpnessOverlay}
+              </div>
+            )
+          ) : (
             <ZoomableImageElement
-              entry={{ ...entry, path: `${entry.path}:${nativePreviewSrc}` }}
-              src={nativePreviewSrc}
+              entry={entry}
+              src={fallbackSrc || fileSrc || ""}
               fittedImageSize={fittedImageSize}
               imageZoom={imageZoom}
               isZooming={isZooming}
-              onLoad={onImageLoadDimensions}
-              focusAnalysis={focusAnalysis}
+              onLoad={handleDisplayedImageLoad}
+              onError={onBrowserImageError}
+              focusAnalysis={displayedFocusAnalysis}
               cameraAfMetadata={cameraAfMetadata}
-            />
-          ) : (
-            <div
-              className="relative shrink-0"
-              style={
-                fittedImageSize
-                  ? {
-                      width: `${fittedImageSize.width}px`,
-                      height: `${fittedImageSize.height}px`,
-                      transform: `translate3d(0, 0, 0) scale(${imageZoom})`,
-                      transformOrigin: "center center",
-                    }
-                  : {
-                      transform: `translate3d(0, 0, 0) scale(${imageZoom})`,
-                      transformOrigin: "center center",
-                    }
-              }
             >
-              <FileThumbnail
-                entry={entry}
-                size={320}
-                requestSizeOverride={progressivePreviewRequestSize}
-                className={`${fittedImageSize ? "h-full w-full" : "h-auto max-h-full w-auto max-w-full"} object-contain ${isZooming ? "" : "rounded-lg shadow-lg"}`}
-                fallbackClassName="text-muted-foreground h-40 w-40"
-                onImageLoad={onImageLoadDimensions}
-              />
-              {fittedImageSize &&
-                focusRegions.map((region) => (
-                  <FocusRegionOverlay
-                    key={`${region.x}-${region.y}-${region.width}-${region.height}`}
-                    variant={cameraAfRegions !== null ? "camera" : "estimate"}
-                    showCenterPoint={cameraAfRegions !== null && !cameraAfMetadata?.exact}
-                    position={{
-                      left: region.x * 100,
-                      top: region.y * 100,
-                      width: region.width * 100,
-                      height: region.height * 100,
-                    }}
-                  />
-                ))}
-            </div>
-          )
-        ) : (
-          <ZoomableImageElement
-            entry={entry}
-            src={fallbackSrc || fileSrc || ""}
-            fittedImageSize={fittedImageSize}
-            imageZoom={imageZoom}
-            isZooming={isZooming}
-            onLoad={onImageLoadDimensions}
-            onError={onBrowserImageError}
-            focusAnalysis={focusAnalysis}
-            cameraAfMetadata={cameraAfMetadata}
-          />
-        )}
+              {sharpnessOverlay}
+            </ZoomableImageElement>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -632,6 +701,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
 
 export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }: QuickLookProps) {
   const { t } = useTranslation();
+  const isOpen = Boolean(entry);
 
   const [textContent, setTextContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -647,6 +717,20 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
   const [committedZoom, setCommittedZoom] = useState(1);
   const [cameraAfMetadata, setCameraAfMetadata] = useState<CameraAfMetadata | null>(null);
   const zoomIndicatorRef = useRef<HTMLSpanElement | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const previouslyFocused =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    dialogRef.current?.focus({ preventScroll: true });
+
+    return () => {
+      if (previouslyFocused?.isConnected) {
+        previouslyFocused.focus({ preventScroll: true });
+      }
+    };
+  }, [isOpen]);
 
   // 缓存 convertFileSrc 结果，避免重复转换
   const fileSrc = useMemo(() => {
@@ -857,7 +941,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
       return undefined;
     }
 
-    const HEADER_HEIGHT = 44;
+    const HEADER_HEIGHT = 48;
     const CONTENT_PADDING_X = 10;
     const CONTENT_PADDING_Y = 10;
     const BORDER = 1;
@@ -928,6 +1012,37 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     if (!entry) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Tab") {
+        const dialog = dialogRef.current;
+        if (!dialog) return;
+        const focusableElements = Array.from(
+          dialog.querySelectorAll<HTMLElement>(DIALOG_FOCUSABLE_SELECTOR)
+        );
+        if (focusableElements.length === 0) {
+          e.preventDefault();
+          return;
+        }
+
+        const firstFocusable = focusableElements[0];
+        const lastFocusable = focusableElements[focusableElements.length - 1];
+        const activeElement = document.activeElement;
+        if (!dialog.contains(activeElement)) {
+          e.preventDefault();
+          firstFocusable.focus();
+          return;
+        }
+        if (e.shiftKey && (activeElement === firstFocusable || activeElement === dialog)) {
+          e.preventDefault();
+          lastFocusable.focus();
+          return;
+        }
+        if (!e.shiftKey && activeElement === lastFocusable) {
+          e.preventDefault();
+          firstFocusable.focus();
+        }
+        return;
+      }
+
       if (e.key === "Escape") {
         onClose();
         return;
@@ -1176,7 +1291,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
           <div className="flex h-full min-h-0 w-full flex-col gap-1">
             <div className="min-h-0 w-full flex-1">
               <ZoomableImagePreview
-                key={entry.path}
+                key={`${entry.path}:${entry.modified ?? 0}:${entry.size}`}
                 entry={entry}
                 viewportSize={viewportSize}
                 imageDimensions={imageDimensions}
@@ -1310,34 +1425,45 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
       onClick={onClose}
     >
       <div
-        className={`bg-background/80 text-foreground animate-in fade-in zoom-in-95 relative flex ${dialogSizeClass} flex-col overflow-hidden rounded-lg border border-black/8 shadow-xl backdrop-blur-md transition-all duration-200`}
+        ref={dialogRef}
+        className={`bg-background/80 text-foreground animate-in fade-in zoom-in-95 relative flex ${dialogSizeClass} flex-col overflow-hidden rounded-lg border border-black/8 shadow-xl backdrop-blur-md motion-reduce:animate-none`}
         style={dialogStyle}
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("common.quick_look.preview")}
+        tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Title Bar */}
         <div className="bg-muted/25 flex items-center justify-between border-b border-black/6 px-3 py-2">
           <div className="flex gap-2">
             <button
+              type="button"
               onClick={onClose}
-              className="text-muted-foreground hover:text-foreground rounded-full p-1 transition-colors hover:bg-black/10 dark:hover:bg-white/10"
+              aria-label={t("common.quick_look.close")}
+              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex h-8 w-8 items-center justify-center rounded-full transition-colors hover:bg-black/10 focus-visible:ring-2 focus-visible:outline-none dark:hover:bg-white/10"
             >
-              <X className="h-4 w-4" />
+              <X className="h-4 w-4" aria-hidden="true" />
             </button>
             {canNavigate ? (
               <>
                 <button
+                  type="button"
                   onClick={() => previousEntry && onNavigate(previousEntry)}
                   disabled={!previousEntry}
-                  className="text-muted-foreground hover:text-foreground disabled:text-muted-foreground/40 rounded-full p-1 transition-colors hover:bg-black/10 disabled:hover:bg-transparent dark:hover:bg-white/10"
+                  aria-label={t("common.quick_look.previous")}
+                  className="text-muted-foreground hover:text-foreground disabled:text-muted-foreground/40 focus-visible:ring-ring flex h-8 w-8 items-center justify-center rounded-full transition-colors hover:bg-black/10 focus-visible:ring-2 focus-visible:outline-none disabled:hover:bg-transparent dark:hover:bg-white/10"
                 >
-                  <ChevronLeft className="h-4 w-4" />
+                  <ChevronLeft className="h-4 w-4" aria-hidden="true" />
                 </button>
                 <button
+                  type="button"
                   onClick={() => nextEntry && onNavigate(nextEntry)}
                   disabled={!nextEntry}
-                  className="text-muted-foreground hover:text-foreground disabled:text-muted-foreground/40 rounded-full p-1 transition-colors hover:bg-black/10 disabled:hover:bg-transparent dark:hover:bg-white/10"
+                  aria-label={t("common.quick_look.next")}
+                  className="text-muted-foreground hover:text-foreground disabled:text-muted-foreground/40 focus-visible:ring-ring flex h-8 w-8 items-center justify-center rounded-full transition-colors hover:bg-black/10 focus-visible:ring-2 focus-visible:outline-none disabled:hover:bg-transparent dark:hover:bg-white/10"
                 >
-                  <ChevronRight className="h-4 w-4" />
+                  <ChevronRight className="h-4 w-4" aria-hidden="true" />
                 </button>
               </>
             ) : null}
@@ -1347,10 +1473,11 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
             <span ref={zoomIndicatorRef}>{previewType === "image" ? " 100%" : ""}</span>
           </div>
           <button
+            type="button"
             onClick={handleOpen}
-            className="text-primary hover:text-primary/80 flex items-center gap-1 text-sm font-medium transition-colors"
+            className="text-primary hover:text-primary/80 focus-visible:ring-ring flex h-8 items-center gap-1 rounded-md px-1 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:outline-none"
           >
-            <ExternalLink className="h-4 w-4" />
+            <ExternalLink className="h-4 w-4" aria-hidden="true" />
             {t("common.quick_look.open")}
           </button>
         </div>

@@ -23,6 +23,8 @@ When the mode is enabled:
 3. A small focus box is drawn over each thumbnail. The marker follows the image during Quick Look zoom, and the preview footer reports its normalized position, confidence, and estimation method.
 4. Camera metadata is loaded lazily below the filename when macOS exposes it: dimensions, ISO, aperture, shutter speed, focal length, camera body, and lens.
 
+Whether or not grid analysis is enabled, Quick Look automatically enables **Sharpness** and reuses the displayed preview to highlight relatively sharper edges across the full image in red. Choose **Select** to inspect a local area. The high-frequency pass runs away from the interface thread, and this local preview result is never presented as camera AF.
+
 ### Camera AF metadata
 
 When the source file contains Sony MakerNote focus coordinates, ImageExplorer
@@ -46,7 +48,7 @@ reference](https://exiftool.org/TagNames/Sony.html).
 
 ![RAW/JPEG pairs in icon view](./docs/screenshots/icon-view-raw-pairs.png)
 
-Press **Space** to open Quick Look, use the arrow buttons or Left/Right keys to move through the folder, and hold **⌘/Ctrl + scroll** to zoom around the pointer. Adjacent RAW previews are prefetched so moving through a sequence feels immediate.
+Press **Space** to open Quick Look, use the arrow buttons or Left/Right keys to move through the folder, and hold **⌘/Ctrl + scroll** to zoom around the pointer. Full-image sharpness analysis starts automatically when the photo appears; choose **Select** to draw a local area, or use **Full** to analyze the whole image again. The result stays aligned while zooming. Adjacent RAW previews are prefetched so moving through a sequence feels immediate.
 
 ![Quick Look zoom with focus marker](./docs/screenshots/quick-look-zoom-focus.png)
 
@@ -61,7 +63,7 @@ Press **Space** to open Quick Look, use the arrow buttons or Left/Right keys to 
 - **Everything-Style Search** — Millisecond-level full-disk search powered by SQLite FTS5 + Rust, with an anchored result panel that stays above the file content and supports Finder-like selection, context-menu actions, and inline rename
 - **Finder-Like Thumbnails** — Native thumbnail previews in icon/list views, including common camera RAW formats, generated through in-process Quick Look with progressive loading and caching for large folders
 - **Optional Photo Analysis** — Group similar viewpoints globally, cycle distinct group colors, and mark an estimated focus region without changing the default lightweight browsing mode
-- **Focus-Aware Quick Look** — Space-bar preview with Core Image RAW decoding, progressive loading, adjacent-image prefetching, pointer-centered zoom, and focus data beneath the image
+- **Focus-Aware Quick Look** — Space-bar preview with Core Image RAW decoding, progressive loading, adjacent-image prefetching, pointer-centered zoom, full-image or selected-area sharpness highlighting, and focus data beneath the image
 - **EXIF-at-a-Glance** — Lazy, bounded-concurrency metadata loading for visible icon cards so camera settings appear without delaying folder layout
 - **Finder-Like Selection & Rename** — Subtle native-style selection states; in icon/list views, click a selected filename to rename it inline (Enter confirms, Escape cancels)
 - **Multi-Tab & Multi-Window** — Drag tabs between windows while preserving their navigation history; detached tabs open with their current folder and history; move files and folders into another window or its current folder, with source and destination views refreshed after completion
