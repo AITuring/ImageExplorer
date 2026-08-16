@@ -1,6 +1,7 @@
 import {
   memo,
   useEffect,
+  useLayoutEffect,
   useState,
   useMemo,
   useRef,
@@ -57,7 +58,7 @@ interface ImageDimensions {
 const MAX_IMAGE_ZOOM = 6;
 const MIN_IMAGE_ZOOM = 1;
 const THUMBNAIL_SIZE_STEPS = [384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144];
-const MIN_SCROLL_ADJUST_DELTA = 6;
+const MIN_SCROLL_ADJUST_DELTA = 0.5;
 const MAX_RAW_PREVIEW_SIZE = 6144;
 const RAW_EXTENSIONS = new Set(RAW_IMAGE_EXTENSIONS);
 const DIALOG_FOCUSABLE_SELECTOR = [
@@ -91,6 +92,30 @@ function shouldUpgradeNativePreview(currentSize: number, requestedSize: number) 
   if (currentSize <= 0) return true;
   if (requestedSize <= currentSize) return false;
   return requestedSize / currentSize >= 1.45;
+}
+
+interface ZoomGestureAnchor {
+  imageRatioX: number;
+  imageRatioY: number;
+  originX: number;
+  originY: number;
+  viewportX: number;
+  viewportY: number;
+}
+
+function applyLiveZoomTransform(frame: HTMLDivElement, scale: number, anchor: ZoomGestureAnchor) {
+  frame.style.transformOrigin = `${anchor.originX}px ${anchor.originY}px`;
+  frame.style.transform = `translate3d(0, 0, 0) scale(${scale})`;
+  frame.style.willChange = "transform";
+  frame.style.backfaceVisibility = "hidden";
+}
+
+function clearLiveZoomTransform(frame: HTMLDivElement | null) {
+  if (!frame) return;
+  frame.style.removeProperty("transform");
+  frame.style.removeProperty("transform-origin");
+  frame.style.removeProperty("will-change");
+  frame.style.removeProperty("backface-visibility");
 }
 
 const FocusAnalysisDetails = memo(function FocusAnalysisDetails({
@@ -227,9 +252,8 @@ interface ZoomableImagePreviewProps {
 interface ZoomableImageElementProps {
   entry: FileEntry;
   src: string;
-  fittedImageSize: { width: number; height: number } | null;
-  imageZoom: number;
-  isZooming: boolean;
+  renderedImageSize: { width: number; height: number } | null;
+  frameRef: (node: HTMLDivElement | null) => void;
   onLoad: (image: HTMLImageElement) => void;
   onError?: () => void;
   focusAnalysis?: FocusAnalysis | null;
@@ -240,9 +264,8 @@ interface ZoomableImageElementProps {
 const ZoomableImageElement = memo(function ZoomableImageElement({
   entry,
   src,
-  fittedImageSize,
-  imageZoom,
-  isZooming,
+  renderedImageSize,
+  frameRef,
   onLoad,
   onError,
   focusAnalysis,
@@ -253,27 +276,27 @@ const ZoomableImageElement = memo(function ZoomableImageElement({
   const focusRegions =
     cameraAfRegions ?? (focusAnalysis?.kind === "full-frame" ? [] : (focusAnalysis?.regions ?? []));
   const frameStyle: CSSProperties = {
-    ...(fittedImageSize
+    ...(renderedImageSize
       ? {
-          width: `${fittedImageSize.width}px`,
-          height: `${fittedImageSize.height}px`,
+          // Settled zoom uses real layout pixels so WebKit resamples from the
+          // decoded source instead of retaining a small promoted layer.
+          width: `${renderedImageSize.width}px`,
+          height: `${renderedImageSize.height}px`,
           maxWidth: "none",
           maxHeight: "none",
         }
       : {}),
-    transform: `translate3d(0, 0, 0) scale(${imageZoom})`,
-    transformOrigin: "center center",
-    willChange: "transform",
-    backfaceVisibility: "hidden",
   };
 
   return (
-    <div className="relative shrink-0" style={frameStyle}>
+    <div ref={frameRef} className="relative shrink-0" style={frameStyle}>
       <img
         key={entry.path}
         src={src}
         alt={entry.name}
-        className={`${fittedImageSize ? "h-full w-full" : "h-auto max-h-full w-auto max-w-full"} select-none ${isZooming ? "" : "rounded-lg shadow-lg"}`}
+        width={renderedImageSize?.width}
+        height={renderedImageSize?.height}
+        className={`${renderedImageSize ? "h-full w-full" : "h-auto max-h-full w-auto max-w-full"} rounded-lg shadow-lg select-none`}
         decoding="async"
         draggable={false}
         onLoad={(event) => onLoad(event.currentTarget)}
@@ -315,26 +338,18 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
 }: ZoomableImagePreviewProps) {
   const cameraAfRegions = getCameraAfRegions(cameraAfMetadata);
   const [previewViewport, setPreviewViewport] = useState({ width: 0, height: 0 });
-  const [imageZoom, setImageZoom] = useState(1);
-  const [isZooming, setIsZooming] = useState(false);
+  const [settledImageZoom, setSettledImageZoom] = useState(1);
   const imageViewportRef = useRef<HTMLDivElement | null>(null);
+  const imageFrameRef = useRef<HTMLDivElement | null>(null);
   const imageZoomRef = useRef(1);
+  const settledImageZoomRef = useRef(1);
   const pendingZoomRef = useRef<number | null>(null);
   const zoomAnimationFrameRef = useRef<number | null>(null);
   const commitZoomTimeoutRef = useRef<number | null>(null);
   const zoomInteractionTimeoutRef = useRef<number | null>(null);
-  const scrollAdjustmentRef = useRef<{
-    previousZoom: number;
-    nextZoom: number;
-    previousCenterX: number;
-    previousCenterY: number;
-    pointerOffsetX: number | null;
-    pointerOffsetY: number | null;
-    pointerClientX: number | null;
-    pointerClientY: number | null;
-    rectLeft: number | null;
-    rectTop: number | null;
-  } | null>(null);
+  const gestureAnchorRef = useRef<ZoomGestureAnchor | null>(null);
+  const settleAnchorRef = useRef<ZoomGestureAnchor | null>(null);
+  const isZoomGestureActiveRef = useRef(false);
   const canInspectSharpness = isAnalyzablePhoto(entry);
   const sharpnessInspector = useSharpnessInspector({
     entry,
@@ -383,21 +398,36 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
     };
   }, [imageDimensions, imageViewportSize.height, imageViewportSize.width]);
 
-  const zoomedCanvasSize = useMemo(() => {
+  const renderedImageSize = useMemo(() => {
     if (!fittedImageSize) {
       return null;
     }
 
     return {
-      width: Math.max(imageViewportSize.width, Math.round(fittedImageSize.width * imageZoom)),
-      height: Math.max(imageViewportSize.height, Math.round(fittedImageSize.height * imageZoom)),
+      width: Math.max(1, Math.round(fittedImageSize.width * settledImageZoom)),
+      height: Math.max(1, Math.round(fittedImageSize.height * settledImageZoom)),
     };
-  }, [fittedImageSize, imageViewportSize.height, imageViewportSize.width, imageZoom]);
+  }, [fittedImageSize, settledImageZoom]);
 
-  useEffect(() => {
-    imageZoomRef.current = imageZoom;
-    onZoomDisplayChange(imageZoom);
-  }, [imageZoom, onZoomDisplayChange]);
+  const zoomedCanvasSize = useMemo(() => {
+    if (!renderedImageSize) {
+      return null;
+    }
+
+    return {
+      width: Math.max(imageViewportSize.width, renderedImageSize.width),
+      height: Math.max(imageViewportSize.height, renderedImageSize.height),
+    };
+  }, [renderedImageSize, imageViewportSize.height, imageViewportSize.width]);
+
+  const registerZoomFrame = useCallback((node: HTMLDivElement | null) => {
+    imageFrameRef.current = node;
+    const anchor = gestureAnchorRef.current;
+    if (!node || !anchor || !isZoomGestureActiveRef.current) return;
+
+    const liveZoom = pendingZoomRef.current ?? imageZoomRef.current;
+    applyLiveZoomTransform(node, liveZoom / settledImageZoomRef.current, anchor);
+  }, []);
 
   useEffect(() => {
     const viewport = imageViewportRef.current;
@@ -431,110 +461,108 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
     };
   }, [entry.path]);
 
-  useEffect(() => {
-    if (commitZoomTimeoutRef.current) {
-      window.clearTimeout(commitZoomTimeoutRef.current);
-    }
+  useLayoutEffect(() => {
+    settledImageZoomRef.current = settledImageZoom;
+    clearLiveZoomTransform(imageFrameRef.current);
 
-    commitZoomTimeoutRef.current = window.setTimeout(() => {
-      onCommittedZoomChange(imageZoomRef.current);
-    }, 320);
-
-    return () => {
-      if (commitZoomTimeoutRef.current) {
-        window.clearTimeout(commitZoomTimeoutRef.current);
-        commitZoomTimeoutRef.current = null;
-      }
-    };
-  }, [imageZoom, onCommittedZoomChange]);
-
-  useEffect(() => {
-    const adjustment = scrollAdjustmentRef.current;
-    if (!adjustment || Math.abs(adjustment.nextZoom - imageZoom) >= 0.01) {
-      return;
-    }
-
+    const adjustment = settleAnchorRef.current;
     const viewport = imageViewportRef.current;
-    if (!viewport) {
-      scrollAdjustmentRef.current = null;
-      return;
-    }
-
-    const ratio = adjustment.nextZoom / adjustment.previousZoom;
-    if (!Number.isFinite(ratio) || ratio <= 0) {
-      scrollAdjustmentRef.current = null;
-      return;
-    }
-
-    let nextScrollLeft: number;
-    let nextScrollTop: number;
-    if (
-      adjustment.pointerOffsetX !== null &&
-      adjustment.pointerOffsetY !== null &&
-      adjustment.pointerClientX !== null &&
-      adjustment.pointerClientY !== null &&
-      adjustment.rectLeft !== null &&
-      adjustment.rectTop !== null
-    ) {
-      nextScrollLeft = Math.max(
+    const frame = imageFrameRef.current;
+    if (adjustment && viewport && frame) {
+      const viewportRect = viewport.getBoundingClientRect();
+      const frameRect = frame.getBoundingClientRect();
+      const nextScrollLeft = Math.max(
         0,
-        adjustment.pointerOffsetX * ratio - (adjustment.pointerClientX - adjustment.rectLeft)
+        viewport.scrollLeft +
+          frameRect.left +
+          frameRect.width * adjustment.imageRatioX -
+          (viewportRect.left + adjustment.viewportX)
       );
-      nextScrollTop = Math.max(
+      const nextScrollTop = Math.max(
         0,
-        adjustment.pointerOffsetY * ratio - (adjustment.pointerClientY - adjustment.rectTop)
+        viewport.scrollTop +
+          frameRect.top +
+          frameRect.height * adjustment.imageRatioY -
+          (viewportRect.top + adjustment.viewportY)
       );
-    } else {
-      nextScrollLeft = Math.max(0, adjustment.previousCenterX * ratio - viewport.clientWidth / 2);
-      nextScrollTop = Math.max(0, adjustment.previousCenterY * ratio - viewport.clientHeight / 2);
+
+      if (Math.abs(nextScrollLeft - viewport.scrollLeft) >= MIN_SCROLL_ADJUST_DELTA) {
+        viewport.scrollLeft = nextScrollLeft;
+      }
+      if (Math.abs(nextScrollTop - viewport.scrollTop) >= MIN_SCROLL_ADJUST_DELTA) {
+        viewport.scrollTop = nextScrollTop;
+      }
     }
 
-    const scrollDeltaX = Math.abs(nextScrollLeft - viewport.scrollLeft);
-    const scrollDeltaY = Math.abs(nextScrollTop - viewport.scrollTop);
-    if (scrollDeltaX < MIN_SCROLL_ADJUST_DELTA && scrollDeltaY < MIN_SCROLL_ADJUST_DELTA) {
-      scrollAdjustmentRef.current = null;
-      return;
-    }
-
-    viewport.scrollLeft = nextScrollLeft;
-    viewport.scrollTop = nextScrollTop;
-
-    scrollAdjustmentRef.current = null;
-  }, [imageZoom]);
+    settleAnchorRef.current = null;
+    gestureAnchorRef.current = null;
+    isZoomGestureActiveRef.current = false;
+  }, [settledImageZoom]);
 
   const updateImageZoom = useCallback(
     (nextZoom: number, anchor?: { clientX: number; clientY: number }) => {
+      if (!Number.isFinite(nextZoom)) return;
       const clampedZoom = clampZoom(nextZoom);
       const currentZoom = pendingZoomRef.current ?? imageZoomRef.current;
-      if (Math.abs(clampedZoom - currentZoom) < 0.01) {
-        return;
+      if (clampedZoom === currentZoom) return;
+
+      if (commitZoomTimeoutRef.current !== null) {
+        window.clearTimeout(commitZoomTimeoutRef.current);
+        commitZoomTimeoutRef.current = null;
       }
 
-      const viewport = imageViewportRef.current;
-      const rect = viewport?.getBoundingClientRect();
-      scrollAdjustmentRef.current = viewport
-        ? {
-            previousZoom: currentZoom,
-            nextZoom: clampedZoom,
-            previousCenterX: viewport.scrollLeft + viewport.clientWidth / 2,
-            previousCenterY: viewport.scrollTop + viewport.clientHeight / 2,
-            pointerOffsetX:
-              rect && anchor ? anchor.clientX - rect.left + viewport.scrollLeft : null,
-            pointerOffsetY: rect && anchor ? anchor.clientY - rect.top + viewport.scrollTop : null,
-            pointerClientX: anchor?.clientX ?? null,
-            pointerClientY: anchor?.clientY ?? null,
-            rectLeft: rect?.left ?? null,
-            rectTop: rect?.top ?? null,
-          }
-        : null;
+      if (!isZoomGestureActiveRef.current) {
+        const viewport = imageViewportRef.current;
+        const frame = imageFrameRef.current;
+        if (viewport && frame) {
+          const viewportRect = viewport.getBoundingClientRect();
+          const frameRect = frame.getBoundingClientRect();
+          const clientX = anchor?.clientX ?? viewportRect.left + viewportRect.width / 2;
+          const clientY = anchor?.clientY ?? viewportRect.top + viewportRect.height / 2;
+          const originX = clientX - frameRect.left;
+          const originY = clientY - frameRect.top;
+          gestureAnchorRef.current = {
+            imageRatioX: originX / Math.max(1, frameRect.width),
+            imageRatioY: originY / Math.max(1, frameRect.height),
+            originX,
+            originY,
+            viewportX: clientX - viewportRect.left,
+            viewportY: clientY - viewportRect.top,
+          };
+          isZoomGestureActiveRef.current = true;
+        }
+      }
 
       pendingZoomRef.current = clampedZoom;
-      setIsZooming(true);
       if (zoomInteractionTimeoutRef.current !== null) {
         window.clearTimeout(zoomInteractionTimeoutRef.current);
       }
       zoomInteractionTimeoutRef.current = window.setTimeout(() => {
-        setIsZooming(false);
+        zoomInteractionTimeoutRef.current = null;
+        if (zoomAnimationFrameRef.current !== null) {
+          window.cancelAnimationFrame(zoomAnimationFrameRef.current);
+          zoomAnimationFrameRef.current = null;
+        }
+
+        const finalZoom = pendingZoomRef.current ?? clampedZoom;
+        pendingZoomRef.current = null;
+        imageZoomRef.current = finalZoom;
+        onZoomDisplayChange(finalZoom);
+        settleAnchorRef.current = gestureAnchorRef.current;
+
+        if (Math.abs(finalZoom - settledImageZoomRef.current) < 0.001) {
+          clearLiveZoomTransform(imageFrameRef.current);
+          settleAnchorRef.current = null;
+          gestureAnchorRef.current = null;
+          isZoomGestureActiveRef.current = false;
+        } else {
+          setSettledImageZoom(finalZoom);
+        }
+
+        commitZoomTimeoutRef.current = window.setTimeout(() => {
+          commitZoomTimeoutRef.current = null;
+          onCommittedZoomChange(finalZoom);
+        }, 200);
       }, 120);
 
       if (zoomAnimationFrameRef.current !== null) {
@@ -549,10 +577,16 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
         }
 
         pendingZoomRef.current = null;
-        setImageZoom(pendingZoom);
+        imageZoomRef.current = pendingZoom;
+        const frame = imageFrameRef.current;
+        const gestureAnchor = gestureAnchorRef.current;
+        if (frame && gestureAnchor) {
+          applyLiveZoomTransform(frame, pendingZoom / settledImageZoomRef.current, gestureAnchor);
+        }
+        onZoomDisplayChange(pendingZoom);
       });
     },
-    []
+    [onCommittedZoomChange, onZoomDisplayChange]
   );
 
   const handleImageWheel = useCallback(
@@ -639,9 +673,8 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
               <ZoomableImageElement
                 entry={entry}
                 src={nativePreviewSrc}
-                fittedImageSize={fittedImageSize}
-                imageZoom={imageZoom}
-                isZooming={isZooming}
+                renderedImageSize={renderedImageSize}
+                frameRef={registerZoomFrame}
                 onLoad={handleDisplayedImageLoad}
                 focusAnalysis={displayedFocusAnalysis}
                 cameraAfMetadata={cameraAfMetadata}
@@ -650,30 +683,26 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
               </ZoomableImageElement>
             ) : (
               <div
+                ref={registerZoomFrame}
                 className="relative shrink-0"
                 style={
-                  fittedImageSize
+                  renderedImageSize
                     ? {
-                        width: `${fittedImageSize.width}px`,
-                        height: `${fittedImageSize.height}px`,
-                        transform: `translate3d(0, 0, 0) scale(${imageZoom})`,
-                        transformOrigin: "center center",
+                        width: `${renderedImageSize.width}px`,
+                        height: `${renderedImageSize.height}px`,
                       }
-                    : {
-                        transform: `translate3d(0, 0, 0) scale(${imageZoom})`,
-                        transformOrigin: "center center",
-                      }
+                    : undefined
                 }
               >
                 <FileThumbnail
                   entry={entry}
                   size={320}
                   requestSizeOverride={progressivePreviewRequestSize}
-                  className={`${fittedImageSize ? "h-full w-full" : "h-auto max-h-full w-auto max-w-full"} object-contain ${isZooming ? "" : "rounded-lg shadow-lg"}`}
+                  className={`${renderedImageSize ? "h-full w-full" : "h-auto max-h-full w-auto max-w-full"} rounded-lg object-contain shadow-lg`}
                   fallbackClassName="text-muted-foreground h-40 w-40"
                   onImageLoad={handleDisplayedImageLoad}
                 />
-                {fittedImageSize &&
+                {renderedImageSize &&
                   focusRegions.map((region) => (
                     <FocusRegionOverlay
                       key={`${region.x}-${region.y}-${region.width}-${region.height}`}
@@ -694,9 +723,8 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
             <ZoomableImageElement
               entry={entry}
               src={fallbackSrc || fileSrc || ""}
-              fittedImageSize={fittedImageSize}
-              imageZoom={imageZoom}
-              isZooming={isZooming}
+              renderedImageSize={renderedImageSize}
+              frameRef={registerZoomFrame}
               onLoad={handleDisplayedImageLoad}
               onError={onBrowserImageError}
               focusAnalysis={displayedFocusAnalysis}
