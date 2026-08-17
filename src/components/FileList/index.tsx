@@ -36,6 +36,13 @@ const GRID_ROW_HEIGHT = 216;
 const GRID_ITEM_MIN_WIDTH = 132;
 /** 网格间距 */
 const GRID_GAP = 16;
+/**
+ * Full-folder RAW analysis is useful for small working sets, but it is not a
+ * safe background operation for thousands of camera originals. Large folders
+ * keep camera AF metadata and Quick Look available while deferring the
+ * folder-wide view grouping/sharpness pass.
+ */
+const MAX_FOLDER_WIDE_PHOTO_ANALYSIS_ENTRIES = 500;
 
 interface FileListProps {
   currentPath: string;
@@ -109,6 +116,10 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   // 2. 排序
   const { sortField, sortDirection, handleSort, handleArrange, sortedEntries } =
     useFileSort(entries);
+  const fullFolderPhotoAnalysisEnabled =
+    viewMode === "icon" &&
+    photoAnalysisEnabled &&
+    sortedEntries.length <= MAX_FOLDER_WIDE_PHOTO_ANALYSIS_ENTRIES;
 
   // 3. 选择状态
   const {
@@ -179,17 +190,6 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     forceCustomImagePreview: viewMode === "icon" && photoAnalysisEnabled,
   });
 
-  // Finder keeps interactive preview work ahead of background indexing. Pause
-  // the folder-wide visual analysis while Quick Look is open, retaining the
-  // records already available for the focus marker.
-  const { records: photoAnalysis } = usePhotoAnalysis(
-    sortedEntries,
-    viewMode === "icon" && photoAnalysisEnabled,
-    Boolean(quickLookEntry),
-    quickLookEntry?.path,
-    currentPath
-  );
-
   // 7. 键盘快捷键
   useFileKeyboardShortcuts({
     editingPath,
@@ -223,15 +223,13 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   }, []);
 
   // 计算网格每行列数
-  const gridColumnsRef = useRef(6);
+  const [gridColumns, setGridColumns] = useState(6);
   const updateGridColumns = useCallback(() => {
     const el = gridScrollRef.current;
     if (!el) return;
     const containerWidth = el.clientWidth - 16; // p-2 padding
-    gridColumnsRef.current = Math.max(
-      1,
-      Math.floor(containerWidth / (GRID_ITEM_MIN_WIDTH + GRID_GAP))
-    );
+    const nextColumns = Math.max(1, Math.floor(containerWidth / (GRID_ITEM_MIN_WIDTH + GRID_GAP)));
+    setGridColumns((current) => (current === nextColumns ? current : nextColumns));
   }, []);
 
   useEffect(() => {
@@ -245,8 +243,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
 
   // 网格行数
   const gridRowCount = useMemo(
-    () => Math.ceil(sortedEntries.length / gridColumnsRef.current),
-    [sortedEntries.length]
+    () => Math.ceil(sortedEntries.length / gridColumns),
+    [gridColumns, sortedEntries.length]
   );
 
   // 列表虚拟化
@@ -255,6 +253,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     getScrollElement: () => listScrollRef.current,
     estimateSize: () => LIST_ITEM_HEIGHT,
     overscan: 6,
+    useAnimationFrameWithResizeObserver: true,
   });
 
   // 网格虚拟化（按行）
@@ -262,8 +261,46 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     count: gridRowCount,
     getScrollElement: () => gridScrollRef.current,
     estimateSize: () => GRID_ROW_HEIGHT,
-    overscan: 4,
+    overscan: 2,
+    useAnimationFrameWithResizeObserver: true,
   });
+  const gridIsScrolling = viewMode === "icon" && gridVirtualizer.isScrolling;
+  const gridViewportStartRow = gridVirtualizer.range?.startIndex ?? null;
+  const gridViewportEndRow = gridVirtualizer.range?.endIndex ?? null;
+  const gridViewportEntries = useMemo(() => {
+    if (viewMode !== "icon" || gridViewportStartRow === null || gridViewportEndRow === null) {
+      return [];
+    }
+
+    const startIndex = gridViewportStartRow * gridColumns;
+    const endIndex = Math.min(sortedEntries.length, (gridViewportEndRow + 1) * gridColumns);
+    return sortedEntries.slice(startIndex, endIndex);
+  }, [gridColumns, gridViewportEndRow, gridViewportStartRow, sortedEntries, viewMode]);
+  const gridViewportPathSet = useMemo(
+    () => new Set(gridViewportEntries.map((entry) => entry.path)),
+    [gridViewportEntries]
+  );
+
+  // Pause all focus/group work while the user is moving through the folder.
+  // For large folders, the analysis scope is the settled viewport instead of
+  // the entire RAW directory. Quick Look still gets its selected file only.
+  const photoAnalysisScopeEntries = useMemo(() => {
+    if (fullFolderPhotoAnalysisEnabled) return sortedEntries;
+    if (quickLookEntry) return [quickLookEntry];
+    return gridViewportEntries;
+  }, [fullFolderPhotoAnalysisEnabled, gridViewportEntries, quickLookEntry, sortedEntries]);
+  const photoAnalysisEnabledForScope =
+    photoAnalysisEnabled &&
+    viewMode === "icon" &&
+    (fullFolderPhotoAnalysisEnabled || Boolean(quickLookEntry) || gridViewportEntries.length > 0);
+  const { records: photoAnalysis } = usePhotoAnalysis(
+    sortedEntries,
+    photoAnalysisEnabledForScope,
+    gridIsScrolling || Boolean(quickLookEntry),
+    quickLookEntry?.path,
+    currentPath,
+    photoAnalysisScopeEntries
+  );
 
   useEffect(() => {
     const locationKey = `${viewMode}:${currentPath}`;
@@ -308,7 +345,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
           if (viewMode === "list") {
             listVirtualizer.scrollToIndex(idx, { align: "center" });
           } else {
-            const rowIdx = Math.floor(idx / gridColumnsRef.current);
+            const rowIdx = Math.floor(idx / gridColumns);
             gridVirtualizer.scrollToIndex(rowIdx, { align: "center" });
           }
         }
@@ -317,6 +354,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   }, [
     entries,
     fileToSelect,
+    gridColumns,
     setSelectedPath,
     sortedEntries,
     viewMode,
@@ -366,6 +404,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     () => sortedEntries.filter((e) => selectedPaths.includes(e.path)),
     [sortedEntries, selectedPaths]
   );
+  const selectedPathSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
 
   const handleFileContainerDragOver = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
@@ -587,7 +626,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                         >
                           <FileListItem
                             entry={entry}
-                            isSelected={selectedPaths.includes(entry.path)}
+                            isSelected={selectedPathSet.has(entry.path)}
                             isEditing={editingPath === entry.path}
                             editValue={editValue}
                             onEditValueChange={setEditValue}
@@ -616,7 +655,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                   }}
                 >
                   {gridVirtualizer.getVirtualItems().map((virtualRow) => {
-                    const cols = gridColumnsRef.current;
+                    const cols = gridColumns;
                     const startIdx = virtualRow.index * cols;
                     const rowEntries = sortedEntries.slice(startIdx, startIdx + cols);
                     return (
@@ -652,7 +691,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                                 >
                                   <FileGridItem
                                     entry={entry}
-                                    isSelected={selectedPaths.includes(entry.path)}
+                                    isSelected={selectedPathSet.has(entry.path)}
                                     isEditing={editingPath === entry.path}
                                     editValue={editValue}
                                     onEditValueChange={setEditValue}
@@ -663,6 +702,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                                     onDoubleClick={() => handleOpen(entry)}
                                     photoAnalysis={analysis}
                                     photoAnalysisEnabled={photoAnalysisEnabled}
+                                    isScrolling={gridIsScrolling}
+                                    isInViewport={gridViewportPathSet.has(entry.path)}
                                     photoGroupColor={getPhotoGroupColor(analysis?.groupId ?? null)}
                                   />
                                 </AppContextMenu>

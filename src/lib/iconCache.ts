@@ -6,6 +6,7 @@ import { SYSTEM_PATHS } from "@/constants/paths";
 const MAX_CACHE_ENTRIES = 1200;
 const MAX_CACHE_BYTES = 64 * 1024 * 1024;
 const iconCacheEntries = new Map<string, string>();
+const retainedCacheKeys = new Set<string>();
 let iconCacheBytes = 0;
 
 function valueBytes(value: string) {
@@ -21,6 +22,13 @@ function touchCacheKey(key: string) {
   return value;
 }
 
+function getOldestEvictableCacheKey() {
+  for (const cacheKey of iconCacheEntries.keys()) {
+    if (!retainedCacheKeys.has(cacheKey)) return cacheKey;
+  }
+  return iconCacheEntries.keys().next().value as string | undefined;
+}
+
 function setCacheValue(key: string, value: string) {
   const previous = iconCacheEntries.get(key);
   if (previous !== undefined) {
@@ -31,7 +39,7 @@ function setCacheValue(key: string, value: string) {
   iconCacheBytes += valueBytes(value);
 
   while (iconCacheEntries.size > MAX_CACHE_ENTRIES || iconCacheBytes > MAX_CACHE_BYTES) {
-    const oldest = iconCacheEntries.keys().next().value as string | undefined;
+    const oldest = getOldestEvictableCacheKey();
     if (!oldest) break;
     const oldestValue = iconCacheEntries.get(oldest);
     if (oldestValue !== undefined) iconCacheBytes -= valueBytes(oldestValue);
@@ -75,13 +83,28 @@ export function clearIconCache() {
   iconCacheBytes = 0;
 }
 
+/** Keep mounted grid thumbnails from being evicted by a large Quick Look frame. */
+export function retainIconCacheKey(cacheKey: string) {
+  retainedCacheKeys.add(cacheKey);
+  return () => retainedCacheKeys.delete(cacheKey);
+}
+
 export function getIconCacheStats() {
   return { entries: iconCacheEntries.size, bytes: iconCacheBytes };
 }
 
 // 正在加载的图标集合，避免重复请求
 export const loadingIcons = new Set<string>();
-const pendingLoads = new Map<string, Promise<string | null>>();
+interface PendingThumbnailLoad {
+  promise: Promise<string | null>;
+  consumers: Set<symbol>;
+  started: boolean;
+  settled: boolean;
+  cacheResult: boolean;
+  cancelQueued: () => void;
+}
+
+const pendingLoads = new Map<string, PendingThumbnailLoad>();
 export type ThumbnailLoadPriority = "interactive" | "background";
 
 interface QueuedThumbnailTask {
@@ -91,15 +114,17 @@ interface QueuedThumbnailTask {
 
 const queuedThumbnailTasks = new Map<string, QueuedThumbnailTask>();
 const queuedTaskKeys: string[] = [];
-// Keep enough slots for two background analyses while visible grid previews
+// Keep one slot for background analysis while visible grid previews
 // are loading. Embedded RAW previews are small and do not need the old
 // three-process ceiling that made analysis wait behind the first cards.
-const MAX_CONCURRENT_THUMBNAILS = 5;
-const RESERVED_BACKGROUND_THUMBNAILS = 2;
+const MAX_CONCURRENT_THUMBNAILS = 4;
+const RESERVED_BACKGROUND_THUMBNAILS = 1;
 let activeThumbnailLoads = 0;
 
-// 全局刷新回调列表
+// Keep refresh notifications local to the cache key. A global callback made
+// every visible card render again whenever any other card finished decoding.
 const refreshCallbacks = new Set<() => void>();
+const keyedRefreshCallbacks = new Map<string, Set<() => void>>();
 
 // Keep the request size in one place so visible thumbnails and background
 // analysis can share the native thumbnail/cache entry.
@@ -132,7 +157,9 @@ export function getLargestCachedFileThumbnail(
 
   for (const [cacheKey, value] of iconCacheEntries) {
     if (!cacheKey.startsWith(prefix) || value === "failed") continue;
-    const requestSize = Number(cacheKey.slice(prefix.length));
+    // Embedded previews append ":embedded" to the size token. Parse the
+    // numeric part so those previews can also seed Quick Look immediately.
+    const requestSize = Number(cacheKey.slice(prefix.length).split(":", 1)[0]);
     if (!Number.isFinite(requestSize)) continue;
     if (!bestMatch || requestSize > bestMatch.requestSize) {
       bestMatch = { requestSize, base64: value };
@@ -148,9 +175,33 @@ export function registerIconRefresh(callback: () => void) {
   return () => refreshCallbacks.delete(callback);
 }
 
+export function registerIconRefreshForKey(cacheKey: string, callback: () => void) {
+  const callbacks = keyedRefreshCallbacks.get(cacheKey) ?? new Set<() => void>();
+  callbacks.add(callback);
+  keyedRefreshCallbacks.set(cacheKey, callbacks);
+  return () => {
+    callbacks.delete(callback);
+    if (callbacks.size === 0) keyedRefreshCallbacks.delete(cacheKey);
+  };
+}
+
 // 触发全局图标刷新
 export function triggerIconRefresh() {
   refreshCallbacks.forEach((callback) => callback());
+  // Preserve the rare global-refresh path used by indexing/preload callers,
+  // while normal thumbnail completion stays scoped to one cache key.
+  keyedRefreshCallbacks.forEach((callbacks) => {
+    callbacks.forEach((callback) => callback());
+  });
+}
+
+export function triggerIconRefreshForKey(cacheKey: string) {
+  keyedRefreshCallbacks.get(cacheKey)?.forEach((callback) => callback());
+}
+
+function removeQueuedTask(cacheKey: string) {
+  const index = queuedTaskKeys.indexOf(cacheKey);
+  if (index >= 0) queuedTaskKeys.splice(index, 1);
 }
 
 function bumpQueuedTask(cacheKey: string) {
@@ -174,7 +225,7 @@ function runNextThumbnailTask() {
     const interactiveIndex = queuedTaskKeys.findIndex(
       (cacheKey) => queuedThumbnailTasks.get(cacheKey)?.priority === "interactive"
     );
-    // Keep two slots available for focus/group analysis once background work
+    // Keep one slot available for focus/group analysis once background work
     // is queued. Without a reservation, a burst of visible cards can keep the
     // analysis queue at 0 until every overscanned row has finished decoding.
     const reserveBackgroundSlot =
@@ -193,7 +244,8 @@ function runNextThumbnailTask() {
     }
 
     const task = queuedThumbnailTasks.get(cacheKey);
-    if (!task) {
+    const pending = pendingLoads.get(cacheKey);
+    if (!task || !pending) {
       continue;
     }
 
@@ -203,6 +255,45 @@ function runNextThumbnailTask() {
   }
 }
 
+function subscribeToThumbnailLoad(
+  pending: PendingThumbnailLoad,
+  signal?: AbortSignal
+): Promise<string | null> {
+  const consumer = Symbol("thumbnail-consumer");
+  pending.consumers.add(consumer);
+
+  return new Promise((resolve) => {
+    let finished = false;
+
+    const cleanup = () => {
+      signal?.removeEventListener("abort", handleAbort);
+      pending.consumers.delete(consumer);
+    };
+
+    const finish = (value: string | null) => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      resolve(value);
+    };
+
+    const handleAbort = () => {
+      finish(null);
+      if (pending.consumers.size === 0) pending.cancelQueued();
+    };
+
+    if (signal?.aborted) {
+      handleAbort();
+      return;
+    }
+
+    signal?.addEventListener("abort", handleAbort, { once: true });
+    pending.promise.then(finish, () => finish(null));
+  });
+}
+
+// High-resolution Quick Look/analysis frames can opt out of the shared grid
+// cache; the native cache and the current preview still retain those results.
 export function loadFileThumbnail(
   cacheKey: string,
   path: string,
@@ -210,7 +301,8 @@ export function loadFileThumbnail(
   allowIconFallback = true,
   signal?: AbortSignal,
   priority: ThumbnailLoadPriority = "interactive",
-  preferEmbedded = false
+  preferEmbedded = false,
+  cacheResult = true
 ): Promise<string | null> {
   if (signal?.aborted) {
     return Promise.resolve(null);
@@ -220,71 +312,74 @@ export function loadFileThumbnail(
   if (cached === "failed") return Promise.resolve(null);
   if (cached) return Promise.resolve(cached);
 
-  if (pendingLoads.has(cacheKey)) {
+  const existing = pendingLoads.get(cacheKey);
+  if (existing) {
+    // A shared request is allowed to upgrade to caching when a visible grid
+    // consumer joins a Quick Look/analysis request before it finishes.
+    if (cacheResult) existing.cacheResult = true;
     const queuedTask = queuedThumbnailTasks.get(cacheKey);
     if (queuedTask && priority === "interactive") {
       queuedTask.priority = "interactive";
     }
     bumpQueuedTask(cacheKey);
-    return pendingLoads.get(cacheKey)!;
+    return subscribeToThumbnailLoad(existing, signal);
   }
 
-  const task = new Promise<string | null>((resolve) => {
-    let started = false;
-    let settled = false;
-    const cancelQueuedTask = () => {
-      if (started || settled) return;
-      settled = true;
-      queuedThumbnailTasks.delete(cacheKey);
-      pendingLoads.delete(cacheKey);
-      resolve(null);
-    };
+  let resolveLoad!: (value: string | null) => void;
+  const pending: PendingThumbnailLoad = {
+    promise: new Promise<string | null>((resolve) => {
+      resolveLoad = resolve;
+    }),
+    consumers: new Set<symbol>(),
+    started: false,
+    settled: false,
+    cacheResult,
+    cancelQueued: () => undefined,
+  };
 
-    signal?.addEventListener("abort", cancelQueuedTask, { once: true });
-    queuedThumbnailTasks.set(cacheKey, {
-      priority,
-      run: () => {
-        if (settled) return;
-        started = true;
-        signal?.removeEventListener("abort", cancelQueuedTask);
-        if (signal?.aborted) {
-          settled = true;
+  pending.cancelQueued = () => {
+    if (pending.started || pending.settled) return;
+    pending.settled = true;
+    removeQueuedTask(cacheKey);
+    queuedThumbnailTasks.delete(cacheKey);
+    pendingLoads.delete(cacheKey);
+    resolveLoad(null);
+    runNextThumbnailTask();
+  };
+
+  pendingLoads.set(cacheKey, pending);
+  queuedThumbnailTasks.set(cacheKey, {
+    priority,
+    run: () => {
+      if (pending.settled) return;
+      pending.started = true;
+
+      invoke<string | null>("get_file_thumbnail", {
+        path,
+        size,
+        ...(allowIconFallback ? {} : { allowIconFallback: false }),
+        ...(preferEmbedded ? { preferEmbedded: true } : {}),
+      })
+        .catch((error) => {
+          console.error(`Failed to load file thumbnail: ${path}`, error);
+          return null;
+        })
+        .then((base64) => {
+          if (base64 && pending.cacheResult) iconCache[cacheKey] = base64;
+          resolveLoad(base64);
+        })
+        .finally(() => {
+          pending.settled = true;
           activeThumbnailLoads = Math.max(0, activeThumbnailLoads - 1);
           pendingLoads.delete(cacheKey);
-          resolve(null);
           runNextThumbnailTask();
-          return;
-        }
-
-        invoke<string | null>("get_file_thumbnail", {
-          path,
-          size,
-          ...(allowIconFallback ? {} : { allowIconFallback: false }),
-          ...(preferEmbedded ? { preferEmbedded: true } : {}),
-        })
-          .catch((error) => {
-            console.error(`Failed to load file thumbnail: ${path}`, error);
-            return null;
-          })
-          .then((base64) => {
-            if (base64) iconCache[cacheKey] = base64;
-            resolve(base64);
-          })
-          .finally(() => {
-            settled = true;
-            activeThumbnailLoads = Math.max(0, activeThumbnailLoads - 1);
-            pendingLoads.delete(cacheKey);
-            runNextThumbnailTask();
-          });
-      },
-    });
-
-    queuedTaskKeys.unshift(cacheKey);
-    runNextThumbnailTask();
+        });
+    },
   });
 
-  pendingLoads.set(cacheKey, task);
-  return task;
+  queuedTaskKeys.unshift(cacheKey);
+  runNextThumbnailTask();
+  return subscribeToThumbnailLoad(pending, signal);
 }
 
 // 预加载图标的辅助函数

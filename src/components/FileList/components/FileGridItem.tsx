@@ -26,6 +26,8 @@ interface FileGridItemProps {
   photoAnalysis?: PhotoAnalysisRecord;
   photoGroupColor?: string;
   photoAnalysisEnabled?: boolean;
+  isScrolling?: boolean;
+  isInViewport?: boolean;
 }
 
 export const FileGridItem = memo(function FileGridItem({
@@ -42,22 +44,28 @@ export const FileGridItem = memo(function FileGridItem({
   photoAnalysis,
   photoGroupColor,
   photoAnalysisEnabled = false,
+  isScrolling = false,
+  isInViewport = true,
 }: FileGridItemProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const { t } = useTranslation();
-  const photoMetadata = usePhotoMetadata(entry);
-  const cameraAfMetadata = useCameraAfMetadata(entry, photoAnalysisEnabled);
+  // Metadata/ExifTool reads are useful after the user stops, but starting one
+  // for every newly mounted overscan row makes fast scrolling compete with
+  // thumbnail decoding.
+  const canLoadViewportData = isInViewport && !isScrolling;
+  const photoMetadata = usePhotoMetadata(entry, canLoadViewportData);
+  const cameraAfMetadata = useCameraAfMetadata(entry, photoAnalysisEnabled && canLoadViewportData);
   const metadataSummary = getPhotoMetadataSummary(photoMetadata);
   const thumbnailSize = 80;
   const cameraAfRegions = getCameraAfRegions(cameraAfMetadata);
-  const focusRegions = cameraAfRegions ?? (
-    photoAnalysis &&
+  const focusRegions =
+    cameraAfRegions ??
+    (photoAnalysis &&
     photoAnalysis.imageWidth > 0 &&
     photoAnalysis.imageHeight > 0 &&
     photoAnalysis.focusAnalysis.kind !== "full-frame"
       ? photoAnalysis.focusAnalysis.regions
-      : []
-  );
+      : []);
   const focusOverlayVariant = cameraAfRegions ? "camera" : "estimate";
 
   useEffect(() => {
@@ -84,6 +92,8 @@ export const FileGridItem = memo(function FileGridItem({
         <FileThumbnail
           entry={entry}
           size={thumbnailSize}
+          isScrolling={isScrolling}
+          isInViewport={isInViewport}
           className="h-20 w-20 rounded-md object-contain"
           fallbackClassName={
             entry.is_dir ? "h-16 w-16 text-blue-500" : "text-muted-foreground h-16 w-16"
@@ -155,15 +165,16 @@ export const FileGridItem = memo(function FileGridItem({
               {t("common.quick_look.focus_full_frame")}
             </div>
           )}
-          {cameraAfMetadata?.source === "camera-maker-note" && cameraAfMetadata.regions.length > 0 && (
-            <div
-              className="mt-1 max-w-full truncate px-1 text-[9px] leading-3 text-cyan-700/90 dark:text-cyan-200/90"
-              title={cameraAfMetadata.note ?? t("common.quick_look.focus_camera_af")}
-              aria-label={t("common.quick_look.focus_camera_af")}
-            >
-              {t("common.quick_look.focus_camera_af")}
-            </div>
-          )}
+          {cameraAfMetadata?.source === "camera-maker-note" &&
+            cameraAfMetadata.regions.length > 0 && (
+              <div
+                className="mt-1 max-w-full truncate px-1 text-[9px] leading-3 text-cyan-700/90 dark:text-cyan-200/90"
+                title={cameraAfMetadata.note ?? t("common.quick_look.focus_camera_af")}
+                aria-label={t("common.quick_look.focus_camera_af")}
+              >
+                {t("common.quick_look.focus_camera_af")}
+              </div>
+            )}
           {metadataSummary && (
             <div
               className="text-foreground/70 mt-1 flex w-full flex-col items-center gap-0.5 px-1 text-[10px] leading-3.5"

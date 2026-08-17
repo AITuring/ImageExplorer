@@ -1,48 +1,42 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { SmartIconProps } from "@/types";
 import { SYSTEM_PATHS } from "@/constants/paths";
-import { iconCache, loadingIcons, registerIconRefresh, triggerIconRefresh } from "@/lib/iconCache";
+import {
+  iconCache,
+  loadingIcons,
+  registerIconRefreshForKey,
+  triggerIconRefreshForKey,
+} from "@/lib/iconCache";
 
 export function SmartIcon({ icon: Icon, className, sysIcon }: SmartIconProps) {
   // 用于强制刷新的计数器
-  const [updateCount, forceUpdate] = useState(0);
+  const [, forceUpdate] = useState(0);
+
+  const sysIconType = sysIcon?.type;
+  const sysIconValue = sysIcon?.value;
 
   // 生成缓存 key
-  const cacheKey = useMemo(() => {
-    if (!sysIcon) return null;
-    return `${sysIcon.type}:${sysIcon.value || "default"}`;
-  }, [sysIcon]);
+  const cacheKey = sysIconType ? `${sysIconType}:${sysIconValue || "default"}` : null;
 
   // 从缓存读取图标（每次渲染都检查最新缓存）
-  const iconBase64 = useMemo(() => {
-    if (!cacheKey) return null;
-    const cached = iconCache[cacheKey];
-    return cached === "failed" ? null : cached || null;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cacheKey, updateCount]); // 这里必须依赖 updateCount，否则 forceUpdate 无效！
+  const cached = cacheKey ? iconCache[cacheKey] : undefined;
+  const iconBase64 = cached === "failed" ? null : cached || null;
 
-  // Debug: 监控渲染
+  // Only the component waiting for this exact icon needs to render again.
   useEffect(() => {
-    if (cacheKey && iconBase64) {
-      console.log(`[SmartIcon] Rendered ${cacheKey} with data len: ${iconBase64.length}`);
-    }
-  }, [cacheKey, iconBase64]);
-
-  // 注册全局刷新回调
-  useEffect(() => {
-    const unregister = registerIconRefresh(() => {
-      console.log("[SmartIcon] Refresh triggered from global event");
+    if (!cacheKey) return;
+    const unregister = registerIconRefreshForKey(cacheKey, () => {
       forceUpdate((n) => n + 1);
     });
     return () => {
       unregister();
     };
-  }, []);
+  }, [cacheKey]);
 
   // 加载图标到缓存
   useEffect(() => {
-    if (!sysIcon || !cacheKey) return;
+    if (!sysIconType || !cacheKey) return;
 
     // 如果已经有缓存，无需加载
     if (iconCache[cacheKey]) {
@@ -57,33 +51,30 @@ export function SmartIcon({ icon: Icon, className, sysIcon }: SmartIconProps) {
     // 开始加载
     let isMounted = true;
     loadingIcons.add(cacheKey);
-    // console.log(`[SmartIcon] Fetching: ${cacheKey}`);
 
     const fetchIcon = async () => {
       try {
         let base64: string | null = null;
 
-        if (sysIcon.type === "path" && sysIcon.value) {
-          base64 = await invoke<string>("get_app_icon", { appPath: sysIcon.value });
-        } else if (sysIcon.type === "ext") {
+        if (sysIconType === "path" && sysIconValue) {
+          base64 = await invoke<string>("get_app_icon", { appPath: sysIconValue });
+        } else if (sysIconType === "ext") {
           base64 = await invoke<string>("get_file_type_icon", {
-            ext: sysIcon.value || "",
+            ext: sysIconValue || "",
           });
-        } else if (sysIcon.type === "folder") {
+        } else if (sysIconType === "folder") {
           base64 = await invoke<string>("get_app_icon", {
             appPath: SYSTEM_PATHS.CORE_SERVICES,
           });
-        } else if (sysIcon.type === "sfsymbol" && sysIcon.value) {
-          base64 = await invoke<string>("get_sf_symbol", { name: sysIcon.value });
+        } else if (sysIconType === "sfsymbol" && sysIconValue) {
+          base64 = await invoke<string>("get_sf_symbol", { name: sysIconValue });
         }
 
-        // 即使组件卸载了，也要更新全局缓存！
+        // 即使组件卸载了，也要更新共享缓存。
         if (base64) {
           iconCache[cacheKey] = base64;
-          // console.log(`[SmartIcon] Loaded ${cacheKey}, len: ${base64.length}`);
         } else {
           iconCache[cacheKey] = "failed";
-          // console.log(`[SmartIcon] Loaded ${cacheKey} is EMPTY/NULL`);
         }
 
         if (isMounted) {
@@ -91,15 +82,11 @@ export function SmartIcon({ icon: Icon, className, sysIcon }: SmartIconProps) {
           forceUpdate((n) => n + 1);
         }
       } catch (e) {
-        console.error(`SmartIcon failed to load ${sysIcon.type}:${sysIcon.value}`, e);
+        console.error(`SmartIcon failed to load ${sysIconType}:${sysIconValue}`, e);
         iconCache[cacheKey] = "failed";
       } finally {
         loadingIcons.delete(cacheKey);
-        // 触发全局刷新，通知所有等待的组件（包括因并发跳过加载的组件）
-        triggerIconRefresh();
-        // 触发全局刷新，通知所有等待的组件（包括因并发跳过加载的组件）
-        triggerIconRefresh();
-        // console.log(`[SmartIcon] Fetched & Triggered: ${cacheKey}`);
+        triggerIconRefreshForKey(cacheKey);
       }
     };
 
@@ -108,7 +95,7 @@ export function SmartIcon({ icon: Icon, className, sysIcon }: SmartIconProps) {
     return () => {
       isMounted = false;
     };
-  }, [sysIcon, cacheKey]);
+  }, [cacheKey, sysIconType, sysIconValue]);
 
   // 优先显示系统图标
   if (iconBase64) {

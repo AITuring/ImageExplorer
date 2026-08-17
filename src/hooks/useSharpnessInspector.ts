@@ -193,7 +193,9 @@ export function useSharpnessInspector({
         requestedSize,
         false,
         signal,
-        "interactive"
+        "interactive",
+        false,
+        false
       );
       if (!base64) {
         if (signal.aborted) throw abortError();

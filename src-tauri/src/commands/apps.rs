@@ -575,6 +575,24 @@ pub async fn get_file_thumbnail(
     allow_icon_fallback: Option<bool>,
     prefer_embedded: Option<bool>,
 ) -> Option<String> {
+    // sips, Quick Look, ImageIO and Core Image are synchronous native APIs.
+    // Keep them off Tauri's async runtime so a burst of RAW cards cannot stall
+    // unrelated UI commands or directory events.
+    tauri::async_runtime::spawn_blocking(move || {
+        get_file_thumbnail_blocking(app, path, size, allow_icon_fallback, prefer_embedded)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+fn get_file_thumbnail_blocking(
+    app: tauri::AppHandle,
+    path: String,
+    size: Option<f64>,
+    allow_icon_fallback: Option<bool>,
+    prefer_embedded: Option<bool>,
+) -> Option<String> {
     let path_obj = Path::new(&path);
     let metadata = fs::metadata(path_obj).ok()?;
     let modified = metadata

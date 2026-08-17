@@ -13,7 +13,7 @@ interface PhotoMetadataState {
   data: PhotoMetadata | null;
 }
 
-export function usePhotoMetadata(entry: FileEntry) {
+export function usePhotoMetadata(entry: FileEntry, enabled = true) {
   const metadataKey = isAnalyzablePhoto(entry) ? getPhotoMetadataKey(entry) : null;
   const [state, setState] = useState<PhotoMetadataState>({ key: null, data: null });
   const entryRef = useRef(entry);
@@ -24,7 +24,7 @@ export function usePhotoMetadata(entry: FileEntry) {
 
   useEffect(() => {
     const currentEntry = entryRef.current;
-    if (!metadataKey || !currentEntry) return;
+    if (!enabled || !metadataKey || !currentEntry) return;
 
     const cachedMetadata = getCachedPhotoMetadata(currentEntry);
     if (cachedMetadata !== undefined) {
@@ -32,16 +32,21 @@ export function usePhotoMetadata(entry: FileEntry) {
     }
 
     let cancelled = false;
-    void loadPhotoMetadata(currentEntry).then((data) => {
-      if (!cancelled) {
-        setState({ key: metadataKey, data });
-      }
-    });
+    const controller = new AbortController();
+    const startTimer = window.setTimeout(() => {
+      void loadPhotoMetadata(currentEntry, controller.signal).then((data) => {
+        if (!cancelled) {
+          setState({ key: metadataKey, data });
+        }
+      });
+    }, 120);
 
     return () => {
       cancelled = true;
+      window.clearTimeout(startTimer);
+      controller.abort();
     };
-  }, [metadataKey]);
+  }, [enabled, metadataKey]);
 
   if (cached !== undefined) return cached;
   return state.key === metadataKey ? state.data : null;

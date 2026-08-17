@@ -20,13 +20,20 @@ export interface CameraAfMetadata {
 export type CameraAfLoadPriority = "interactive" | "background";
 
 const cache = new Map<string, CameraAfMetadata | null>();
-const pending = new Map<string, Promise<CameraAfMetadata | null>>();
-const queue: Array<{
+interface PendingCameraAfLoad {
+  promise: Promise<CameraAfMetadata | null>;
   entry: FileEntry;
   key: string;
   priority: CameraAfLoadPriority;
+  consumers: Set<symbol>;
+  started: boolean;
+  settled: boolean;
   resolve: (metadata: CameraAfMetadata | null) => void;
-}> = [];
+  cancelQueued: () => void;
+}
+
+const pending = new Map<string, PendingCameraAfLoad>();
+const queue: PendingCameraAfLoad[] = [];
 let activeRequests = 0;
 const MAX_CONCURRENT_REQUESTS = 2;
 const MAX_CACHE_ENTRIES = 300;
@@ -49,36 +56,14 @@ function cacheCameraAfMetadata(key: string, metadata: CameraAfMetadata | null) {
   }
 }
 
-export function loadCameraAfMetadata(
-  entry: FileEntry,
-  priority: CameraAfLoadPriority = "background"
-): Promise<CameraAfMetadata | null> {
-  const key = getCameraAfMetadataKey(entry);
-  const cached = cache.get(key);
-  if (cached !== undefined) return Promise.resolve(cached);
-
-  const existing = pending.get(key);
-  if (existing) {
-    if (priority === "interactive") {
-      const queuedTask = queue.find((task) => task.key === key);
-      if (queuedTask) queuedTask.priority = "interactive";
-    }
-    return existing;
-  }
-
-  const request = new Promise<CameraAfMetadata | null>((resolve) => {
-    queue.push({ entry, key, priority, resolve });
-    pumpQueue();
-  });
-  pending.set(key, request);
-  return request;
-}
-
 function pumpQueue() {
   while (activeRequests < MAX_CONCURRENT_REQUESTS && queue.length > 0) {
     const interactiveIndex = queue.findIndex((task) => task.priority === "interactive");
     const task = queue.splice(interactiveIndex >= 0 ? interactiveIndex : 0, 1)[0];
     if (!task) return;
+    if (task.settled) continue;
+
+    task.started = true;
 
     activeRequests += 1;
     void invoke<CameraAfMetadata | null>("read_camera_af_metadata", {
@@ -95,11 +80,100 @@ function pumpQueue() {
         task.resolve(metadata);
       })
       .finally(() => {
+        task.settled = true;
         activeRequests = Math.max(0, activeRequests - 1);
         pending.delete(task.key);
         pumpQueue();
       });
   }
+}
+
+function subscribeToCameraAfLoad(
+  task: PendingCameraAfLoad,
+  signal?: AbortSignal
+): Promise<CameraAfMetadata | null> {
+  const consumer = Symbol("camera-af-consumer");
+  task.consumers.add(consumer);
+
+  return new Promise((resolve) => {
+    let finished = false;
+
+    const cleanup = () => {
+      signal?.removeEventListener("abort", handleAbort);
+      task.consumers.delete(consumer);
+    };
+
+    const finish = (value: CameraAfMetadata | null) => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      resolve(value);
+    };
+
+    const handleAbort = () => {
+      finish(null);
+      if (task.consumers.size === 0) task.cancelQueued();
+    };
+
+    if (signal?.aborted) {
+      handleAbort();
+      return;
+    }
+
+    signal?.addEventListener("abort", handleAbort, { once: true });
+    task.promise.then(finish, () => finish(null));
+  });
+}
+
+export function loadCameraAfMetadata(
+  entry: FileEntry,
+  priority: CameraAfLoadPriority = "background",
+  signal?: AbortSignal
+): Promise<CameraAfMetadata | null> {
+  if (signal?.aborted) return Promise.resolve(null);
+
+  const key = getCameraAfMetadataKey(entry);
+  const cached = cache.get(key);
+  if (cached !== undefined) return Promise.resolve(cached);
+
+  const existing = pending.get(key);
+  if (existing) {
+    if (priority === "interactive") {
+      const queuedTask = queue.find((task) => task.key === key);
+      if (queuedTask) queuedTask.priority = "interactive";
+    }
+    return subscribeToCameraAfLoad(existing, signal);
+  }
+
+  let resolvePending!: (metadata: CameraAfMetadata | null) => void;
+  const task: PendingCameraAfLoad = {
+    promise: new Promise<CameraAfMetadata | null>((resolve) => {
+      resolvePending = resolve;
+    }),
+    entry,
+    key,
+    priority,
+    consumers: new Set<symbol>(),
+    started: false,
+    settled: false,
+    resolve: (metadata) => resolvePending(metadata),
+    cancelQueued: () => undefined,
+  };
+
+  task.cancelQueued = () => {
+    if (task.started || task.settled) return;
+    const queueIndex = queue.indexOf(task);
+    if (queueIndex >= 0) queue.splice(queueIndex, 1);
+    task.settled = true;
+    pending.delete(key);
+    task.resolve(null);
+    pumpQueue();
+  };
+
+  pending.set(key, task);
+  queue.push(task);
+  pumpQueue();
+  return subscribeToCameraAfLoad(task, signal);
 }
 
 /**

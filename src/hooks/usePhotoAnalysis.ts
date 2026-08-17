@@ -26,7 +26,8 @@ export function usePhotoAnalysis(
   enabled: boolean,
   paused = false,
   priorityPath?: string,
-  scopePath?: string
+  scopePath?: string,
+  scopeEntries?: FileEntry[]
 ) {
   const [state, setState] = useState<PhotoAnalysisState>({
     signature: "",
@@ -39,9 +40,10 @@ export function usePhotoAnalysis(
     stateRef.current = state;
   }, [state]);
 
+  const analysisSourceEntries = scopeEntries ?? entries;
   const analysisEntries = useMemo(
-    () => (enabled ? getPhotoAnalysisEntries(entries) : []),
-    [enabled, entries]
+    () => (enabled ? getPhotoAnalysisEntries(analysisSourceEntries) : []),
+    [analysisSourceEntries, enabled]
   );
   const analysisSignature = useMemo(
     () => analysisEntries.map((item) => item.key).join("\u001f"),

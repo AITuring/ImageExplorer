@@ -22,7 +22,8 @@ const ICON_CACHE_TTL: Duration = Duration::from_secs(3600);
 
 /// 缓存大小上限
 const MAX_DIR_CACHE_ENTRIES: usize = 500;
-const MAX_ICON_CACHE_ENTRIES: usize = 5000;
+const MAX_ICON_CACHE_ENTRIES: usize = 1200;
+const MAX_ICON_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
 /// 目录列表缓存
 static DIR_CACHE: Lazy<DashMap<String, CacheEntry<Vec<FileEntry>>>> = Lazy::new(DashMap::new);
@@ -92,9 +93,6 @@ pub fn get_icon_cache(key: &str) -> Option<String> {
 
 /// 设置图标缓存
 pub fn set_icon_cache(key: String, base64: String) {
-    if ICON_CACHE.len() >= MAX_ICON_CACHE_ENTRIES {
-        evict_cache(&ICON_CACHE, ICON_CACHE_TTL, MAX_ICON_CACHE_ENTRIES);
-    }
     ICON_CACHE.insert(
         key,
         CacheEntry {
@@ -102,6 +100,29 @@ pub fn set_icon_cache(key: String, base64: String) {
             timestamp: Instant::now(),
         },
     );
+
+    // Thumbnail values are base64 strings and can be much larger than normal
+    // application icons. Bound both count and payload size so visiting a
+    // multi-thousand RAW folder cannot retain hundreds of megabytes forever.
+    evict_cache(&ICON_CACHE, ICON_CACHE_TTL, MAX_ICON_CACHE_ENTRIES);
+    while icon_cache_bytes() > MAX_ICON_CACHE_BYTES {
+        let oldest = ICON_CACHE
+            .iter()
+            .max_by_key(|entry| entry.value().timestamp.elapsed())
+            .map(|entry| entry.key().clone());
+        if let Some(key) = oldest {
+            ICON_CACHE.remove(&key);
+        } else {
+            break;
+        }
+    }
+}
+
+fn icon_cache_bytes() -> usize {
+    ICON_CACHE
+        .iter()
+        .map(|entry| entry.value().data.len())
+        .sum()
 }
 
 /// 获取目录缓存大小（用于调试）

@@ -865,7 +865,16 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
         }
 
         const cacheKey = `quicklook-prefetch:${candidate.path}:${candidate.modified ?? 0}:${candidate.size}:768`;
-        void loadFileThumbnail(cacheKey, candidate.path, 768, true, controller.signal);
+        void loadFileThumbnail(
+          cacheKey,
+          candidate.path,
+          768,
+          true,
+          controller.signal,
+          "background",
+          false,
+          false
+        );
       }
     }, 90);
 
@@ -1163,6 +1172,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     }
 
     let cancelled = false;
+    const controller = new AbortController();
     const cachePrefix = `file:${entryPath}:${entryModified}:${entrySize}:`;
     const progressiveCacheKey = `${cachePrefix}${progressivePreviewRequestSize}`;
     const fullCacheKey = `${cachePrefix}${nativePreviewRequestSize}`;
@@ -1187,7 +1197,16 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
       }
 
       nativePreviewTargetSizeRef.current = requestSize;
-      return loadFileThumbnail(cacheKey, entryPath, requestSize)
+      return loadFileThumbnail(
+        cacheKey,
+        entryPath,
+        requestSize,
+        true,
+        controller.signal,
+        "interactive",
+        false,
+        false
+      )
         .then((base64) => {
           if (base64) {
             applyPreviewSource(`data:image/png;base64,${base64}`, requestSize);
@@ -1219,6 +1238,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
 
     return () => {
       cancelled = true;
+      controller.abort();
       if (nativePreviewTargetSizeRef.current > nativePreviewSizeRef.current) {
         nativePreviewTargetSizeRef.current = nativePreviewSizeRef.current;
       }

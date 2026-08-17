@@ -22,12 +22,19 @@ export interface PhotoMetadataSummary {
 
 const metadataCache = new Map<string, PhotoMetadata | null>();
 const MAX_METADATA_CACHE_ENTRIES = 500;
-const pendingMetadata = new Map<string, Promise<PhotoMetadata | null>>();
-const metadataQueue: Array<{
-  path: string;
+interface PendingMetadataLoad {
+  promise: Promise<PhotoMetadata | null>;
   cacheKey: string;
+  path: string;
+  consumers: Set<symbol>;
+  started: boolean;
+  settled: boolean;
   resolve: (metadata: PhotoMetadata | null) => void;
-}> = [];
+  cancelQueued: () => void;
+}
+
+const pendingMetadata = new Map<string, PendingMetadataLoad>();
+const metadataQueue: PendingMetadataLoad[] = [];
 const MAX_CONCURRENT_METADATA = 2;
 let activeMetadataLoads = 0;
 
@@ -51,52 +58,116 @@ export function getCachedPhotoMetadata(entry: FileEntry): PhotoMetadata | null |
 
 function pumpMetadataQueue() {
   while (activeMetadataLoads < MAX_CONCURRENT_METADATA && metadataQueue.length > 0) {
-    const task = metadataQueue.shift();
-    if (!task) return;
+    const pending = metadataQueue.shift();
+    if (!pending) return;
+    if (pending.settled) continue;
+
+    pending.started = true;
 
     activeMetadataLoads += 1;
-    const pending = invoke<PhotoMetadata | null>("read_image_metadata", {
-      path: task.path,
+    const request = invoke<PhotoMetadata | null>("read_image_metadata", {
+      path: pending.path,
     })
       .catch((error) => {
         console.warn("Failed to read image metadata", error);
         return null;
       })
       .then((metadata) => {
-        cacheMetadata(task.cacheKey, metadata);
-        task.resolve(metadata);
+        cacheMetadata(pending.cacheKey, metadata);
+        pending.resolve(metadata);
         return metadata;
       })
       .finally(() => {
+        pending.settled = true;
         activeMetadataLoads = Math.max(0, activeMetadataLoads - 1);
-        pendingMetadata.delete(task.cacheKey);
+        pendingMetadata.delete(pending.cacheKey);
         pumpMetadataQueue();
       });
 
     // Keep the promise alive through the queue runner. The consumer promise
     // is resolved above so an unmounted card cannot hold up later cards.
-    void pending;
+    void request;
   }
 }
 
-export function loadPhotoMetadata(entry: FileEntry): Promise<PhotoMetadata | null> {
+function subscribeToMetadataLoad(
+  pending: PendingMetadataLoad,
+  signal?: AbortSignal
+): Promise<PhotoMetadata | null> {
+  const consumer = Symbol("photo-metadata-consumer");
+  pending.consumers.add(consumer);
+
+  return new Promise((resolve) => {
+    let finished = false;
+
+    const cleanup = () => {
+      signal?.removeEventListener("abort", handleAbort);
+      pending.consumers.delete(consumer);
+    };
+
+    const finish = (value: PhotoMetadata | null) => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      resolve(value);
+    };
+
+    const handleAbort = () => {
+      finish(null);
+      if (pending.consumers.size === 0) pending.cancelQueued();
+    };
+
+    if (signal?.aborted) {
+      handleAbort();
+      return;
+    }
+
+    signal?.addEventListener("abort", handleAbort, { once: true });
+    pending.promise.then(finish, () => finish(null));
+  });
+}
+
+export function loadPhotoMetadata(
+  entry: FileEntry,
+  signal?: AbortSignal
+): Promise<PhotoMetadata | null> {
+  if (signal?.aborted) return Promise.resolve(null);
+
   const cacheKey = getPhotoMetadataKey(entry);
   const cached = metadataCache.get(cacheKey);
   if (cached !== undefined) return Promise.resolve(cached);
 
   const existing = pendingMetadata.get(cacheKey);
-  if (existing) return existing;
+  if (existing) return subscribeToMetadataLoad(existing, signal);
 
-  const promise = new Promise<PhotoMetadata | null>((resolve) => {
-    metadataQueue.push({
-      path: entry.path,
-      cacheKey,
-      resolve,
-    });
+  let resolvePending!: (metadata: PhotoMetadata | null) => void;
+  const pending: PendingMetadataLoad = {
+    promise: new Promise<PhotoMetadata | null>((resolve) => {
+      resolvePending = resolve;
+    }),
+    cacheKey,
+    path: entry.path,
+    consumers: new Set<symbol>(),
+    started: false,
+    settled: false,
+    resolve: (metadata) => resolvePending(metadata),
+    cancelQueued: () => undefined,
+  };
+
+  pending.cancelQueued = () => {
+    if (pending.started || pending.settled) return;
+    const queueIndex = metadataQueue.indexOf(pending);
+    if (queueIndex >= 0) metadataQueue.splice(queueIndex, 1);
+    pending.settled = true;
+    pendingMetadata.delete(cacheKey);
+    pending.resolve(null);
     pumpMetadataQueue();
-  });
-  pendingMetadata.set(cacheKey, promise);
-  return promise;
+  };
+
+  pendingMetadata.set(cacheKey, pending);
+  metadataQueue.push(pending);
+  pumpMetadataQueue();
+  return subscribeToMetadataLoad(pending, signal);
 }
 
 function firstNumber(value: string | null) {
