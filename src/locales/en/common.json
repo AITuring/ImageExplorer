@@ -15,9 +15,9 @@
     "view_gallery": "Gallery View",
     "photo_analysis_enable": "Enable view and focus analysis",
     "photo_analysis_disable": "Disable view and focus analysis",
-    "photo_analysis_label": "Photo analysis",
-    "photo_analysis_progress": "Analyzing {{completed}}/{{total}}",
-    "photo_analysis_progress_done": "Analysis complete · {{total}} items",
+    "photo_analysis_label": "Folder analysis",
+    "photo_analysis_progress": "Organizing this folder {{completed}}/{{total}}",
+    "photo_analysis_progress_done": "This folder is organized · {{total}} items",
     "quick_look": {
       "preview": "Quick Look",
       "close": "Close preview",

@@ -36,13 +36,6 @@ const GRID_ROW_HEIGHT = 216;
 const GRID_ITEM_MIN_WIDTH = 132;
 /** 网格间距 */
 const GRID_GAP = 16;
-/**
- * Full-folder RAW analysis is useful for small working sets, but it is not a
- * safe background operation for thousands of camera originals. Large folders
- * keep camera AF metadata and Quick Look available while deferring the
- * folder-wide view grouping/sharpness pass.
- */
-const MAX_FOLDER_WIDE_PHOTO_ANALYSIS_ENTRIES = 500;
 
 interface FileListProps {
   currentPath: string;
@@ -116,10 +109,6 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   // 2. 排序
   const { sortField, sortDirection, handleSort, handleArrange, sortedEntries } =
     useFileSort(entries);
-  const fullFolderPhotoAnalysisEnabled =
-    viewMode === "icon" &&
-    photoAnalysisEnabled &&
-    sortedEntries.length <= MAX_FOLDER_WIDE_PHOTO_ANALYSIS_ENTRIES;
 
   // 3. 选择状态
   const {
@@ -281,25 +270,11 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     [gridViewportEntries]
   );
 
-  // Pause all focus/group work while the user is moving through the folder.
-  // For large folders, the analysis scope is the settled viewport instead of
-  // the entire RAW directory. Quick Look still gets its selected file only.
-  const photoAnalysisScopeEntries = useMemo(() => {
-    if (fullFolderPhotoAnalysisEnabled) return sortedEntries;
-    if (quickLookEntry) return [quickLookEntry];
-    return gridViewportEntries;
-  }, [fullFolderPhotoAnalysisEnabled, gridViewportEntries, quickLookEntry, sortedEntries]);
-  const photoAnalysisEnabledForScope =
-    photoAnalysisEnabled &&
-    viewMode === "icon" &&
-    (fullFolderPhotoAnalysisEnabled || Boolean(quickLookEntry) || gridViewportEntries.length > 0);
+  const photoAnalysisEnabledForFolder = photoAnalysisEnabled && viewMode === "icon";
   const { records: photoAnalysis } = usePhotoAnalysis(
     sortedEntries,
-    photoAnalysisEnabledForScope,
-    gridIsScrolling || Boolean(quickLookEntry),
-    quickLookEntry?.path,
-    currentPath,
-    photoAnalysisScopeEntries
+    photoAnalysisEnabledForFolder,
+    currentPath
   );
 
   useEffect(() => {

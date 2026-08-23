@@ -15,9 +15,9 @@
     "view_gallery": "画廊视图",
     "photo_analysis_enable": "开启视角与焦点识别",
     "photo_analysis_disable": "关闭视角与焦点识别",
-    "photo_analysis_label": "识别整理",
-    "photo_analysis_progress": "正在识别整理 {{completed}}/{{total}}",
-    "photo_analysis_progress_done": "识别整理完成 {{total}} 项",
+    "photo_analysis_label": "文件夹整理",
+    "photo_analysis_progress": "正在整理当前文件夹 {{completed}}/{{total}}",
+    "photo_analysis_progress_done": "当前文件夹整理完成 {{total}} 项",
     "quick_look": {
       "preview": "快速预览",
       "close": "关闭预览",

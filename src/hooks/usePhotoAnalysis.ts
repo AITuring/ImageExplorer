@@ -24,10 +24,7 @@ interface PhotoAnalysisState {
 export function usePhotoAnalysis(
   entries: FileEntry[],
   enabled: boolean,
-  paused = false,
-  priorityPath?: string,
-  scopePath?: string,
-  scopeEntries?: FileEntry[]
+  scopePath?: string
 ) {
   const [state, setState] = useState<PhotoAnalysisState>({
     signature: "",
@@ -40,29 +37,11 @@ export function usePhotoAnalysis(
     stateRef.current = state;
   }, [state]);
 
-  const analysisSourceEntries = scopeEntries ?? entries;
-  const analysisEntries = useMemo(
-    () => (enabled ? getPhotoAnalysisEntries(analysisSourceEntries) : []),
-    [analysisSourceEntries, enabled]
-  );
+  const analysisEntries = useMemo(() => (enabled ? getPhotoAnalysisEntries(entries) : []), [entries, enabled]);
   const analysisSignature = useMemo(
     () => analysisEntries.map((item) => item.key).join("\u001f"),
     [analysisEntries]
   );
-  const processingEntries = useMemo(() => {
-    if (!enabled) return [];
-    if (!paused) return analysisEntries;
-    if (!priorityPath) return [];
-    return analysisEntries.filter((item) => item.entry.path === priorityPath);
-  }, [analysisEntries, enabled, paused, priorityPath]);
-  const processingSignature = useMemo(
-    () => processingEntries.map((item) => item.key).join("\u001f"),
-    [processingEntries]
-  );
-  const processingEntriesRef = useRef(processingEntries);
-  useEffect(() => {
-    processingEntriesRef.current = processingEntries;
-  }, [processingEntries]);
   const visibleState: PhotoAnalysisState =
     state.signature === analysisSignature
       ? state
@@ -85,7 +64,7 @@ export function usePhotoAnalysis(
     if (!scopePath) return;
 
     const progressStore = usePhotoAnalysisProgress.getState();
-    if (!enabled || paused) {
+    if (!enabled) {
       progressStore.setProgress(scopePath, INITIAL_PROGRESS);
     } else {
       progressStore.setProgress(scopePath, {
@@ -99,7 +78,6 @@ export function usePhotoAnalysis(
   }, [
     analysisSignature,
     enabled,
-    paused,
     scopePath,
     visibleCompleted,
     visibleIsAnalyzing,
@@ -109,30 +87,26 @@ export function usePhotoAnalysis(
   useEffect(() => {
     const generation = ++generationRef.current;
     const controller = new AbortController();
-    const entriesToProcess = processingEntriesRef.current;
+    const currentState = stateRef.current;
+    const existingRecords =
+      currentState.signature === analysisSignature ? currentState.records : EMPTY_RECORDS;
+    const completedBaseline = analysisEntries.reduce(
+      (count, item) => (existingRecords.has(item.entry.path) ? count + 1 : count),
+      0
+    );
+    const entriesToProcess = analysisEntries.filter((item) => !existingRecords.has(item.entry.path));
 
-    if (!enabled || entriesToProcess.length === 0) {
+    if (!enabled) {
       return () => controller.abort();
     }
 
-    const currentState = stateRef.current;
-    const hasCurrentState = currentState.signature === analysisSignature;
-    const priorityAlreadyAvailable =
-      paused &&
-      priorityPath !== undefined &&
-      hasCurrentState &&
-      currentState.records.has(priorityPath);
     const fullAnalysisComplete =
-      !paused &&
-      hasCurrentState &&
+      currentState.signature === analysisSignature &&
       !currentState.progress.isAnalyzing &&
       currentState.progress.completed === analysisEntries.length &&
       currentState.progress.total === analysisEntries.length;
 
-    // Opening Quick Look, resizing it, or receiving an equivalent entries
-    // array must not restart analysis for the same file versions. Existing
-    // results remain valid until path, modification time, or file size changes.
-    if (priorityAlreadyAvailable || fullAnalysisComplete) {
+    if (entriesToProcess.length === 0 || fullAnalysisComplete) {
       return () => controller.abort();
     }
 
@@ -150,15 +124,12 @@ export function usePhotoAnalysis(
           signature: analysisSignature,
           records,
           progress: {
-            completed,
-            total: entriesToProcess.length,
-            isAnalyzing: completed < entriesToProcess.length,
+            completed: completedBaseline + completed,
+            total: analysisEntries.length,
+            isAnalyzing: completedBaseline + completed < analysisEntries.length,
           },
         };
       });
-      // Publish partial regions so visible bursts get focus feedback while
-      // the rest of a large folder is still being decoded. Group colors are
-      // assigned once the complete feature set is available.
     };
 
     const startTimer = window.setTimeout(() => {
@@ -175,8 +146,8 @@ export function usePhotoAnalysis(
                 signature: analysisSignature,
                 records,
                 progress: {
-                  completed: entriesToProcess.length,
-                  total: entriesToProcess.length,
+                  completed: analysisEntries.length,
+                  total: analysisEntries.length,
                   isAnalyzing: false,
                 },
               };
@@ -190,8 +161,8 @@ export function usePhotoAnalysis(
               signature: analysisSignature,
               records: current.signature === analysisSignature ? current.records : EMPTY_RECORDS,
               progress: {
-                completed: 0,
-                total: entriesToProcess.length,
+                completed: completedBaseline,
+                total: analysisEntries.length,
                 isAnalyzing: false,
               },
             }));
@@ -204,12 +175,10 @@ export function usePhotoAnalysis(
       controller.abort();
     };
   }, [
+    analysisEntries,
     analysisEntries.length,
     analysisSignature,
     enabled,
-    paused,
-    priorityPath,
-    processingSignature,
   ]);
 
   return { records: visibleState.records, progress: visibleState.progress };
