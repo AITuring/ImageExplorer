@@ -56,10 +56,19 @@ export interface PhotoAnalysisRecord {
   groupId: number | null;
 }
 
+export type PhotoAnalysisStage =
+  | "extracting-features"
+  | "estimating-focus"
+  | "grouping-views"
+  | "done";
+
 export interface PhotoAnalysisProgress {
   completed: number;
   total: number;
   isAnalyzing: boolean;
+  stage: PhotoAnalysisStage;
+  stageCompleted: number;
+  stageTotal: number;
 }
 
 export interface PhotoAnalysisEntry {
@@ -77,9 +86,18 @@ interface RawPhotoFeatures {
   focusAnalysis: FocusAnalysis;
 }
 
+interface ExtractedPhotoFeatures {
+  path: string;
+  imageWidth: number;
+  imageHeight: number;
+  fingerprint: number[];
+  hashBits: number[];
+  tileScores: number[];
+}
+
 interface CachedAnalysis {
   key: string;
-  features: RawPhotoFeatures;
+  features: ExtractedPhotoFeatures;
 }
 
 const featureCache = new Map<string, CachedAnalysis>();
@@ -344,7 +362,15 @@ function buildFocusAnalysis(
   };
 }
 
-function createFeatures(image: HTMLImageElement, path: string): RawPhotoFeatures {
+function createTileScoreGrid(tileScores: number[]) {
+  return tileScores.map((score, index) => ({
+    score,
+    x: index % FOCUS_GRID_SIZE,
+    y: Math.floor(index / FOCUS_GRID_SIZE),
+  }));
+}
+
+function extractPhotoFeatures(image: HTMLImageElement, path: string): ExtractedPhotoFeatures {
   const canvas = document.createElement("canvas");
   canvas.width = ANALYSIS_SIZE;
   canvas.height = ANALYSIS_SIZE;
@@ -410,7 +436,7 @@ function createFeatures(image: HTMLImageElement, path: string): RawPhotoFeatures
   // the first pass uses multi-scale local detail to estimate sharp regions.
   const tileWidth = Math.max(8, Math.floor(contentWidth / FOCUS_GRID_SIZE));
   const tileHeight = Math.max(8, Math.floor(contentHeight / FOCUS_GRID_SIZE));
-  const tileScores: Array<{ score: number; x: number; y: number }> = [];
+  const tileScores: number[] = [];
 
   for (let tileY = 0; tileY < FOCUS_GRID_SIZE; tileY += 1) {
     for (let tileX = 0; tileX < FOCUS_GRID_SIZE; tileX += 1) {
@@ -479,16 +505,9 @@ function createFeatures(image: HTMLImageElement, path: string): RawPhotoFeatures
       const directionFactor = 0.4 + directionBalance * 0.6;
       const score = detailScore * textureFactor * directionFactor;
 
-      tileScores.push({
-        score: samples > 0 ? score : 0,
-        x: tileX,
-        y: tileY,
-      });
+      tileScores.push(samples > 0 ? score : 0);
     }
   }
-
-  const edgeFingerprint = normalizeFingerprint(tileScores.map((tile) => tile.score));
-  const focusAnalysis = buildFocusAnalysis(smoothFocusTileScores(tileScores));
 
   return {
     path,
@@ -496,8 +515,20 @@ function createFeatures(image: HTMLImageElement, path: string): RawPhotoFeatures
     imageHeight: image.naturalHeight,
     fingerprint: normalizeFingerprint(fingerprintValues),
     hashBits,
-    edgeFingerprint,
-    focusAnalysis,
+    tileScores,
+  };
+}
+
+function finalizePhotoFeatures(features: ExtractedPhotoFeatures): RawPhotoFeatures {
+  const tileScoreGrid = createTileScoreGrid(features.tileScores);
+  return {
+    path: features.path,
+    imageWidth: features.imageWidth,
+    imageHeight: features.imageHeight,
+    fingerprint: features.fingerprint,
+    hashBits: features.hashBits,
+    edgeFingerprint: normalizeFingerprint(features.tileScores),
+    focusAnalysis: buildFocusAnalysis(smoothFocusTileScores(tileScoreGrid)),
   };
 }
 
@@ -532,7 +563,7 @@ async function analyzeEntry(entry: FileEntry, key: string, signal: AbortSignal) 
 
   const image = await decodeThumbnail(base64);
   if (signal.aborted) return null;
-  const features = createFeatures(image, entry.path);
+  const features = extractPhotoFeatures(image, entry.path);
   cacheFeatures(key, { key, features });
   return features;
 }
@@ -618,11 +649,12 @@ function buildGroups(
 export async function analyzePhotoEntries(
   entries: PhotoAnalysisEntry[],
   signal: AbortSignal,
-  onUpdate: (completed: number, records: Map<string, PhotoAnalysisRecord>) => void
+  onUpdate: (progress: PhotoAnalysisProgress, records: Map<string, PhotoAnalysisRecord>) => void
 ): Promise<Map<string, PhotoAnalysisRecord>> {
-  const featuresByPath = new Map<string, RawPhotoFeatures>();
+  const extractedByPath = new Map<string, ExtractedPhotoFeatures>();
+  const finalizedByPath = new Map<string, RawPhotoFeatures>();
   let nextIndex = 0;
-  let completed = 0;
+  let extractedCompleted = 0;
 
   const worker = async () => {
     while (!signal.aborted) {
@@ -632,16 +664,27 @@ export async function analyzePhotoEntries(
       const item = entries[index];
       try {
         const features = await analyzeEntry(item.entry, item.key, signal);
-        if (features) featuresByPath.set(item.entry.path, features);
+        if (features) extractedByPath.set(item.entry.path, features);
       } catch (error) {
         console.warn(`Failed to analyze photo: ${item.entry.path}`, error);
       } finally {
-        completed += 1;
-        if (completed === 1 || completed % 4 === 0 || completed === entries.length) {
-          // Grouping is quadratic in the worst case. Keep partial updates
-          // focused on decoded thumbnails/regions and do the final grouping
-          // once the whole folder has been analyzed.
-          onUpdate(completed, createPhotoAnalysisRecords(entries, featuresByPath, false));
+        extractedCompleted += 1;
+        if (
+          extractedCompleted === 1 ||
+          extractedCompleted % 4 === 0 ||
+          extractedCompleted === entries.length
+        ) {
+          onUpdate(
+            {
+              completed: extractedCompleted,
+              total: entries.length,
+              isAnalyzing: true,
+              stage: "extracting-features",
+              stageCompleted: extractedCompleted,
+              stageTotal: entries.length,
+            },
+            new Map()
+          );
         }
         await yieldToBrowser();
       }
@@ -653,7 +696,58 @@ export async function analyzePhotoEntries(
   );
 
   if (signal.aborted) return new Map();
-  return createPhotoAnalysisRecords(entries, featuresByPath);
+
+  let focusCompleted = 0;
+  for (const item of entries) {
+    if (signal.aborted) return new Map();
+    const extracted = extractedByPath.get(item.entry.path);
+    if (extracted) {
+      finalizedByPath.set(item.entry.path, finalizePhotoFeatures(extracted));
+    }
+    focusCompleted += 1;
+    if (focusCompleted === 1 || focusCompleted % 8 === 0 || focusCompleted === entries.length) {
+      onUpdate(
+        {
+          completed: entries.length,
+          total: entries.length,
+          isAnalyzing: true,
+          stage: "estimating-focus",
+          stageCompleted: focusCompleted,
+          stageTotal: entries.length,
+        },
+        createPhotoAnalysisRecords(entries, finalizedByPath, false)
+      );
+    }
+    await yieldToBrowser();
+  }
+
+  if (signal.aborted) return new Map();
+  onUpdate(
+    {
+      completed: entries.length,
+      total: entries.length,
+      isAnalyzing: true,
+      stage: "grouping-views",
+      stageCompleted: 0,
+      stageTotal: 1,
+    },
+    createPhotoAnalysisRecords(entries, finalizedByPath, false)
+  );
+  await yieldToBrowser();
+
+  const finalRecords = createPhotoAnalysisRecords(entries, finalizedByPath);
+  onUpdate(
+    {
+      completed: entries.length,
+      total: entries.length,
+      isAnalyzing: true,
+      stage: "grouping-views",
+      stageCompleted: 1,
+      stageTotal: 1,
+    },
+    finalRecords
+  );
+  return finalRecords;
 }
 
 function createPhotoAnalysisRecords(

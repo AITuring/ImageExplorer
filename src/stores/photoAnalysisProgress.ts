@@ -5,6 +5,9 @@ const EMPTY_PROGRESS: PhotoAnalysisProgress = {
   completed: 0,
   total: 0,
   isAnalyzing: false,
+  stage: "done",
+  stageCompleted: 0,
+  stageTotal: 0,
 };
 
 interface PhotoAnalysisProgressState {
