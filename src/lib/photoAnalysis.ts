@@ -20,6 +20,7 @@ const MAX_FOCUS_REGIONS = 5;
 // Keep one thumbnail slot free for visible grid/Quick Look requests while two
 // background analysis tasks decode in parallel.
 const MAX_CONCURRENT_ANALYSIS = 2;
+const LARGE_FOLDER_ANALYSIS_CONCURRENCY = 1;
 
 const ANALYZABLE_EXTENSIONS = new Set(
   IMAGE_EXTENSIONS.filter((extension) => extension !== "svg" && extension !== "psd")
@@ -102,6 +103,30 @@ interface CachedAnalysis {
 
 const featureCache = new Map<string, CachedAnalysis>();
 const MAX_FEATURE_CACHE_ENTRIES = 300;
+
+// #region debug-point A:photo-analysis-reporting
+const PHOTO_ANALYSIS_DEBUG_URL = "http://127.0.0.1:7777/event";
+const PHOTO_ANALYSIS_DEBUG_SESSION = "folder-analysis-stutter";
+function reportPhotoAnalysisDebug(
+  hypothesisId: string,
+  location: string,
+  msg: string,
+  data: Record<string, unknown>
+) {
+  fetch(PHOTO_ANALYSIS_DEBUG_URL, {
+    method: "POST",
+    body: JSON.stringify({
+      sessionId: PHOTO_ANALYSIS_DEBUG_SESSION,
+      runId: "post-fix",
+      hypothesisId,
+      location,
+      msg: `[DEBUG] ${msg}`,
+      data,
+      ts: Date.now(),
+    }),
+  }).catch(() => {});
+}
+// #endregion
 
 function cacheFeatures(key: string, features: CachedAnalysis) {
   featureCache.delete(key);
@@ -655,6 +680,14 @@ export async function analyzePhotoEntries(
   const finalizedByPath = new Map<string, RawPhotoFeatures>();
   let nextIndex = 0;
   let extractedCompleted = 0;
+  const analysisStartedAt = performance.now();
+  let extractPhaseLastReportAt = analysisStartedAt;
+  // #region debug-point A:analysis-start
+  reportPhotoAnalysisDebug("A", "photoAnalysis.ts:analyzePhotoEntries:start", "photo analysis run started", {
+    entries: entries.length,
+    maxConcurrentAnalysis: Math.min(MAX_CONCURRENT_ANALYSIS, entries.length),
+  });
+  // #endregion
 
   const worker = async () => {
     while (!signal.aborted) {
@@ -671,9 +704,25 @@ export async function analyzePhotoEntries(
         extractedCompleted += 1;
         if (
           extractedCompleted === 1 ||
-          extractedCompleted % 4 === 0 ||
+          extractedCompleted % 12 === 0 ||
           extractedCompleted === entries.length
         ) {
+          // #region debug-point A:extract-progress
+          const now = performance.now();
+          reportPhotoAnalysisDebug(
+            "A",
+            "photoAnalysis.ts:extract-progress",
+            "extract phase progress",
+            {
+              extractedCompleted,
+              total: entries.length,
+              extractedByPathSize: extractedByPath.size,
+              batchElapsedMs: Math.round(now - extractPhaseLastReportAt),
+              sinceStartMs: Math.round(now - analysisStartedAt),
+            }
+          );
+          extractPhaseLastReportAt = now;
+          // #endregion
           onUpdate(
             {
               completed: extractedCompleted,
@@ -691,21 +740,45 @@ export async function analyzePhotoEntries(
     }
   };
 
-  await Promise.all(
-    Array.from({ length: Math.min(MAX_CONCURRENT_ANALYSIS, entries.length) }, () => worker())
+  const workerCount = Math.min(
+    entries.length > 400 ? LARGE_FOLDER_ANALYSIS_CONCURRENCY : MAX_CONCURRENT_ANALYSIS,
+    entries.length
   );
+
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
   if (signal.aborted) return new Map();
 
   let focusCompleted = 0;
+  const focusPhaseStartedAt = performance.now();
+  let focusBatchEntries: PhotoAnalysisEntry[] = [];
+  // #region debug-point C:focus-start
+  reportPhotoAnalysisDebug("C", "photoAnalysis.ts:focus:start", "focus estimation phase started", {
+    extractedByPathSize: extractedByPath.size,
+    total: entries.length,
+    extractPhaseElapsedMs: Math.round(focusPhaseStartedAt - analysisStartedAt),
+  });
+  // #endregion
   for (const item of entries) {
     if (signal.aborted) return new Map();
     const extracted = extractedByPath.get(item.entry.path);
     if (extracted) {
       finalizedByPath.set(item.entry.path, finalizePhotoFeatures(extracted));
+      focusBatchEntries.push(item);
     }
     focusCompleted += 1;
-    if (focusCompleted === 1 || focusCompleted % 8 === 0 || focusCompleted === entries.length) {
+    if (focusCompleted === 1 || focusCompleted % 16 === 0 || focusCompleted === entries.length) {
+      // #region debug-point C:focus-progress
+      reportPhotoAnalysisDebug("C", "photoAnalysis.ts:focus:progress", "focus estimation progress", {
+        focusCompleted,
+        total: entries.length,
+        finalizedByPathSize: finalizedByPath.size,
+        focusBatchEntries: focusBatchEntries.length,
+        sinceFocusStartMs: Math.round(performance.now() - focusPhaseStartedAt),
+      });
+      // #endregion
+      const partialRecords = createPhotoAnalysisRecords(focusBatchEntries, finalizedByPath, false);
+      focusBatchEntries = [];
       onUpdate(
         {
           completed: entries.length,
@@ -715,13 +788,21 @@ export async function analyzePhotoEntries(
           stageCompleted: focusCompleted,
           stageTotal: entries.length,
         },
-        createPhotoAnalysisRecords(entries, finalizedByPath, false)
+        partialRecords
       );
     }
     await yieldToBrowser();
   }
 
   if (signal.aborted) return new Map();
+  const groupingStartedAt = performance.now();
+  // #region debug-point D:grouping-start
+  reportPhotoAnalysisDebug("D", "photoAnalysis.ts:grouping:start", "grouping phase started", {
+    total: entries.length,
+    finalizedByPathSize: finalizedByPath.size,
+    focusPhaseElapsedMs: Math.round(groupingStartedAt - focusPhaseStartedAt),
+  });
+  // #endregion
   onUpdate(
     {
       completed: entries.length,
@@ -736,6 +817,15 @@ export async function analyzePhotoEntries(
   await yieldToBrowser();
 
   const finalRecords = createPhotoAnalysisRecords(entries, finalizedByPath);
+  // #region debug-point D:grouping-finish
+  reportPhotoAnalysisDebug("D", "photoAnalysis.ts:grouping:finish", "grouping phase finished", {
+    total: entries.length,
+    finalRecords: finalRecords.size,
+    groupAssignments: Array.from(finalRecords.values()).filter((record) => record.groupId !== null).length,
+    groupingElapsedMs: Math.round(performance.now() - groupingStartedAt),
+    totalElapsedMs: Math.round(performance.now() - analysisStartedAt),
+  });
+  // #endregion
   onUpdate(
     {
       completed: entries.length,

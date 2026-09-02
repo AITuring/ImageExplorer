@@ -25,7 +25,8 @@ import { FileGridItem } from "./components/FileGridItem";
 import { FileColumnView } from "./components/FileColumnView";
 import { FileGalleryView } from "./components/FileGalleryView";
 import { BatchRenameDialog } from "@/components/BatchRenameDialog";
-import { FILE_DRAG_MIME, readFileDragData, serializeFileDragData } from "@/lib/dragData";
+import { readFileDragData } from "@/lib/dragData";
+import { makeNativeFileDragGestureHandlers } from "@/lib/nativeFileDragGesture";
 import { isPermissionDeniedError, requestDirectoryAccess } from "@/lib/directoryAccess";
 
 /** 列表视图固定行高 */
@@ -46,18 +47,14 @@ interface FileListProps {
 /** 拖拽事件处理工厂 */
 function makeDragHandlers(
   entry: FileEntry,
+  selectedPaths: string[],
   handleMove: (src: string, dest: string) => void,
   isGrid: boolean
 ) {
+  const dragPaths = selectedPaths.includes(entry.path) ? selectedPaths : [entry.path];
+
   return {
-    onDragStart: (e: React.DragEvent) => {
-      const serialized = serializeFileDragData([entry.path]);
-      e.dataTransfer.setData(FILE_DRAG_MIME, serialized);
-      e.dataTransfer.setData("application/json", serialized);
-      // 跨 WebView/窗口时 text/plain 的可用性最好。
-      e.dataTransfer.setData("text/plain", serialized);
-      e.dataTransfer.effectAllowed = "move";
-    },
+    ...makeNativeFileDragGestureHandlers(dragPaths),
     onDragOver: (e: React.DragEvent) => {
       if (!entry.is_dir) return;
       e.preventDefault();
@@ -577,7 +574,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                   {listVirtualizer.getVirtualItems().map((virtualItem) => {
                     const entry = sortedEntries[virtualItem.index];
                     if (!entry) return null;
-                    const dragHandlers = makeDragHandlers(entry, handleMove, false);
+                    const dragHandlers = makeDragHandlers(entry, selectedPaths, handleMove, false);
                     return (
                       <div
                         key={entry.path}
@@ -590,7 +587,6 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                           width: "100%",
                           transform: `translateY(${virtualItem.start}px)`,
                         }}
-                        draggable
                         {...dragHandlers}
                       >
                         <AppContextMenu
@@ -654,10 +650,15 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                         >
                           {rowEntries.map((entry, colIdx) => {
                             const globalIndex = startIdx + colIdx;
-                            const dragHandlers = makeDragHandlers(entry, handleMove, true);
+                            const dragHandlers = makeDragHandlers(
+                              entry,
+                              selectedPaths,
+                              handleMove,
+                              true
+                            );
                             const analysis = photoAnalysis.get(entry.path);
                             return (
-                              <div key={entry.path} draggable {...dragHandlers}>
+                              <div key={entry.path} {...dragHandlers}>
                                 <AppContextMenu
                                   type={entry.is_dir ? "folder" : "file"}
                                   entry={entry}

@@ -15,6 +15,7 @@ use commands::apps::{
     get_installed_apps, get_recommended_apps, get_sf_symbol, get_terminal_apps,
     open_in_terminal_with, open_native_quick_look, open_with,
 };
+use commands::drag::start_native_file_drag;
 use commands::fs::{
     batch_rename, check_full_disk_access, copy_file, create_directory, create_file,
     delete_to_trash, exists, get_disk_space, get_entries, get_file_entry, get_home_dir,
@@ -475,6 +476,7 @@ pub fn run() {
             open_native_quick_look,
             close_native_quick_look,
             get_sf_symbol,
+            start_native_file_drag,
             read_text_file,
             read_image_base64,
             read_image_dimensions,

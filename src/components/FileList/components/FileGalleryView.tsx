@@ -4,7 +4,8 @@ import type { FileEntry } from "@/types/index";
 import { FileThumbnail } from "@/components/FileThumbnail";
 import { AppContextMenu } from "@/components/AppContextMenu";
 import type { FileActions } from "@/types";
-import { FILE_DRAG_MIME, readFileDragData, serializeFileDragData } from "@/lib/dragData";
+import { readFileDragData } from "@/lib/dragData";
+import { makeNativeFileDragGestureHandlers } from "@/lib/nativeFileDragGesture";
 
 /** 网格项尺寸 */
 const ITEM_SIZE = 180;
@@ -139,17 +140,14 @@ export function FileGalleryView({
               <div className="flex justify-center gap-3">
                 {rowEntries.map((entry, colIdx) => {
                   const globalIndex = startIdx + colIdx;
+                  const dragPaths = selectedPaths.includes(entry.path)
+                    ? selectedPaths
+                    : [entry.path];
+                  const nativeDragHandlers = makeNativeFileDragGestureHandlers(dragPaths);
                   return (
                     <div
                       key={entry.path}
-                      draggable
-                      onDragStart={(e) => {
-                        const serialized = serializeFileDragData([entry.path]);
-                        e.dataTransfer.setData(FILE_DRAG_MIME, serialized);
-                        e.dataTransfer.setData("application/json", serialized);
-                        e.dataTransfer.setData("text/plain", serialized);
-                        e.dataTransfer.effectAllowed = "move";
-                      }}
+                      {...nativeDragHandlers}
                       onDragOver={(e) => {
                         if (!entry.is_dir) return;
                         e.preventDefault();
