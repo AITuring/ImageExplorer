@@ -272,7 +272,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
 
   const photoAnalysisEnabledForFolder = photoAnalysisEnabled && viewMode === "icon";
   const { records: photoAnalysis } = usePhotoAnalysis(
-    sortedEntries,
+    entries,
     photoAnalysisEnabledForFolder,
     currentPath
   );

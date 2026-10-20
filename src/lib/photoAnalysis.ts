@@ -5,6 +5,7 @@ import {
   getThumbnailRequestSize,
   loadFileThumbnail,
 } from "@/lib/iconCache";
+import { groupPhotoFeatures } from "@/lib/photoGrouping";
 
 const ANALYSIS_VERSION = 8;
 const ANALYSIS_SIZE = 128;
@@ -20,7 +21,8 @@ const MAX_FOCUS_REGIONS = 5;
 // Keep one thumbnail slot free for visible grid/Quick Look requests while two
 // background analysis tasks decode in parallel.
 const MAX_CONCURRENT_ANALYSIS = 2;
-const LARGE_FOLDER_ANALYSIS_CONCURRENCY = 1;
+const MAX_FEATURE_CACHE_ENTRIES = 4_000;
+const MAX_FEATURE_CACHE_BYTES = 24 * 1024 * 1024;
 
 const ANALYZABLE_EXTENSIONS = new Set(
   IMAGE_EXTENSIONS.filter((extension) => extension !== "svg" && extension !== "psd")
@@ -49,9 +51,9 @@ export interface PhotoAnalysisRecord {
   path: string;
   imageWidth: number;
   imageHeight: number;
-  fingerprint: number[];
-  hashBits: number[];
-  edgeFingerprint: number[];
+  fingerprint: Float32Array;
+  hashBits: Uint8Array;
+  edgeFingerprint: Float32Array;
   /** Thumbnail-derived sharp regions; unavailable when the image has no clear peak. */
   focusAnalysis: FocusAnalysis;
   groupId: number | null;
@@ -81,9 +83,9 @@ interface RawPhotoFeatures {
   path: string;
   imageWidth: number;
   imageHeight: number;
-  fingerprint: number[];
-  hashBits: number[];
-  edgeFingerprint: number[];
+  fingerprint: Float32Array;
+  hashBits: Uint8Array;
+  edgeFingerprint: Float32Array;
   focusAnalysis: FocusAnalysis;
 }
 
@@ -91,49 +93,48 @@ interface ExtractedPhotoFeatures {
   path: string;
   imageWidth: number;
   imageHeight: number;
-  fingerprint: number[];
-  hashBits: number[];
-  tileScores: number[];
+  fingerprint: Float32Array;
+  hashBits: Uint8Array;
+  tileScores: Float32Array;
 }
 
 interface CachedAnalysis {
-  key: string;
   features: ExtractedPhotoFeatures;
+  bytes: number;
 }
 
 const featureCache = new Map<string, CachedAnalysis>();
-const MAX_FEATURE_CACHE_ENTRIES = 300;
+let featureCacheBytes = 0;
 
-// #region debug-point A:photo-analysis-reporting
-const PHOTO_ANALYSIS_DEBUG_URL = "http://127.0.0.1:7777/event";
-const PHOTO_ANALYSIS_DEBUG_SESSION = "folder-analysis-stutter";
-function reportPhotoAnalysisDebug(
-  hypothesisId: string,
-  location: string,
-  msg: string,
-  data: Record<string, unknown>
-) {
-  fetch(PHOTO_ANALYSIS_DEBUG_URL, {
-    method: "POST",
-    body: JSON.stringify({
-      sessionId: PHOTO_ANALYSIS_DEBUG_SESSION,
-      runId: "post-fix",
-      hypothesisId,
-      location,
-      msg: `[DEBUG] ${msg}`,
-      data,
-      ts: Date.now(),
-    }),
-  }).catch(() => {});
+function getFeatureBytes(features: ExtractedPhotoFeatures) {
+  return (
+    features.fingerprint.byteLength + features.hashBits.byteLength + features.tileScores.byteLength
+  );
 }
-// #endregion
 
-function cacheFeatures(key: string, features: CachedAnalysis) {
+function getCachedFeatures(key: string) {
+  const cached = featureCache.get(key);
+  if (!cached) return null;
   featureCache.delete(key);
-  featureCache.set(key, features);
-  while (featureCache.size > MAX_FEATURE_CACHE_ENTRIES) {
+  featureCache.set(key, cached);
+  return cached.features;
+}
+
+function cacheFeatures(key: string, features: ExtractedPhotoFeatures) {
+  const previous = featureCache.get(key);
+  if (previous) featureCacheBytes -= previous.bytes;
+  featureCache.delete(key);
+  const cached = { features, bytes: getFeatureBytes(features) };
+  featureCache.set(key, cached);
+  featureCacheBytes += cached.bytes;
+  while (
+    featureCache.size > MAX_FEATURE_CACHE_ENTRIES ||
+    featureCacheBytes > MAX_FEATURE_CACHE_BYTES
+  ) {
     const oldest = featureCache.keys().next().value as string | undefined;
     if (!oldest) break;
+    const evicted = featureCache.get(oldest);
+    if (evicted) featureCacheBytes -= evicted.bytes;
     featureCache.delete(oldest);
   }
 }
@@ -166,6 +167,10 @@ function yieldToBrowser(): Promise<void> {
   });
 }
 
+function getProgressBatchSize(total: number, minimum: number) {
+  return Math.max(minimum, Math.ceil(total / 40));
+}
+
 function decodeThumbnail(base64: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const image = new Image();
@@ -175,27 +180,22 @@ function decodeThumbnail(base64: string): Promise<HTMLImageElement> {
   });
 }
 
-function getGray(imageData: ImageData, x: number, y: number) {
-  const index = (y * imageData.width + x) * 4;
-  return (
-    imageData.data[index] * 0.2126 +
-    imageData.data[index + 1] * 0.7152 +
-    imageData.data[index + 2] * 0.0722
-  );
-}
-
-function normalizeFingerprint(values: number[]) {
+function normalizeFingerprint(values: ArrayLike<number>) {
   let sum = 0;
-  for (const value of values) sum += value;
+  for (let index = 0; index < values.length; index += 1) sum += values[index];
   const mean = sum / Math.max(1, values.length);
 
   let variance = 0;
-  for (const value of values) {
-    const delta = value - mean;
+  for (let index = 0; index < values.length; index += 1) {
+    const delta = values[index] - mean;
     variance += delta * delta;
   }
   const deviation = Math.sqrt(variance / Math.max(1, values.length)) || 1;
-  return values.map((value) => clamp((value - mean) / deviation, -3, 3) / 3);
+  const normalized = new Float32Array(values.length);
+  for (let index = 0; index < values.length; index += 1) {
+    normalized[index] = clamp((values[index] - mean) / deviation, -3, 3) / 3;
+  }
+  return normalized;
 }
 
 function unavailableFocusAnalysis(): FocusAnalysis {
@@ -387,9 +387,9 @@ function buildFocusAnalysis(
   };
 }
 
-function createTileScoreGrid(tileScores: number[]) {
-  return tileScores.map((score, index) => ({
-    score,
+function createTileScoreGrid(tileScores: ArrayLike<number>) {
+  return Array.from({ length: tileScores.length }, (_, index) => ({
+    score: tileScores[index],
     x: index % FOCUS_GRID_SIZE,
     y: Math.floor(index / FOCUS_GRID_SIZE),
   }));
@@ -415,8 +415,15 @@ function extractPhotoFeatures(image: HTMLImageElement, path: string): ExtractedP
 
   context.drawImage(image, contentLeft, contentTop, contentWidth, contentHeight);
   const imageData = context.getImageData(0, 0, ANALYSIS_SIZE, ANALYSIS_SIZE);
+  const rgba = imageData.data;
+  const grayscale = new Float32Array(ANALYSIS_SIZE * ANALYSIS_SIZE);
+  for (let pixelIndex = 0; pixelIndex < grayscale.length; pixelIndex += 1) {
+    const rgbaIndex = pixelIndex * 4;
+    grayscale[pixelIndex] =
+      rgba[rgbaIndex] * 0.2126 + rgba[rgbaIndex + 1] * 0.7152 + rgba[rgbaIndex + 2] * 0.0722;
+  }
 
-  const fingerprintValues: number[] = [];
+  const fingerprintValues = new Float32Array(FINGERPRINT_SIZE * FINGERPRINT_SIZE);
   for (let row = 0; row < FINGERPRINT_SIZE; row += 1) {
     for (let column = 0; column < FINGERPRINT_SIZE; column += 1) {
       const sampleX = clamp(
@@ -429,11 +436,12 @@ function extractPhotoFeatures(image: HTMLImageElement, path: string): ExtractedP
         0,
         ANALYSIS_SIZE - 1
       );
-      fingerprintValues.push(getGray(imageData, sampleX, sampleY));
+      fingerprintValues[row * FINGERPRINT_SIZE + column] =
+        grayscale[sampleY * ANALYSIS_SIZE + sampleX];
     }
   }
 
-  const hashBits: number[] = [];
+  const hashBits = new Uint8Array(HASH_SIZE * HASH_SIZE);
   for (let row = 0; row < HASH_SIZE; row += 1) {
     for (let column = 0; column < HASH_SIZE; column += 1) {
       const leftX = clamp(
@@ -451,9 +459,10 @@ function extractPhotoFeatures(image: HTMLImageElement, path: string): ExtractedP
         0,
         ANALYSIS_SIZE - 1
       );
-      hashBits.push(
-        getGray(imageData, leftX, sampleY) < getGray(imageData, rightX, sampleY) ? 1 : 0
-      );
+      hashBits[row * HASH_SIZE + column] =
+        grayscale[sampleY * ANALYSIS_SIZE + leftX] < grayscale[sampleY * ANALYSIS_SIZE + rightX]
+          ? 1
+          : 0;
     }
   }
 
@@ -461,7 +470,10 @@ function extractPhotoFeatures(image: HTMLImageElement, path: string): ExtractedP
   // the first pass uses multi-scale local detail to estimate sharp regions.
   const tileWidth = Math.max(8, Math.floor(contentWidth / FOCUS_GRID_SIZE));
   const tileHeight = Math.max(8, Math.floor(contentHeight / FOCUS_GRID_SIZE));
-  const tileScores: number[] = [];
+  const tileScores = new Float32Array(FOCUS_GRID_SIZE * FOCUS_GRID_SIZE);
+  const maximumTileSamples = Math.max(1, (tileWidth - 2) * (tileHeight - 2));
+  const gradientValues = new Float32Array(maximumTileSamples);
+  const laplacianValues = new Float32Array(maximumTileSamples);
 
   for (let tileY = 0; tileY < FOCUS_GRID_SIZE; tileY += 1) {
     for (let tileX = 0; tileX < FOCUS_GRID_SIZE; tileX += 1) {
@@ -469,53 +481,59 @@ function extractPhotoFeatures(image: HTMLImageElement, path: string): ExtractedP
       const startY = contentTop + tileY * tileHeight;
       const endX = Math.min(contentLeft + contentWidth - 1, startX + tileWidth);
       const endY = Math.min(contentTop + contentHeight - 1, startY + tileHeight);
-      const gradientValues: number[] = [];
-      const laplacianValues: number[] = [];
+      let gradientSum = 0;
+      let laplacianSum = 0;
       let horizontalEnergy = 0;
       let verticalEnergy = 0;
       let samples = 0;
 
       for (let y = startY + 1; y < endY - 1; y += 1) {
         for (let x = startX + 1; x < endX - 1; x += 1) {
-          const center = getGray(imageData, x, y);
-          const horizontal = Math.abs(getGray(imageData, x + 1, y) - getGray(imageData, x - 1, y));
-          const vertical = Math.abs(getGray(imageData, x, y + 1) - getGray(imageData, x, y - 1));
+          const pixelIndex = y * ANALYSIS_SIZE + x;
+          const center = grayscale[pixelIndex];
+          const horizontal = Math.abs(grayscale[pixelIndex + 1] - grayscale[pixelIndex - 1]);
+          const vertical = Math.abs(
+            grayscale[pixelIndex + ANALYSIS_SIZE] - grayscale[pixelIndex - ANALYSIS_SIZE]
+          );
           const gradient = (horizontal + vertical) / 2;
           horizontalEnergy += horizontal;
           verticalEnergy += vertical;
           const laplacian = Math.abs(
             center * 4 -
-              getGray(imageData, x - 1, y) -
-              getGray(imageData, x + 1, y) -
-              getGray(imageData, x, y - 1) -
-              getGray(imageData, x, y + 1)
+              grayscale[pixelIndex - 1] -
+              grayscale[pixelIndex + 1] -
+              grayscale[pixelIndex - ANALYSIS_SIZE] -
+              grayscale[pixelIndex + ANALYSIS_SIZE]
           );
-          gradientValues.push(gradient);
-          laplacianValues.push(laplacian);
+          gradientValues[samples] = gradient;
+          laplacianValues[samples] = laplacian;
+          gradientSum += gradient;
+          laplacianSum += laplacian;
           samples += 1;
         }
       }
 
-      const gradientMean =
-        gradientValues.reduce((total, value) => total + value, 0) / Math.max(samples, 1);
-      const laplacianMean =
-        laplacianValues.reduce((total, value) => total + value, 0) / Math.max(samples, 1);
-      const gradientDeviation = Math.sqrt(
-        gradientValues.reduce((total, value) => total + (value - gradientMean) ** 2, 0) /
-          Math.max(samples, 1)
-      );
-      const laplacianDeviation = Math.sqrt(
-        laplacianValues.reduce((total, value) => total + (value - laplacianMean) ** 2, 0) /
-          Math.max(samples, 1)
-      );
-      const gradientSpread =
-        gradientValues.filter(
-          (value) => value >= Math.max(2, gradientMean + gradientDeviation * 0.35)
-        ).length / Math.max(samples, 1);
-      const laplacianSpread =
-        laplacianValues.filter(
-          (value) => value >= Math.max(2, laplacianMean + laplacianDeviation * 0.35)
-        ).length / Math.max(samples, 1);
+      const sampleCount = Math.max(samples, 1);
+      const gradientMean = gradientSum / sampleCount;
+      const laplacianMean = laplacianSum / sampleCount;
+      let gradientVariance = 0;
+      let laplacianVariance = 0;
+      for (let index = 0; index < samples; index += 1) {
+        gradientVariance += (gradientValues[index] - gradientMean) ** 2;
+        laplacianVariance += (laplacianValues[index] - laplacianMean) ** 2;
+      }
+      const gradientDeviation = Math.sqrt(gradientVariance / sampleCount);
+      const laplacianDeviation = Math.sqrt(laplacianVariance / sampleCount);
+      const gradientThreshold = Math.max(2, gradientMean + gradientDeviation * 0.35);
+      const laplacianThreshold = Math.max(2, laplacianMean + laplacianDeviation * 0.35);
+      let gradientSpreadCount = 0;
+      let laplacianSpreadCount = 0;
+      for (let index = 0; index < samples; index += 1) {
+        if (gradientValues[index] >= gradientThreshold) gradientSpreadCount += 1;
+        if (laplacianValues[index] >= laplacianThreshold) laplacianSpreadCount += 1;
+      }
+      const gradientSpread = gradientSpreadCount / sampleCount;
+      const laplacianSpread = laplacianSpreadCount / sampleCount;
       const textureSpread = (gradientSpread + laplacianSpread) / 2;
       const directionBalance =
         1 -
@@ -530,7 +548,7 @@ function extractPhotoFeatures(image: HTMLImageElement, path: string): ExtractedP
       const directionFactor = 0.4 + directionBalance * 0.6;
       const score = detailScore * textureFactor * directionFactor;
 
-      tileScores.push(samples > 0 ? score : 0);
+      tileScores[tileY * FOCUS_GRID_SIZE + tileX] = samples > 0 ? score : 0;
     }
   }
 
@@ -558,8 +576,8 @@ function finalizePhotoFeatures(features: ExtractedPhotoFeatures): RawPhotoFeatur
 }
 
 async function analyzeEntry(entry: FileEntry, key: string, signal: AbortSignal) {
-  const cached = featureCache.get(key);
-  if (cached) return cached.features;
+  const cached = getCachedFeatures(key);
+  if (cached) return cached;
 
   if (signal.aborted) return null;
   // Share the visible 80px grid thumbnail whenever possible. The image is
@@ -589,86 +607,8 @@ async function analyzeEntry(entry: FileEntry, key: string, signal: AbortSignal) 
   const image = await decodeThumbnail(base64);
   if (signal.aborted) return null;
   const features = extractPhotoFeatures(image, entry.path);
-  cacheFeatures(key, { key, features });
+  cacheFeatures(key, features);
   return features;
-}
-
-function fingerprintDistance(first: number[], second: number[]) {
-  const length = Math.min(first.length, second.length);
-  if (length === 0) return 1;
-  let distance = 0;
-  for (let index = 0; index < length; index += 1) {
-    const delta = first[index] - second[index];
-    distance += delta * delta;
-  }
-  return Math.sqrt(distance / length);
-}
-
-function hashDistance(first: number[], second: number[]) {
-  const length = Math.min(first.length, second.length);
-  if (length === 0) return 1;
-  let different = 0;
-  for (let index = 0; index < length; index += 1) {
-    if (first[index] !== second[index]) different += 1;
-  }
-  return different / length;
-}
-
-function isSameView(first: RawPhotoFeatures, second: RawPhotoFeatures) {
-  const firstAspect = first.imageWidth / Math.max(first.imageHeight, 1);
-  const secondAspect = second.imageWidth / Math.max(second.imageHeight, 1);
-  if (Math.abs(Math.log(firstAspect / secondAspect)) > 0.08) return false;
-
-  const visualDistance = fingerprintDistance(first.fingerprint, second.fingerprint);
-  const hashDistanceValue = hashDistance(first.hashBits, second.hashBits);
-  const edgeDistance = fingerprintDistance(first.edgeFingerprint, second.edgeFingerprint);
-
-  // Require all three signals. The old visual-only fallback was too permissive
-  // for different crops of the same artwork: grayscale tone could match even
-  // when the composition and edge layout had changed substantially.
-  return visualDistance <= 0.42 && hashDistanceValue <= 0.16 && edgeDistance <= 0.38;
-}
-
-function buildGroups(
-  entries: PhotoAnalysisEntry[],
-  featuresByPath: Map<string, RawPhotoFeatures>
-): Map<string, number | null> {
-  const groups = new Map<string, number | null>();
-  const candidates: Array<{
-    representative: RawPhotoFeatures;
-    members: PhotoAnalysisEntry[];
-    memberFeatures: RawPhotoFeatures[];
-  }> = [];
-
-  for (const item of entries) {
-    const features = featuresByPath.get(item.entry.path);
-    if (!features) {
-      continue;
-    }
-
-    const matchingGroup = candidates.find(
-      (candidate) =>
-        isSameView(candidate.representative, features) &&
-        candidate.memberFeatures.every((member) => isSameView(member, features))
-    );
-    if (matchingGroup) {
-      matchingGroup.members.push(item);
-      matchingGroup.memberFeatures.push(features);
-    } else {
-      candidates.push({ representative: features, members: [item], memberFeatures: [features] });
-    }
-  }
-
-  // A view can reappear later in a folder, so groups are global rather than
-  // limited to adjacent filenames. IDs still follow the first file's order.
-  candidates.forEach((candidate, groupId) => {
-    if (candidate.members.length < 2) return;
-    for (const member of candidate.members) {
-      groups.set(member.entry.path, groupId);
-    }
-  });
-
-  return groups;
 }
 
 export async function analyzePhotoEntries(
@@ -680,16 +620,10 @@ export async function analyzePhotoEntries(
   const finalizedByPath = new Map<string, RawPhotoFeatures>();
   let nextIndex = 0;
   let extractedCompleted = 0;
-  const analysisStartedAt = performance.now();
-  let extractPhaseLastReportAt = analysisStartedAt;
-  // #region debug-point A:analysis-start
-  reportPhotoAnalysisDebug("A", "photoAnalysis.ts:analyzePhotoEntries:start", "photo analysis run started", {
-    entries: entries.length,
-    maxConcurrentAnalysis: Math.min(MAX_CONCURRENT_ANALYSIS, entries.length),
-  });
-  // #endregion
+  const extractionProgressBatch = getProgressBatchSize(entries.length, 12);
 
   const worker = async () => {
+    let lastBrowserYieldAt = performance.now();
     while (!signal.aborted) {
       const index = nextIndex;
       nextIndex += 1;
@@ -704,25 +638,9 @@ export async function analyzePhotoEntries(
         extractedCompleted += 1;
         if (
           extractedCompleted === 1 ||
-          extractedCompleted % 12 === 0 ||
+          extractedCompleted % extractionProgressBatch === 0 ||
           extractedCompleted === entries.length
         ) {
-          // #region debug-point A:extract-progress
-          const now = performance.now();
-          reportPhotoAnalysisDebug(
-            "A",
-            "photoAnalysis.ts:extract-progress",
-            "extract phase progress",
-            {
-              extractedCompleted,
-              total: entries.length,
-              extractedByPathSize: extractedByPath.size,
-              batchElapsedMs: Math.round(now - extractPhaseLastReportAt),
-              sinceStartMs: Math.round(now - analysisStartedAt),
-            }
-          );
-          extractPhaseLastReportAt = now;
-          // #endregion
           onUpdate(
             {
               completed: extractedCompleted,
@@ -735,30 +653,24 @@ export async function analyzePhotoEntries(
             new Map()
           );
         }
-        await yieldToBrowser();
+        if (performance.now() - lastBrowserYieldAt >= 12) {
+          await yieldToBrowser();
+          lastBrowserYieldAt = performance.now();
+        }
       }
     }
   };
 
-  const workerCount = Math.min(
-    entries.length > 400 ? LARGE_FOLDER_ANALYSIS_CONCURRENCY : MAX_CONCURRENT_ANALYSIS,
-    entries.length
-  );
+  const workerCount = Math.min(MAX_CONCURRENT_ANALYSIS, entries.length);
 
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
   if (signal.aborted) return new Map();
 
   let focusCompleted = 0;
-  const focusPhaseStartedAt = performance.now();
+  const focusProgressBatch = getProgressBatchSize(entries.length, 16);
   let focusBatchEntries: PhotoAnalysisEntry[] = [];
-  // #region debug-point C:focus-start
-  reportPhotoAnalysisDebug("C", "photoAnalysis.ts:focus:start", "focus estimation phase started", {
-    extractedByPathSize: extractedByPath.size,
-    total: entries.length,
-    extractPhaseElapsedMs: Math.round(focusPhaseStartedAt - analysisStartedAt),
-  });
-  // #endregion
+  let focusLastBrowserYieldAt = performance.now();
   for (const item of entries) {
     if (signal.aborted) return new Map();
     const extracted = extractedByPath.get(item.entry.path);
@@ -767,16 +679,11 @@ export async function analyzePhotoEntries(
       focusBatchEntries.push(item);
     }
     focusCompleted += 1;
-    if (focusCompleted === 1 || focusCompleted % 16 === 0 || focusCompleted === entries.length) {
-      // #region debug-point C:focus-progress
-      reportPhotoAnalysisDebug("C", "photoAnalysis.ts:focus:progress", "focus estimation progress", {
-        focusCompleted,
-        total: entries.length,
-        finalizedByPathSize: finalizedByPath.size,
-        focusBatchEntries: focusBatchEntries.length,
-        sinceFocusStartMs: Math.round(performance.now() - focusPhaseStartedAt),
-      });
-      // #endregion
+    if (
+      focusCompleted === 1 ||
+      focusCompleted % focusProgressBatch === 0 ||
+      focusCompleted === entries.length
+    ) {
       const partialRecords = createPhotoAnalysisRecords(focusBatchEntries, finalizedByPath, false);
       focusBatchEntries = [];
       onUpdate(
@@ -791,18 +698,13 @@ export async function analyzePhotoEntries(
         partialRecords
       );
     }
-    await yieldToBrowser();
+    if (performance.now() - focusLastBrowserYieldAt >= 12) {
+      await yieldToBrowser();
+      focusLastBrowserYieldAt = performance.now();
+    }
   }
 
   if (signal.aborted) return new Map();
-  const groupingStartedAt = performance.now();
-  // #region debug-point D:grouping-start
-  reportPhotoAnalysisDebug("D", "photoAnalysis.ts:grouping:start", "grouping phase started", {
-    total: entries.length,
-    finalizedByPathSize: finalizedByPath.size,
-    focusPhaseElapsedMs: Math.round(groupingStartedAt - focusPhaseStartedAt),
-  });
-  // #endregion
   onUpdate(
     {
       completed: entries.length,
@@ -817,15 +719,6 @@ export async function analyzePhotoEntries(
   await yieldToBrowser();
 
   const finalRecords = createPhotoAnalysisRecords(entries, finalizedByPath);
-  // #region debug-point D:grouping-finish
-  reportPhotoAnalysisDebug("D", "photoAnalysis.ts:grouping:finish", "grouping phase finished", {
-    total: entries.length,
-    finalRecords: finalRecords.size,
-    groupAssignments: Array.from(finalRecords.values()).filter((record) => record.groupId !== null).length,
-    groupingElapsedMs: Math.round(performance.now() - groupingStartedAt),
-    totalElapsedMs: Math.round(performance.now() - analysisStartedAt),
-  });
-  // #endregion
   onUpdate(
     {
       completed: entries.length,
@@ -845,16 +738,19 @@ function createPhotoAnalysisRecords(
   featuresByPath: Map<string, RawPhotoFeatures>,
   includeGroups = true
 ): Map<string, PhotoAnalysisRecord> {
-  const groups = includeGroups
-    ? buildGroups(entries, featuresByPath)
-    : new Map<string, number | null>();
-  const result = new Map<string, PhotoAnalysisRecord>();
+  const featuresInFolderOrder: RawPhotoFeatures[] = [];
   for (const item of entries) {
     const features = featuresByPath.get(item.entry.path);
-    if (!features) continue;
-    result.set(item.entry.path, {
+    if (features) featuresInFolderOrder.push(features);
+  }
+  const groups = includeGroups
+    ? groupPhotoFeatures(featuresInFolderOrder)
+    : new Map<string, number | null>();
+  const result = new Map<string, PhotoAnalysisRecord>();
+  for (const features of featuresInFolderOrder) {
+    result.set(features.path, {
       ...features,
-      groupId: groups.get(item.entry.path) ?? null,
+      groupId: groups.get(features.path) ?? null,
     });
   }
   return result;

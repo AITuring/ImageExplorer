@@ -24,11 +24,7 @@ interface PhotoAnalysisState {
   progress: PhotoAnalysisProgress;
 }
 
-export function usePhotoAnalysis(
-  entries: FileEntry[],
-  enabled: boolean,
-  scopePath?: string
-) {
+export function usePhotoAnalysis(entries: FileEntry[], enabled: boolean, scopePath?: string) {
   const [state, setState] = useState<PhotoAnalysisState>({
     signature: "",
     records: EMPTY_RECORDS,
@@ -40,11 +36,25 @@ export function usePhotoAnalysis(
     stateRef.current = state;
   }, [state]);
 
-  const analysisEntries = useMemo(() => (enabled ? getPhotoAnalysisEntries(entries) : []), [entries, enabled]);
+  const analysisEntries = useMemo(
+    () => (enabled ? getPhotoAnalysisEntries(entries) : []),
+    [enabled, entries]
+  );
   const analysisSignature = useMemo(
-    () => analysisEntries.map((item) => item.key).join("\u001f"),
+    // Directory refreshes are allowed to return the same files in a different
+    // order. The analysis is path-keyed, so order alone must not cancel and
+    // restart an otherwise identical run.
+    () =>
+      analysisEntries
+        .map((item) => item.key)
+        .sort()
+        .join("\u001f"),
     [analysisEntries]
   );
+  const analysisEntriesRef = useRef(analysisEntries);
+  useEffect(() => {
+    analysisEntriesRef.current = analysisEntries;
+  }, [analysisEntries]);
   const visibleState: PhotoAnalysisState =
     state.signature === analysisSignature
       ? state
@@ -102,14 +112,17 @@ export function usePhotoAnalysis(
   useEffect(() => {
     const generation = ++generationRef.current;
     const controller = new AbortController();
+    const entriesForAnalysis = analysisEntriesRef.current;
     const currentState = stateRef.current;
     const existingRecords =
       currentState.signature === analysisSignature ? currentState.records : EMPTY_RECORDS;
-    const completedBaseline = analysisEntries.reduce(
+    const completedBaseline = entriesForAnalysis.reduce(
       (count, item) => (existingRecords.has(item.entry.path) ? count + 1 : count),
       0
     );
-    const entriesToProcess = analysisEntries.filter((item) => !existingRecords.has(item.entry.path));
+    const entriesToProcess = entriesForAnalysis.filter(
+      (item) => !existingRecords.has(item.entry.path)
+    );
 
     if (!enabled) {
       return () => controller.abort();
@@ -118,8 +131,8 @@ export function usePhotoAnalysis(
     const fullAnalysisComplete =
       currentState.signature === analysisSignature &&
       !currentState.progress.isAnalyzing &&
-      currentState.progress.completed === analysisEntries.length &&
-      currentState.progress.total === analysisEntries.length;
+      currentState.progress.completed === entriesForAnalysis.length &&
+      currentState.progress.total === entriesForAnalysis.length;
 
     if (entriesToProcess.length === 0 || fullAnalysisComplete) {
       return () => controller.abort();
@@ -130,33 +143,35 @@ export function usePhotoAnalysis(
       partialRecords: Map<string, PhotoAnalysisRecord>
     ) => {
       if (generation !== generationRef.current || controller.signal.aborted) return;
-      setState((current) => {
-        const records = new Map(
-          current.signature === analysisSignature ? current.records : EMPTY_RECORDS
-        );
-        partialRecords.forEach((record, path) => records.set(path, record));
-        const mergedStageCompleted =
-          progress.stage === "extracting-features" || progress.stage === "estimating-focus"
-            ? Math.min(analysisEntries.length, completedBaseline + progress.stageCompleted)
-            : progress.stageCompleted;
-        return {
-          signature: analysisSignature,
-          records,
-          progress: {
-            completed:
-              progress.stage === "extracting-features" || progress.stage === "estimating-focus"
-                ? mergedStageCompleted
-                : analysisEntries.length,
-            total: analysisEntries.length,
-            isAnalyzing: true,
-            stage: progress.stage,
-            stageCompleted: mergedStageCompleted,
-            stageTotal:
-              progress.stage === "extracting-features" || progress.stage === "estimating-focus"
-                ? analysisEntries.length
-                : progress.stageTotal,
-          },
-        };
+      startTransition(() => {
+        setState((current) => {
+          const records = new Map(
+            current.signature === analysisSignature ? current.records : EMPTY_RECORDS
+          );
+          partialRecords.forEach((record, path) => records.set(path, record));
+          const mergedStageCompleted =
+            progress.stage === "extracting-features" || progress.stage === "estimating-focus"
+              ? Math.min(entriesForAnalysis.length, completedBaseline + progress.stageCompleted)
+              : progress.stageCompleted;
+          return {
+            signature: analysisSignature,
+            records,
+            progress: {
+              completed:
+                progress.stage === "extracting-features" || progress.stage === "estimating-focus"
+                  ? mergedStageCompleted
+                  : entriesForAnalysis.length,
+              total: entriesForAnalysis.length,
+              isAnalyzing: true,
+              stage: progress.stage,
+              stageCompleted: mergedStageCompleted,
+              stageTotal:
+                progress.stage === "extracting-features" || progress.stage === "estimating-focus"
+                  ? entriesForAnalysis.length
+                  : progress.stageTotal,
+            },
+          };
+        });
       });
     };
 
@@ -174,12 +189,12 @@ export function usePhotoAnalysis(
                 signature: analysisSignature,
                 records,
                 progress: {
-                  completed: analysisEntries.length,
-                  total: analysisEntries.length,
+                  completed: entriesForAnalysis.length,
+                  total: entriesForAnalysis.length,
                   isAnalyzing: false,
                   stage: "done",
-                  stageCompleted: analysisEntries.length,
-                  stageTotal: analysisEntries.length,
+                  stageCompleted: entriesForAnalysis.length,
+                  stageTotal: entriesForAnalysis.length,
                 },
               };
             });
@@ -193,11 +208,11 @@ export function usePhotoAnalysis(
               records: current.signature === analysisSignature ? current.records : EMPTY_RECORDS,
               progress: {
                 completed: completedBaseline,
-                total: analysisEntries.length,
+                total: entriesForAnalysis.length,
                 isAnalyzing: false,
                 stage: completedBaseline > 0 ? "done" : "extracting-features",
                 stageCompleted: completedBaseline,
-                stageTotal: analysisEntries.length,
+                stageTotal: entriesForAnalysis.length,
               },
             }));
           }
@@ -208,12 +223,7 @@ export function usePhotoAnalysis(
       window.clearTimeout(startTimer);
       controller.abort();
     };
-  }, [
-    analysisEntries,
-    analysisEntries.length,
-    analysisSignature,
-    enabled,
-  ]);
+  }, [analysisSignature, enabled]);
 
   return { records: visibleState.records, progress: visibleState.progress };
 }

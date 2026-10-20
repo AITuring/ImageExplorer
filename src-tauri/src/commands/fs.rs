@@ -276,19 +276,32 @@ pub struct FileEntry {
 }
 
 #[tauri::command]
-pub fn get_entries(path: String) -> Result<Vec<FileEntry>, String> {
-    // 先检查缓存
-    if let Some(cached) = crate::cache::get_dir_cache(&path) {
-        return Ok(cached);
+pub async fn get_entries(path: String) -> Result<Vec<FileEntry>, String> {
+    // Directory scans can block for seconds on sleeping or disconnected
+    // external volumes. Use a detached filesystem thread instead of Tokio's
+    // blocking pool: the window remains responsive, and a stuck volume cannot
+    // keep the async runtime alive when the application exits.
+    let (result_sender, mut result_receiver) = tauri::async_runtime::channel(1);
+    std::thread::Builder::new()
+        .name("imageexplorer-directory-scan".to_string())
+        .spawn(move || {
+            let result = (|| {
+                if let Some(cached) = crate::cache::get_dir_cache(&path) {
+                    return Ok(cached);
+                }
+
+                let entries = load_directory_entries(&path)?;
+                crate::cache::set_dir_cache(path, entries.clone());
+                Ok(entries)
+            })();
+            let _ = result_sender.blocking_send(result);
+        })
+        .map_err(|error| format!("Failed to start directory scan: {error}"))?;
+
+    match result_receiver.recv().await {
+        Some(result) => result,
+        None => Err("Directory scan stopped unexpectedly".to_string()),
     }
-
-    // 缓存未命中，执行实际加载
-    let entries = load_directory_entries(&path)?;
-
-    // 存入缓存
-    crate::cache::set_dir_cache(path, entries.clone());
-
-    Ok(entries)
 }
 
 /// 实际加载目录内容（内部使用）
@@ -312,20 +325,30 @@ fn load_directory_entries(path: &str) -> Result<Vec<FileEntry>, String> {
 
                 let name = entry.file_name().to_string_lossy().to_string();
 
-                let is_dir = file_path.is_dir();
-
                 // Use symlink metadata so the UI can identify links instead of
-                // silently treating them as their target.
+                // silently treating them as their target. DirEntry::metadata
+                // avoids the separate `is_dir` stat that previously doubled
+                // metadata I/O for every regular item on external volumes.
                 let metadata = entry
-                    .path()
-                    .symlink_metadata()
+                    .metadata()
                     .ok()
+                    .or_else(|| file_path.symlink_metadata().ok())
                     .or_else(|| fs::metadata(&file_path).ok());
 
                 let is_symlink = metadata
                     .as_ref()
                     .map(|value| value.file_type().is_symlink())
                     .unwrap_or(false);
+                let is_dir = if is_symlink {
+                    fs::metadata(&file_path)
+                        .map(|value| value.is_dir())
+                        .unwrap_or(false)
+                } else {
+                    metadata
+                        .as_ref()
+                        .map(|value| value.is_dir())
+                        .unwrap_or(false)
+                };
                 let symlink_target = if is_symlink {
                     fs::read_link(&file_path)
                         .ok()
@@ -397,11 +420,9 @@ fn load_directory_entries(path: &str) -> Result<Vec<FileEntry>, String> {
     }
 
     // Sort: directories first, then alphabetically
-    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
-        (true, false) => std::cmp::Ordering::Less,
-        (false, true) => std::cmp::Ordering::Greater,
-        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-    });
+    // Cache lowercase keys once instead of allocating them for every
+    // comparison in the O(n log n) sort.
+    entries.sort_by_cached_key(|entry| (!entry.is_dir, entry.name.to_lowercase()));
 
     Ok(entries)
 }
@@ -2753,8 +2774,9 @@ pub fn batch_rename(
 #[cfg(test)]
 mod file_entry_tests {
     use super::{
-        batch_rename, copy_path_resumable, get_file_entry, is_alias_entry, move_path_resumable,
-        package_type, partial_path_for, rename, rename_without_replace, validate_file_name,
+        batch_rename, copy_path_resumable, get_file_entry, is_alias_entry, load_directory_entries,
+        move_path_resumable, package_type, partial_path_for, rename, rename_without_replace,
+        validate_file_name,
     };
     use std::fs;
     use std::path::Path;
@@ -2819,6 +2841,19 @@ mod file_entry_tests {
                 .is_some_and(|target| target.ends_with(".hidden.txt")));
             assert!(!link.is_dir);
         }
+
+        let listed = load_directory_entries(root.to_string_lossy().as_ref())
+            .expect("enumerate file-entry fixture");
+        assert_eq!(
+            listed.first().map(|entry| entry.name.as_str()),
+            Some("Editor.app")
+        );
+        assert!(listed.iter().any(|entry| entry.name == ".hidden.txt"));
+        #[cfg(unix)]
+        assert!(listed
+            .iter()
+            .find(|entry| entry.name == "file-link")
+            .is_some_and(|entry| entry.is_symlink && !entry.is_dir));
 
         fs::remove_dir_all(root).expect("remove test root");
     }
