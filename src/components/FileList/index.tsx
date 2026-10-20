@@ -58,7 +58,9 @@ function makeDragHandlers(
     onDragOver: (e: React.DragEvent) => {
       if (!entry.is_dir) return;
       e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
+      // The native source advertises Copy so external apps can never move the
+      // original file. An accepted in-app drop still calls handleMove below.
+      e.dataTransfer.dropEffect = "copy";
       if (isGrid) {
         e.currentTarget.querySelector(".group")?.classList.add("bg-primary/20", "rounded-lg");
       } else {
@@ -78,6 +80,7 @@ function makeDragHandlers(
     onDrop: (e: React.DragEvent) => {
       if (!entry.is_dir) return;
       e.preventDefault();
+      e.stopPropagation();
       if (isGrid) {
         e.currentTarget.querySelector(".group")?.classList.remove("bg-primary/20", "rounded-lg");
       } else {
@@ -386,7 +389,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       }
       if (currentPath.startsWith(SMART_FOLDER_PREFIX)) return;
       e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
+      e.dataTransfer.dropEffect = "copy";
       setIsFileDragOver(true);
     },
     [currentPath]
@@ -537,6 +540,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
               onClick={(entry, index, e) => handleClick(entry, index, e)}
               onDoubleClick={handleOpen}
               onNavigate={(path) => onNavigate(path)}
+              handleMove={handleMove}
               showHiddenFiles={showHiddenFiles}
             />
           ) : viewMode === "gallery" ? (

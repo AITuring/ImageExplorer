@@ -4,6 +4,8 @@ import { Folder, File, ChevronRight } from "lucide-react";
 import { FileEntry } from "@/types";
 import { SmartIcon } from "@/components/SmartIcon";
 import { filterHiddenEntries } from "@/utils/file";
+import { readFileDragData } from "@/lib/dragData";
+import { makeNativeFileDragGestureHandlers } from "@/lib/nativeFileDragGesture";
 
 interface FileColumnViewProps {
   currentPath: string;
@@ -11,6 +13,7 @@ interface FileColumnViewProps {
   onClick: (entry: FileEntry, index: number, e: React.MouseEvent) => void;
   onDoubleClick: (entry: FileEntry) => void;
   onNavigate: (path: string) => void;
+  handleMove: (src: string, dest: string) => void;
   showHiddenFiles: boolean;
 }
 
@@ -26,6 +29,7 @@ export function FileColumnView({
   onClick,
   onDoubleClick,
   onNavigate,
+  handleMove,
   showHiddenFiles,
 }: FileColumnViewProps) {
   const [columns, setColumns] = useState<ColumnData[]>([]);
@@ -108,14 +112,42 @@ export function FileColumnView({
             {column.entries.map((entry, entryIdx) => {
               const isSelected = selectedPaths.includes(entry.path);
               const isColumnSelected = column.selectedPath === entry.path;
+              const dragPaths = isSelected ? selectedPaths : [entry.path];
+              const nativeDragHandlers = makeNativeFileDragGestureHandlers(dragPaths);
               return (
                 <div
                   key={entry.path}
+                  {...nativeDragHandlers}
                   className={`flex cursor-default items-center gap-2 px-2 py-1.5 text-sm transition-colors ${
                     isSelected || isColumnSelected ? "bg-accent" : "hover:bg-accent/50"
                   }`}
                   onClick={(e) => handleSelect(colIdx, entry, entryIdx, e)}
                   onDoubleClick={() => handleDoubleClick(entry)}
+                  onDragOver={(event) => {
+                    if (!entry.is_dir) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "copy";
+                    event.currentTarget.classList.add("bg-primary/20");
+                  }}
+                  onDragLeave={(event) => {
+                    if (
+                      !entry.is_dir ||
+                      event.currentTarget.contains(event.relatedTarget as Node)
+                    ) {
+                      return;
+                    }
+                    event.currentTarget.classList.remove("bg-primary/20");
+                  }}
+                  onDrop={(event) => {
+                    if (!entry.is_dir) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    event.currentTarget.classList.remove("bg-primary/20");
+                    const data = readFileDragData(event.dataTransfer);
+                    data?.paths
+                      .filter((path) => path !== entry.path)
+                      .forEach((path) => handleMove(path, entry.path));
+                  }}
                 >
                   <SmartIcon
                     icon={entry.is_dir ? Folder : File}

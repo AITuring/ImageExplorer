@@ -91,7 +91,7 @@ export function FileGalleryView({
     const el = scrollRef.current;
     if (!el) return;
     columnsRef.current = Math.max(1, Math.floor(el.clientWidth / (ITEM_SIZE + GAP)));
-  }, []);
+  }, [scrollRef]);
 
   useEffect(() => {
     updateColumns();
@@ -100,7 +100,7 @@ export function FileGalleryView({
     const observer = new ResizeObserver(updateColumns);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [updateColumns]);
+  }, [scrollRef, updateColumns]);
 
   const rowCount = Math.ceil(sortedEntries.length / columnsRef.current);
 
@@ -151,11 +151,12 @@ export function FileGalleryView({
                       onDragOver={(e) => {
                         if (!entry.is_dir) return;
                         e.preventDefault();
-                        e.dataTransfer.dropEffect = "move";
+                        e.dataTransfer.dropEffect = "copy";
                       }}
                       onDrop={(e) => {
                         if (!entry.is_dir) return;
                         e.preventDefault();
+                        e.stopPropagation();
                         try {
                           const data = readFileDragData(e.dataTransfer);
                           if (data) {

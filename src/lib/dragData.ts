@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 export const FILE_DRAG_MIME = "application/x-imageexplorer-file";
 
@@ -7,9 +8,60 @@ export interface FileDragData {
   paths: string[];
 }
 
+interface ActiveNativeFileDrag {
+  sessionId: string;
+  paths: string[];
+}
+
+interface NativeFileDragEnded {
+  sessionId: string;
+}
+
+const NATIVE_FILE_DRAG_ENDED_EVENT = "native-file-drag-ended";
+const ACTIVE_DRAG_EXPIRY_MS = 30_000;
+const DRAG_END_GRACE_PERIOD_MS = 250;
+
+let activeNativeFileDrag: ActiveNativeFileDrag | null = null;
+let activeDragExpiry: ReturnType<typeof setTimeout> | null = null;
+
 function uniquePaths(paths: string[]) {
   return [...new Set(paths.filter((path) => path.length > 0))];
 }
+
+function createDragSessionId() {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+    byte.toString(16).padStart(2, "0")
+  ).join("");
+}
+
+function clearActiveNativeFileDrag(sessionId?: string) {
+  if (sessionId && activeNativeFileDrag?.sessionId !== sessionId) return;
+  activeNativeFileDrag = null;
+  if (activeDragExpiry) {
+    clearTimeout(activeDragExpiry);
+    activeDragExpiry = null;
+  }
+}
+
+function setActiveNativeFileDrag(sessionId: string, paths: string[]) {
+  clearActiveNativeFileDrag();
+  activeNativeFileDrag = { sessionId, paths };
+  activeDragExpiry = setTimeout(() => {
+    clearActiveNativeFileDrag(sessionId);
+  }, ACTIVE_DRAG_EXPIRY_MS);
+}
+
+void listen<NativeFileDragEnded>(NATIVE_FILE_DRAG_ENDED_EVENT, ({ payload }) => {
+  // AppKit finishes the destination's drop callback before notifying the
+  // source. Keep a short guard for the WebView event bridge so an internal
+  // drop can still recover the source paths.
+  setTimeout(() => {
+    clearActiveNativeFileDrag(payload.sessionId);
+  }, DRAG_END_GRACE_PERIOD_MS);
+}).catch((error) => {
+  console.error("Failed to listen for native file drag completion", error);
+});
 
 /** Return the rendered thumbnail for the native drag image when it is ready. */
 export function getFileDragIcon(container: Element) {
@@ -18,8 +70,25 @@ export function getFileDragIcon(container: Element) {
   );
 }
 
-export function startNativeFileDrag(paths: string[], icon: string | null) {
-  return invoke("start_native_file_drag", { paths: uniquePaths(paths), icon });
+export async function startNativeFileDrag(paths: string[], icon: string | null) {
+  const normalizedPaths = uniquePaths(paths);
+  if (normalizedPaths.length === 0) {
+    throw new Error("No files were provided for dragging");
+  }
+
+  const sessionId = createDragSessionId();
+  setActiveNativeFileDrag(sessionId, normalizedPaths);
+
+  try {
+    await invoke("start_native_file_drag", {
+      paths: normalizedPaths,
+      icon,
+      sessionId,
+    });
+  } catch (error) {
+    clearActiveNativeFileDrag(sessionId);
+    throw error;
+  }
 }
 
 function parseSerializedFileDragData(raw: string): FileDragData | null {
@@ -80,5 +149,13 @@ export function readFileDragData(dataTransfer: DataTransfer): FileDragData | nul
   const paths = parsePlainPathList(
     dataTransfer.getData("text/uri-list") || dataTransfer.getData("text/plain")
   );
-  return paths.length > 0 ? { kind: "file", paths } : null;
+  if (paths.length > 0) return { kind: "file", paths };
+
+  if (activeNativeFileDrag) {
+    const activePaths = activeNativeFileDrag.paths;
+    clearActiveNativeFileDrag(activeNativeFileDrag.sessionId);
+    return { kind: "file", paths: activePaths };
+  }
+
+  return null;
 }

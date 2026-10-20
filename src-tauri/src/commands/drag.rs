@@ -1,10 +1,19 @@
 use base64::Engine;
+use serde::Serialize;
 use std::path::PathBuf;
-use tauri::Window;
+use tauri::{AppHandle, Emitter, Window};
 
 const MAX_DRAG_PATHS: usize = 200;
 const MAX_DRAG_ICON_BASE64_BYTES: usize = 8 * 1024 * 1024;
 const FALLBACK_DRAG_ICON: &[u8] = include_bytes!("../../icons/128x128.png");
+const NATIVE_FILE_DRAG_ENDED_EVENT: &str = "native-file-drag-ended";
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeFileDragEnded {
+    session_id: String,
+    result: &'static str,
+}
 
 fn validated_drag_paths(paths: Vec<String>) -> Result<Vec<PathBuf>, String> {
     if paths.is_empty() {
@@ -55,10 +64,16 @@ fn decode_drag_icon(icon: Option<String>) -> Result<Vec<u8>, String> {
 /// file URLs instead of WebKit's private representation of a DOM element.
 #[tauri::command]
 pub fn start_native_file_drag(
+    app: AppHandle,
     window: Window,
     paths: Vec<String>,
     icon: Option<String>,
+    session_id: String,
 ) -> Result<(), String> {
+    if session_id.is_empty() || session_id.len() > 128 {
+        return Err("Invalid native drag session id".to_string());
+    }
+
     let paths = validated_drag_paths(paths)?;
     let icon = decode_drag_icon(icon)?;
     let item = drag::DragItem::Files(paths);
@@ -67,6 +82,19 @@ pub fn start_native_file_drag(
         mode: drag::DragMode::Copy,
         ..Default::default()
     };
+    let on_drag_end = move |result: drag::DragResult, _cursor_position| {
+        let result = match result {
+            drag::DragResult::Dropped => "dropped",
+            drag::DragResult::Cancel => "cancelled",
+        };
+        let _ = app.emit(
+            NATIVE_FILE_DRAG_ENDED_EVENT,
+            NativeFileDragEnded {
+                session_id: session_id.clone(),
+                result,
+            },
+        );
+    };
 
     // Keep this command synchronous: WebKit starts its own DOM drag as soon as
     // the dragstart handler returns. Starting the native session inline lets it
@@ -74,23 +102,11 @@ pub fn start_native_file_drag(
     #[cfg(target_os = "linux")]
     let result = {
         let gtk_window = window.gtk_window().map_err(|error| error.to_string())?;
-        drag::start_drag(
-            &gtk_window,
-            item,
-            image,
-            |_result, _cursor_position| {},
-            options,
-        )
+        drag::start_drag(&gtk_window, item, image, on_drag_end, options)
     };
 
     #[cfg(not(target_os = "linux"))]
-    let result = drag::start_drag(
-        &window,
-        item,
-        image,
-        |_result, _cursor_position| {},
-        options,
-    );
+    let result = drag::start_drag(&window, item, image, on_drag_end, options);
 
     result.map_err(|error| error.to_string())
 }
