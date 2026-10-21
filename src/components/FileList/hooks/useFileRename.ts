@@ -2,6 +2,7 @@ import { useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { FileEntry } from "@/types";
+import { registerKeyboardCommands } from "@/lib/keyboardShortcuts";
 
 interface UseFileRenameOptions {
   entries: FileEntry[];
@@ -75,15 +76,22 @@ export function useFileRename({
 
   // 注册重命名快捷键 (Enter)
   useEffect(() => {
-    const handleRenameShortcut = (e: KeyboardEvent) => {
-      if (e.key === "Enter" && selectedPath && !editingPath) {
-        e.preventDefault();
-        const entry = entries.find((e) => e.path === selectedPath);
-        if (entry && !entry.readonly) handleStartRename(entry);
-      }
-    };
-    window.addEventListener("keydown", handleRenameShortcut);
-    return () => window.removeEventListener("keydown", handleRenameShortcut);
+    return registerKeyboardCommands([
+      {
+        id: "file.rename",
+        scope: "file-view",
+        priority: 5,
+        matches: (event) => event.key === "Enter",
+        enabled: () => {
+          const entry = entries.find((item) => item.path === selectedPath);
+          return Boolean(selectedPath && !editingPath && entry && !entry.readonly);
+        },
+        run: () => {
+          const entry = entries.find((item) => item.path === selectedPath);
+          if (entry && !entry.readonly) handleStartRename(entry);
+        },
+      },
+    ]);
   }, [selectedPath, editingPath, entries, handleStartRename]);
 
   // 窗口失焦时取消重命名

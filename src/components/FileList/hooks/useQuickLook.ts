@@ -3,6 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { FileEntry } from "@/types";
 import { RAW_IMAGE_EXTENSIONS } from "@/constants/fileTypes";
 import { isImageFile } from "@/utils/file";
+import {
+  isInteractiveKeyboardTarget,
+  registerKeyboardCommands,
+} from "@/lib/keyboardShortcuts";
 
 interface UseQuickLookOptions {
   selectedPath: string | null;
@@ -137,18 +141,19 @@ export function useQuickLook({
 
   // Quick Look 快捷键 (Space)
   useEffect(() => {
-    const handleQuickLookShortcut = (e: KeyboardEvent) => {
-      // 忽略按键重复事件
-      if (e.repeat) return;
-
-      if (e.code === "Space" && !editingPath) {
-        e.preventDefault();
-        toggleQuickLook();
-      }
-    };
-    window.addEventListener("keydown", handleQuickLookShortcut);
-    return () => window.removeEventListener("keydown", handleQuickLookShortcut);
-  }, [editingPath, toggleQuickLook]);
+    return registerKeyboardCommands([
+      {
+        id: "preview.toggle",
+        scope: "file-view",
+        matches: (event) => event.code === "Space" && !event.repeat,
+        enabled: () =>
+          !editingPath &&
+          Boolean(selectedPath) &&
+          !isInteractiveKeyboardTarget(document.activeElement),
+        run: () => toggleQuickLook(),
+      },
+    ]);
+  }, [editingPath, selectedPath, toggleQuickLook]);
 
   return {
     quickLookEntry,

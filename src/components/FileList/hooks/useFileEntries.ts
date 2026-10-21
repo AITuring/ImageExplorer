@@ -12,7 +12,7 @@ interface UseFileEntriesResult {
   showHiddenFiles: boolean;
   loading: boolean;
   error: string | null;
-  loadEntries: (showLoading?: boolean) => Promise<void>;
+  loadEntries: (showLoading?: boolean, forceRefresh?: boolean) => Promise<void>;
 }
 
 export function useFileEntries(currentPath: string): UseFileEntriesResult {
@@ -30,7 +30,7 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
 
   // 加载目录内容
   const loadEntries = useCallback(
-    async (showLoading = true) => {
+    async (showLoading = true, forceRefresh = false) => {
       const requestId = ++loadRequestRef.current;
       if (showLoading) setLoading(true);
       setError(null);
@@ -40,7 +40,10 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
           const category = currentPath.replace(SMART_FOLDER_PREFIX, "");
           result = await invoke<FileEntry[]>("get_smart_files", { category });
         } else {
-          result = await invoke<FileEntry[]>("get_entries", { path: currentPath });
+          result = await invoke<FileEntry[]>("get_entries", {
+            path: currentPath,
+            forceRefresh,
+          });
         }
         // 跨窗口移动可能让旧请求在新请求之后返回；只接受最后一次加载结果，
         // 避免旧目录快照把已经完成的移动重新画回列表。
@@ -72,6 +75,7 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
     let unlistenDirChangeFn: (() => void) | null = null;
     let unlistenIndexReadyFn: (() => void) | null = null;
     let indexTimer: ReturnType<typeof setTimeout> | null = null;
+    let watchStarted = false;
 
     // 优先使用缓存
     const cached = getCachedEntries(currentPath);
@@ -86,10 +90,14 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
 
     const setup = async () => {
       // 先注册监听器，再启动 watch，避免遗漏事件
-      unlistenDirChangeFn = await listen<string>("dir-change", (event) => {
+      const unlistenDirChange = await listen<string>("dir-change", (event) => {
         if (cancelled) return;
         // 只响应当前目录的变化
         if (event.payload === currentPath) {
+          // Discard scans that began before this event, then reload after the
+          // watcher burst settles.
+          loadRequestRef.current += 1;
+          setLoading(false);
           // 清除缓存
           invalidateCache(currentPath);
           // 防抖：避免短时间内多次刷新
@@ -101,8 +109,13 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
           }, DIR_CHANGE_DEBOUNCE_MS);
         }
       });
+      if (cancelled) {
+        unlistenDirChange();
+        return;
+      }
+      unlistenDirChangeFn = unlistenDirChange;
 
-      unlistenIndexReadyFn = await listen<string>("index-status", (event) => {
+      const unlistenIndexReady = await listen<string>("index-status", (event) => {
         if (cancelled) return;
         if (event.payload === "ready") {
           if (currentPath.startsWith(SMART_FOLDER_PREFIX)) {
@@ -112,10 +125,24 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
           }
         }
       });
+      if (cancelled) {
+        unlistenIndexReady();
+        return;
+      }
+      unlistenIndexReadyFn = unlistenIndexReady;
 
       // 启动目录监听 (仅针对真实路径)
       if (!currentPath.startsWith(SMART_FOLDER_PREFIX)) {
-        invoke("watch_directory", { path: currentPath }).catch(console.error);
+        try {
+          await invoke("watch_directory", { path: currentPath });
+          watchStarted = true;
+          if (cancelled) {
+            watchStarted = false;
+            invoke("unwatch_directory", { path: currentPath }).catch(() => undefined);
+          }
+        } catch (error) {
+          if (!cancelled) console.error("Failed to watch directory:", error);
+        }
       }
     };
 
@@ -123,6 +150,8 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
 
     return () => {
       cancelled = true;
+      // Requests from the previous directory cannot update the new location.
+      loadRequestRef.current += 1;
       unlistenDirChangeFn?.();
       unlistenIndexReadyFn?.();
       if (debounceRef.current) {
@@ -131,7 +160,8 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
       if (indexTimer) {
         clearTimeout(indexTimer);
       }
-      if (!currentPath.startsWith(SMART_FOLDER_PREFIX)) {
+      if (watchStarted) {
+        watchStarted = false;
         invoke("unwatch_directory", { path: currentPath }).catch(() => undefined);
       }
     };

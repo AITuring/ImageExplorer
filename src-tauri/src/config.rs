@@ -47,9 +47,28 @@ pub const INDEX_EXCLUDE_PATTERNS: &[&str] = &[
     "/target/release/",
 ];
 
-/// 文件监听时排除的目录模式
-pub const WATCHER_EXCLUDE_PATTERNS: &[&str] = &[
-    "/.", // 隐藏文件/目录
-    "/Library/",
-    "/node_modules/",
-];
+/// Index scans and incremental updates must apply the same path exclusions.
+/// Hidden entries remain indexable; visibility is a separate file attribute.
+pub fn is_index_excluded(path: &std::path::Path) -> bool {
+    let path = path.to_string_lossy().replace('\\', "/");
+    INDEX_EXCLUDE_PATTERNS
+        .iter()
+        .any(|pattern| path.contains(pattern) || path.ends_with(pattern.trim_end_matches('/')))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_index_excluded;
+    use std::path::Path;
+
+    #[test]
+    fn excluded_directory_roots_and_descendants_share_the_same_boundary() {
+        assert!(is_index_excluded(Path::new("/tmp/project/node_modules")));
+        assert!(is_index_excluded(Path::new(
+            "/tmp/project/node_modules/pkg/file.js"
+        )));
+        assert!(!is_index_excluded(Path::new(
+            "/tmp/project/my_node_modules/file.js"
+        )));
+    }
+}

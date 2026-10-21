@@ -32,12 +32,18 @@
     "section_file": "File Operations",
     "new_file": "New File",
     "new_folder": "New Folder",
+    "rename": "Rename Selected Item",
+    "open": "Open Selected Item",
     "copy": "Copy",
     "cut": "Cut",
     "paste": "Paste",
+    "move_paste": "Move Copied Item",
     "delete": "Move to Trash",
     "select_all": "Select All",
     "section_navigation": "Navigation",
+    "change_view": "Change View",
+    "legacy_tab_number_shortcuts": "Use ⌘1–9 to switch tabs",
+    "legacy_tab_number_shortcuts_desc": "Compatibility mode overrides the default ⌘1–4 view shortcuts.",
     "quick_look": "Quick Look"
   },
   "advanced": {

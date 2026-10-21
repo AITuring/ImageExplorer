@@ -140,7 +140,10 @@ function FolderTreeItem({
   // 刷新子目录列表
   const refreshChildren = useCallback(async () => {
     try {
-      const entries = await invoke<FileEntry[]>("get_entries", { path: item.path });
+      const entries = await invoke<FileEntry[]>("get_entries", {
+        path: item.path,
+        forceRefresh: false,
+      });
       const subDirs = filterHiddenEntries(entries, showHiddenFiles)
         .filter((e) => e.is_dir)
         .map((e) => ({ name: e.name, path: e.path }));
@@ -196,7 +199,10 @@ function FolderTreeItem({
     if (!hasLoaded) {
       setIsLoading(true);
       try {
-        const entries = await invoke<FileEntry[]>("get_entries", { path: item.path });
+        const entries = await invoke<FileEntry[]>("get_entries", {
+          path: item.path,
+          forceRefresh: false,
+        });
         const subDirs = filterHiddenEntries(entries, showHiddenFiles)
           .filter((e) => e.is_dir)
           .map((e) => ({ name: e.name, path: e.path }));

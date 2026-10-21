@@ -1,13 +1,19 @@
 import { useEffect, useRef } from "react";
 import { FileEntry } from "@/types";
+import type { ViewMode } from "@/stores/viewMode";
 import { useClipboard } from "@/stores/clipboard";
+import { registerKeyboardCommands } from "@/lib/keyboardShortcuts";
 
 interface UseFileKeyboardShortcutsOptions {
-  editingPath: string | null;
   selectedPath: string | null;
   selectedPaths: string[];
   sortedEntries: FileEntry[];
   entries: FileEntry[];
+  viewMode: ViewMode;
+  gridColumns: number;
+  legacyTabNumberShortcuts: boolean;
+  setViewMode: (mode: ViewMode) => void;
+  openEntry: (entry: FileEntry) => void;
   // 选择操作
   selectAll: (entries: FileEntry[]) => void;
   selectSingle: (path: string, index: number) => void;
@@ -17,25 +23,30 @@ interface UseFileKeyboardShortcutsOptions {
   handleCopy: (entries: FileEntry[]) => void;
   handleCut: (entries: FileEntry[]) => void;
   handlePaste: () => Promise<void>;
+  handlePasteAsMove: () => Promise<void>;
   handleDelete: (entries: FileEntry[]) => Promise<void>;
   handleNewFile: () => Promise<void>;
   handleNewFolder: () => Promise<void>;
 }
 
-function isTextInputTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
+function isModifierPressed(event: KeyboardEvent): boolean {
+  return event.metaKey || event.ctrlKey;
+}
+
+function matchesModifiedKey(event: KeyboardEvent, key: string): boolean {
   return (
-    target instanceof HTMLInputElement ||
-    target instanceof HTMLTextAreaElement ||
-    target instanceof HTMLSelectElement ||
-    target.isContentEditable
+    isModifierPressed(event) &&
+    !event.shiftKey &&
+    !event.altKey &&
+    event.key.toLowerCase() === key
   );
 }
 
 export function useFileKeyboardShortcuts(options: UseFileKeyboardShortcutsOptions) {
   const clipboard = useClipboard();
 
-  // 使用 ref 存储最新的 options，避免频繁重注册事件监听器
+  // Store current values so registered commands stay in sync without rebinding
+  // the shared keyboard dispatcher on every selection or directory change.
   const optionsRef = useRef(options);
   const clipboardRef = useRef(clipboard);
 
@@ -44,101 +55,174 @@ export function useFileKeyboardShortcuts(options: UseFileKeyboardShortcutsOption
     clipboardRef.current = clipboard;
   });
 
-  useEffect(() => {
-    const handleKeyDown = async (e: KeyboardEvent) => {
-      const {
-        editingPath,
-        selectedPath,
-        selectedPaths,
-        sortedEntries,
-        entries,
-        selectAll,
-        selectSingle,
-        selectRange,
-        clearSelection,
-        handleCopy,
-        handleCut,
-        handlePaste,
-        handleDelete,
-        handleNewFile,
-        handleNewFolder,
-      } = optionsRef.current;
-
-      // 如果在编辑状态，不处理快捷键
-      if (editingPath) return;
-
-      // 让地址栏、搜索框以及重命名输入框保留浏览器原生的复制、粘贴、
-      // 全选等行为，避免文件列表的全局快捷键抢走 Cmd+C/Cmd+V。
-      if (isTextInputTarget(e.target)) return;
-
-      // Cmd+A 全选
-      if ((e.metaKey || e.ctrlKey) && e.key === "a") {
-        e.preventDefault();
-        selectAll(entries);
-      }
-      // Esc 取消选择
-      if (e.key === "Escape") {
-        e.preventDefault();
-        clearSelection();
-      }
-      // Cmd+Option+N 新建文件（使用 e.code 因为 macOS Option 会改变 e.key 的值）
-      if ((e.metaKey || e.ctrlKey) && e.code === "KeyN" && !e.shiftKey && e.altKey) {
-        e.preventDefault();
-        await handleNewFile();
-      }
-      // Cmd+Shift+N 新建文件夹
-      if ((e.metaKey || e.ctrlKey) && e.key === "n" && e.shiftKey) {
-        e.preventDefault();
-        await handleNewFolder();
-      }
-      // Cmd+C 复制
-      if ((e.metaKey || e.ctrlKey) && e.key === "c" && selectedPaths.length > 0) {
-        e.preventDefault();
-        const selectedEntries = entries.filter((e) => selectedPaths.includes(e.path));
-        if (selectedEntries.length > 0) handleCopy(selectedEntries);
-      }
-      // Cmd+X 剪切
-      if ((e.metaKey || e.ctrlKey) && e.key === "x" && selectedPaths.length > 0) {
-        e.preventDefault();
-        const selectedEntries = entries.filter((e) => selectedPaths.includes(e.path));
-        if (selectedEntries.length > 0) handleCut(selectedEntries);
-      }
-      // Cmd+V 粘贴
-      if ((e.metaKey || e.ctrlKey) && e.key === "v" && clipboardRef.current.hasPending()) {
-        e.preventDefault();
-        await handlePaste();
-      }
-      // Delete 删除
-      if (e.key === "Backspace" && e.metaKey && selectedPaths.length > 0) {
-        e.preventDefault();
-        const selectedEntries = entries.filter((e) => selectedPaths.includes(e.path));
-        if (selectedEntries.length > 0) await handleDelete(selectedEntries);
-      }
-      // 方向键导航
-      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-        e.preventDefault();
-        const currentIndex = selectedPath
-          ? sortedEntries.findIndex((e) => e.path === selectedPath)
-          : -1;
-        let newIndex: number;
-        if (e.key === "ArrowDown") {
-          newIndex = currentIndex < sortedEntries.length - 1 ? currentIndex + 1 : currentIndex;
-        } else {
-          newIndex = currentIndex > 0 ? currentIndex - 1 : 0;
-        }
-        if (newIndex >= 0 && newIndex < sortedEntries.length) {
-          if (e.shiftKey) {
-            // Shift+方向键：扩展选择
-            selectRange(sortedEntries, newIndex);
-          } else {
-            // 普通方向键：单选
-            selectSingle(sortedEntries[newIndex].path, newIndex);
-          }
-        }
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []); // 空依赖数组 — 通过 ref 获取最新值
+  useEffect(
+    () =>
+      registerKeyboardCommands([
+        {
+          id: "file.select-all",
+          scope: "file-view",
+          matches: (event) => matchesModifiedKey(event, "a"),
+          enabled: () => optionsRef.current.sortedEntries.length > 0,
+          run: () => optionsRef.current.selectAll(optionsRef.current.sortedEntries),
+        },
+        {
+          id: "file.clear-selection",
+          scope: "file-view",
+          matches: (event) => event.key === "Escape",
+          enabled: () => optionsRef.current.selectedPaths.length > 0,
+          run: () => optionsRef.current.clearSelection(),
+        },
+        {
+          id: "file.new-file",
+          scope: "file-view",
+          matches: (event) =>
+            isModifierPressed(event) &&
+            event.code === "KeyN" &&
+            event.altKey &&
+            !event.shiftKey,
+          run: () => optionsRef.current.handleNewFile(),
+        },
+        {
+          id: "file.new-folder",
+          scope: "file-view",
+          matches: (event) =>
+            isModifierPressed(event) &&
+            event.key.toLowerCase() === "n" &&
+            event.shiftKey &&
+            !event.altKey,
+          run: () => optionsRef.current.handleNewFolder(),
+        },
+        {
+          id: "file.copy",
+          scope: "file-view",
+          matches: (event) => matchesModifiedKey(event, "c"),
+          enabled: () => optionsRef.current.selectedPaths.length > 0,
+          run: () => {
+            const current = optionsRef.current;
+            const selectedEntries = current.entries.filter((entry) =>
+              current.selectedPaths.includes(entry.path)
+            );
+            if (selectedEntries.length > 0) current.handleCopy(selectedEntries);
+          },
+        },
+        {
+          id: "file.cut",
+          scope: "file-view",
+          matches: (event) => matchesModifiedKey(event, "x"),
+          enabled: () => optionsRef.current.selectedPaths.length > 0,
+          run: () => {
+            const current = optionsRef.current;
+            const selectedEntries = current.entries.filter((entry) =>
+              current.selectedPaths.includes(entry.path)
+            );
+            if (selectedEntries.length > 0) current.handleCut(selectedEntries);
+          },
+        },
+        {
+          id: "file.paste",
+          scope: "file-view",
+          matches: (event) => matchesModifiedKey(event, "v"),
+          enabled: () => clipboardRef.current.hasPending(),
+          run: () => optionsRef.current.handlePaste(),
+        },
+        {
+          id: "file.paste-as-move",
+          scope: "file-view",
+          priority: 1,
+          matches: (event) =>
+            isModifierPressed(event) &&
+            event.code === "KeyV" &&
+            event.altKey &&
+            !event.shiftKey,
+          enabled: () => clipboardRef.current.hasPending(),
+          run: () => optionsRef.current.handlePasteAsMove(),
+        },
+        {
+          id: "file.delete",
+          scope: "file-view",
+          matches: (event) =>
+            isModifierPressed(event) && event.key === "Backspace" && !event.altKey,
+          enabled: () => optionsRef.current.selectedPaths.length > 0,
+          run: () => {
+            const current = optionsRef.current;
+            const selectedEntries = current.entries.filter((entry) =>
+              current.selectedPaths.includes(entry.path)
+            );
+            if (selectedEntries.length > 0) void current.handleDelete(selectedEntries);
+          },
+        },
+        {
+          id: "file.open",
+          scope: "file-view",
+          matches: (event) => matchesModifiedKey(event, "o"),
+          enabled: () => Boolean(optionsRef.current.selectedPath),
+          run: () => {
+            const current = optionsRef.current;
+            const entry = current.entries.find((item) => item.path === current.selectedPath);
+            if (entry) current.openEntry(entry);
+          },
+        },
+        {
+          id: "file.view-mode",
+          scope: "file-view",
+          matches: (event) =>
+            isModifierPressed(event) &&
+            !event.shiftKey &&
+            !event.altKey &&
+            ["1", "2", "3", "4"].includes(event.key),
+          enabled: () => !optionsRef.current.legacyTabNumberShortcuts,
+          run: (event) => {
+            const modes: Record<string, ViewMode> = {
+              "1": "icon",
+              "2": "list",
+              "3": "column",
+              "4": "gallery",
+            };
+            const mode = modes[event.key];
+            if (mode) optionsRef.current.setViewMode(mode);
+          },
+        },
+        {
+          id: "file.move-selection",
+          scope: "file-view",
+          matches: (event) =>
+            !isModifierPressed(event) &&
+            !event.altKey &&
+            (event.key === "ArrowDown" ||
+              event.key === "ArrowUp" ||
+              (optionsRef.current.viewMode === "icon" &&
+                (event.key === "ArrowLeft" || event.key === "ArrowRight"))),
+          enabled: () => optionsRef.current.sortedEntries.length > 0,
+          run: (event) => {
+            const current = optionsRef.current;
+            const currentIndex = current.selectedPath
+              ? current.sortedEntries.findIndex((entry) => entry.path === current.selectedPath)
+              : -1;
+            let step = 0;
+            if (current.viewMode === "icon") {
+              if (event.key === "ArrowDown") step = current.gridColumns;
+              if (event.key === "ArrowUp") step = -current.gridColumns;
+              if (event.key === "ArrowRight") step = 1;
+              if (event.key === "ArrowLeft") step = -1;
+            } else {
+              if (event.key === "ArrowDown") step = 1;
+              if (event.key === "ArrowUp") step = -1;
+            }
+            const newIndex =
+              currentIndex < 0
+                ? 0
+                : Math.max(
+                    0,
+                    Math.min(current.sortedEntries.length - 1, currentIndex + step)
+                  );
+            if (event.shiftKey) {
+              current.selectRange(current.sortedEntries, newIndex);
+            } else {
+              current.selectSingle(current.sortedEntries[newIndex].path, newIndex);
+            }
+          },
+        },
+      ]),
+    []
+  );
 }

@@ -32,12 +32,18 @@
     "section_file": "文件操作",
     "new_file": "新建文件",
     "new_folder": "新建文件夹",
+    "rename": "重命名所选项目",
+    "open": "打开所选项目",
     "copy": "复制",
     "cut": "剪切",
     "paste": "粘贴",
+    "move_paste": "移动已复制的项目",
     "delete": "移到废纸篓",
     "select_all": "全选",
     "section_navigation": "导航",
+    "change_view": "切换视图",
+    "legacy_tab_number_shortcuts": "用 ⌘1–9 切换标签页",
+    "legacy_tab_number_shortcuts_desc": "兼容模式会覆盖默认的 ⌘1–4 视图切换快捷键。",
     "quick_look": "快速预览"
   },
   "advanced": {

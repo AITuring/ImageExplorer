@@ -2,7 +2,7 @@ use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 pub struct WatcherState {
     /// 多路径监听：key 为目录路径，value 为 watcher 实例
@@ -78,9 +78,7 @@ pub fn watch_directory(
     std::thread::spawn(move || {
         for res in rx {
             match res {
-                Ok(_event) => {
-                    let _ = app_handle.emit("dir-change", &watched_path);
-                }
+                Ok(_event) => crate::cache::notify_dir_change(&app_handle, &watched_path),
                 Err(e) => {
                     eprintln!("Watch error: {:?}", e);
                 }

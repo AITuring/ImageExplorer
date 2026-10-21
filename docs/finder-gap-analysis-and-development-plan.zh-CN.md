@@ -470,6 +470,46 @@ flowchart LR
 状态：待开发 → 开发中 → 自动检查通过 → 实机场景通过 → 已交付
 ```
 
+### 10.1 F03/F05 阶段记录（2026-10-21）
+
+- **F03｜自动检查通过；本机单窗口实机场景通过，阶段仍待补验**：目录缓存 generation、监听事件先失效后广播、分栏目录刷新已实现。在 macOS 27.0 arm64 的 `/private/tmp` 验收目录中，从系统外创建 `watched-after-debug.txt` 后，当前目录列表显示了该文件；应用内快捷键新建的 `created-by-debug-app` 文件夹也出现在列表和文件系统中。Finder 单文件创建/删除增补见下条；Finder 改名、多窗口一致性、快速切目录及外置卷仍待验收。
+- **F03｜Finder 外部创建/删除增补验收（2026-10-22）**：在 `/private/tmp/imageexplorer-f02.rNU7mL/library`，Finder 对 `A.png` 执行复制/粘贴，ImageExplorer 列表随后显示 `A_副本.png`；再从 Finder 将副本移到废纸篓，ImageExplorer 列表随监听事件移除了该条目。副本移入废纸篓而未永久删除。该记录覆盖单窗口、同卷、单文件创建与删除，不代表 Finder 改名、批量操作、多窗口或外置卷已通过。
+- **F05｜自动检查通过；本机复制与撤销实机场景通过，阶段仍待补验**：新建文件/目录采用独占创建和冲突重试；操作日志校验目标身份，替换对象时停止撤销；跨卷移动在删除源前复核源和目标；错误带结构化类别，未归属或不匹配的 partial 保留。在当前工作树 debug app 中，复制记录持久化了文件身份（类型、大小、修改时间、设备号和 inode）。对副本做原子替换后点击撤销，操作中心显示“文件已变化，已保留”，撤销状态为失败；shell 核对被替换文件仍存在，inode 为 `205761762`、长度 39 字节、SHA-256 为 `fe6502ceafeea7b2bba51b239ef7d2ea20341ce2904b8f23fbb8772376aa5c8b`。未修改的副本可正常撤销并移除。目标卷空间不足、真实进程强退恢复、跨卷移动及 Finder 操作仍待实机验证。
+- **验收环境与进程确认**：使用 `/private/tmp/imageexplorer-acceptance.x3GqUH` 隔离目录，应用来自 `src-tauri/target/debug/ImageExplorer`，通过临时 `ImageExplorerDev.app` 和独立 bundle ID `app.imageexplorer.codexdev` 打开；Activity Monitor 确认执行路径指向当前工作树 debug 二进制。该隔离 app 与目录在验收后清理。首次使用同名已安装 release app 的结果不作为代码验收证据。
+- **自动检查记录**：`cargo test` 38 项通过；`cargo clippy --all-targets -- -D warnings`、`cargo fmt -- --check`、`git diff --check`、`pnpm typecheck`、6 个改动前端文件的 ESLint 检查及 `pnpm build` 均退出码为 0。Rust 测试链接器仍输出 `window_vibrancy` 重复符号警告；前端生产构建报告现有动态/静态导入分块和 500 kB chunk 警告。
+
+### 10.2 F01 键盘命令与焦点隔离阶段记录（2026-10-21）
+
+- **状态｜键盘核心切片已实现并通过本机交互验收；整项仍待菜单一致性和更多焦点场景补验**：文件列表、Tab、重命名和 Quick Look 快捷键接入共享命令分派器。分派器检查 IME、可编辑目标和当前可见弹层，并按优先级处理命令；设置弹窗和 Quick Look 标注了焦点域。新建窗口仍由原生菜单触发，前端在创建前复核当前焦点域，再由当前窗口处理以继承路径；新建文件用 Cmd+Option+N。Cmd+1～4 切视图，旧 Cmd+1～9 切 Tab 默认关闭并由设置显式启用。移动粘贴、重命名和打开命令也已接入。
+- **交互记录**：在当前工作树专用 debug app 中，Finder 样本目录搜索框可输入空格，地址栏 Return 导航不改名；Cmd+N 打开一个继承当前目录的新窗口，Cmd+Option+N 进入新文件命名；Cmd+1～4 分别切换图标、列表、分栏、图库视图。开启兼容设置后 Cmd+1 切换 Tab，随后关闭设置并确认默认值关闭。选中普通文件按 Return 进入改名、Escape 取消；Cmd+C 后进入目标目录按 Cmd+Option+V，操作中心显示移动完成。Space 启动系统 Quick Look 进程，再按 Space 关闭。设置弹窗打开时按 Cmd+Shift+N 不会新建目录，方向键也不会移动背景列表选择。
+- **范围边界**：本次已验证核心快捷键行为，不代表所有原生菜单、右键菜单、工具栏都由同一个元数据注册表生成，也未完成 VoiceOver、第三方输入法、所有弹窗/弹出菜单及多窗口焦点矩阵；这些仍须补验后才能把 F01 标为“实机场景通过”。
+- **最新自动检查**：F01/F02 前端改动后 `pnpm typecheck`、覆盖相关改动 TS/TSX 文件的定向 ESLint、`cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` 和 `git diff --check` 均通过；`pnpm build` 通过。ESLint 对 Gallery 的 TanStack Virtual 调用报告 1 条编译器兼容性警告、0 错误；构建报告 Tauri API/dialog/windowManager/process 的动态与静态导入分块提示，以及 668.99 kB 主 chunk 超过 500 kB 的警告。
+
+### 10.3 F02 选择状态与视图操作验收（2026-10-22）
+
+- **开发进度｜A–F 选择测例、分栏文件操作和图库重命名/缩放已实机通过；F02 仍开发中**：选择状态把已选路径、键盘焦点路径和 Shift 范围锚点拆开；Shift 范围从固定锚点重新计算；条目消失后会清除失效选择与焦点。图标视图方向键按当前网格列数移动并描边焦点项。分栏视图把 active column、可见条目和当前位置传给选择、键盘、Quick Look、文件操作与右键菜单，并补上分栏重命名输入框。图库补上重命名输入框；ResizeObserver 更新列数后会重新计算虚拟行数。
+- **A–F 测例｜通过**：专用 debug app 指向隔离目录 `/private/tmp/imageexplorer-f02.rNU7mL/library`。列表视图选中 B，逐键执行 Shift+Down 三次后视觉确认 B–E 选中、焦点 E；Shift+Up 两次后视觉确认 B–C 选中、焦点 C；再 Shift+Down 验证范围仍以 B 为锚点，随后恢复 B–C。选择状态不由 AX 树暴露，判定依据为实机截图。图标视图当前窗口为四列，实机方向键确认 B 下移到 F、再上移回 B；按键逐次等待界面更新。
+- **分栏｜三级导航、复制、重命名和移到废纸篓通过**：从根目录依次进入 `Level1/Level2/Level3`。在最深层将 `column-copy.txt` 复制到 `ToCopy`，核对内容与文件存在；将 `column-rename.txt` 改为 `column-renamed.txt`；对 `column-delete.txt` 执行移到废纸篓并确认操作中心完成、该文件从列中消失。操作和文件结果均由当前工作树专用 debug app 与隔离目录核对。
+- **分栏预览｜快捷键和原生进程开关通过；画面未完成视觉验收**：截图确认 `column-preview.png` 有焦点边框；按 Space 后系统应用清单显示 `qlmanage` 正在运行，再按 Space 后显示已退出。可确认选中项的快捷键路由和系统进程开关；`qlmanage` 的 AX/截图调用返回 `timeoutReached`，Preview AX 只读到既有“打开”面板，因此没有可核对预览画面的证据。
+- **图库｜重命名与缩放通过**：在图库视图将 `A.png` 改名为 `A-gallery.png`，再经图库界面恢复为 `A.png`；文件系统确认恢复状态。原生窗口缩放前截图为三列，缩放后为六列，卡片尺寸维持，说明 ResizeObserver 随视口变化更新列数。
+- **实机包环境**：成功产出隔离 bundle ID `app.imageexplorer.f02acceptance` 的 debug app，使用 `--ignore-version-mismatches` 与 `createUpdaterArtifacts:false` 仅供本机调试。Rust Tauri `2.11.5` / JS API `2.9.1`、Updater Rust `2.9.0` / JS `2.10.1` 仍有版本不一致；该包不代表发行构建通过。
+- **图库｜方向键浏览通过**：保持 B 为焦点时按 Down，描边移动到 C；再按 Up，描边回到 B。图库按条目序列处理上下键；当前共享键盘分派器未为图库定义左右键移动。
+- **外部删除｜选择/焦点清理通过**：图标视图选中 `C.png` 后从独立进程删除，目录监听刷新使卡片消失并清掉失效焦点；恢复文件后卡片重新出现且未自动重选。
+- **排序｜focus、selection 与 anchor 实机通过**：选中 B 后切到名称降序，滚动到 B 所在位置，截图确认 B 仍选中且有焦点描边；按 Shift+Up 后焦点移到 C、B 仍保留在范围内；再按 Shift+Down 后焦点回到 B、C 退出范围。按当前降序顺序，这一往返确认锚点仍为 B。
+- **仍待处理**：分栏 Quick Look 的预览画面尚未完成视觉验收；Finder 外部改名和多窗口一致性仍待实机验收。单窗口 Finder 创建/删除事件的本轮结果记在 10.1。系统进程开关已确认，Quick Look 窗口仍无法被当前 CUA 捕获。F02 继续保持开发中。
+
+### 10.4 F04 索引一致性恢复切片（2026-10-22）
+
+- **开发进度｜子树补录和启动监听顺序已实现；自动回归通过，实机事件仍待验收**：全量扫描改为分批写入暂存表，成功时在单事务内替换活动表、重建 FTS 并切换索引状态；失败时删除暂存表并保留上次已提交索引。SQLite 文件/目录改名和删除更新为单事务子树操作，路径边界不会把 `oldish` 当成 `old` 的子目录。新建/更新目录及排除目录移入索引范围时，使用 `files_subtree_staging` 临时表分批扫描；完整扫描后在一个事务中替换该子树，扫描错误不会发布部分目录树。扫描与增量事件共用排除规则；增量监听覆盖创建、数据/元数据修改、删除和双路径改名。初次重建前同步创建监听器并完成根目录递归 watch 注册，再启动扫描；事件在线程尚未开始消费时仍由通道暂存，扫描期间缓存事件，切换后按接收顺序回放。索引无需重建时也先注册监听再发布 `ready`。监听注册失败会保留当前可用索引/本次快照，并写入需下次启动重建的标记。SQLite 搜索将合法空结果与查询/读取错误分开返回。
+- **自动回归｜通过**：新增子树补录测试，验证深层目录入索引、重复扫描移除已消失条目、排除目录根和后代均被过滤；`cargo test --manifest-path src-tauri/Cargo.toml` 共 44 项通过，`cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`、`cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` 和 `git diff --check` 通过。链接器仍报告已知 `window_vibrancy` 重复符号警告。
+- **未完成边界**：文件系统休眠/断线期间漏事件后的唤醒对账、监听溢出恢复和真实 Finder 批量移动/删除仍需补做。F04 保持开发中。
+
+### 10.5 F06 持续集成门槛起步（2026-10-22）
+
+- **开发进度｜PR 与发版门槛、选择状态单元回归已建立；F06 继续开发中**：新增只读 `lint:check` 与 `cargo:fmt:check` 命令，以及 `check:ci` 汇总入口；GitHub Actions 在 macOS 对 PR、`main`/`master` 推送和发版流程运行同一组 ESLint、TypeScript、选择逻辑前端测试、前端构建、Rust 格式、Rust 测试和 Clippy。CI 没有调用带 `--fix` 或 `--write` 的格式/检查脚本。新增的 Node 原生测试覆盖固定 Shift anchor 的双向范围、排序后的路径锚点以及条目删除后的 selection/focus/anchor 清理。
+- **最新本地回归｜通过**：`pnpm check:ci` 全流程退出码为 0；含 3 项前端选择模型测试和 44 项 Rust 测试。ESLint 保留 Gallery `useVirtualizer()` 兼容性警告；生产构建保留现有分块和 500 kB 主 chunk 警告；Rust 测试链接器保留 `window_vibrancy` 重复符号警告。
+- **未完成边界**：前端目前只有选择模型单元测试，尚无 DOM/视图集成自动化；实机截图或手工验收仍独立记录。后续应扩展目录监听前端回归。
+
 完成条件：相关自动检查通过；场景中真实文件和目标应用行为正确；错误/取消/重启路径已验证；文档同步；无未说明的数据安全缺口。若实机验收尚未完成，保留“待验收”状态并记录阻塞原因。
 
 本文应在 R0 结束、原生技术验证结束和每次正式发布前更新。源代码证据、拟定目标和实测成绩分栏维护，避免后续开发把计划当成已经完成的事实。

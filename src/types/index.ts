@@ -61,6 +61,21 @@ export type FileOperationUndoStatus =
   | "completed"
   | "failed";
 
+export type FileOperationErrorCode =
+  | "conflict"
+  | "source_changed"
+  | "insufficient_space"
+  | "permission_denied"
+  | "volume_unavailable"
+  | "cancelled"
+  | "recovery"
+  | "filesystem";
+
+export interface FileOperationErrorDetail {
+  code: FileOperationErrorCode;
+  message: string;
+}
+
 export interface FileOperationConflict {
   source: string;
   destination: string;
@@ -80,6 +95,7 @@ export interface FileOperationSnapshot {
   completed_bytes: number;
   current_item: string | null;
   errors: string[];
+  error_details: FileOperationErrorDetail[];
   cancel_requested: boolean;
   undo_status: FileOperationUndoStatus;
   retryable: boolean;

@@ -30,16 +30,15 @@ impl SearchEngine {
     }
 
     /// FTS5 全文搜索
-    pub fn search(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, String> {
         if query.is_empty() {
-            return vec![];
+            return Ok(vec![]);
         }
 
         let conn = match self.conn.lock() {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[SQLite Search] Failed to acquire lock: {}", e);
-                return vec![];
+                return Err(format!("Failed to acquire index database lock: {e}"));
             }
         };
 
@@ -52,9 +51,24 @@ impl SearchEngine {
             })
             .collect();
         if sanitized.is_empty() {
-            return vec![];
+            return Ok(vec![]);
         }
-        let fts_query = format!("{}*", sanitized);
+        // FTS syntax treats punctuation such as `-` as operators unless the
+        // user input is tokenized and quoted. Query each literal token as a
+        // prefix, preserving the existing AND semantics without exposing the
+        // FTS query grammar to file names.
+        let fts_terms = sanitized
+            .split_whitespace()
+            .flat_map(|part| {
+                part.split(|character: char| !character.is_alphanumeric() && character != '_')
+            })
+            .filter(|term| !term.is_empty())
+            .map(|term| format!("\"{}\"*", term.replace('"', "\"\"")))
+            .collect::<Vec<_>>();
+        if fts_terms.is_empty() {
+            return Ok(vec![]);
+        }
+        let fts_query = fts_terms.join(" AND ");
 
         let query_lower = sanitized.to_lowercase();
 
@@ -74,13 +88,10 @@ impl SearchEngine {
              LIMIT ?2",
         ) {
             Ok(s) => s,
-            Err(e) => {
-                eprintln!("[SQLite Search] Failed to prepare query: {}", e);
-                return vec![];
-            }
+            Err(e) => return Err(format!("Failed to prepare indexed search: {e}")),
         };
 
-        let results = stmt
+        let rows = stmt
             .query_map(
                 rusqlite::params![fts_query, limit as i64, query_lower],
                 |row| {
@@ -96,12 +107,10 @@ impl SearchEngine {
                     })
                 },
             )
-            .ok();
+            .map_err(|e| format!("Failed to execute indexed search: {e}"))?;
 
-        match results {
-            Some(rows) => rows.filter_map(|r| r.ok()).collect(),
-            None => vec![],
-        }
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to read indexed search results: {e}"))
     }
 
     /// LIKE 模糊搜索（备用方案，兼容原有逻辑）
@@ -203,5 +212,35 @@ impl SearchEngine {
             Some(rows) => rows.filter_map(|r| r.ok()).collect(),
             None => vec![],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SearchEngine;
+    use crate::db::schema;
+    use rusqlite::Connection;
+    use std::sync::{Arc, Mutex};
+
+    fn engine() -> (SearchEngine, Arc<Mutex<Connection>>) {
+        let conn = Connection::open_in_memory().expect("in-memory database");
+        schema::init(&conn).expect("initialize schema");
+        let conn = Arc::new(Mutex::new(conn));
+        (SearchEngine::new(conn.clone()), conn)
+    }
+
+    #[test]
+    fn empty_search_results_are_distinct_from_database_errors() {
+        let (engine, conn) = engine();
+        assert!(engine
+            .search("not-present", 10)
+            .expect("valid query")
+            .is_empty());
+
+        conn.lock()
+            .expect("database lock")
+            .execute("DROP TABLE files_fts", [])
+            .expect("remove FTS table to simulate an index error");
+        assert!(engine.search("not-present", 10).is_err());
     }
 }

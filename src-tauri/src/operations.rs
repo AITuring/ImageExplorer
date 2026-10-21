@@ -1,6 +1,7 @@
 use crate::commands::fs::{
-    copy_path_resumable, delete_to_trash, get_disk_space, move_path_resumable, partial_path_for,
-    path_exists, paths_equivalent, rename_without_replace,
+    copy_path_resumable_with_ready, delete_to_trash, get_disk_space, move_path_resumable,
+    move_path_resumable_with_ready, partial_path_for, path_exists, paths_equivalent,
+    rename_without_replace,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -57,6 +58,70 @@ pub enum ConflictPolicy {
     Skip,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationErrorCode {
+    Conflict,
+    SourceChanged,
+    InsufficientSpace,
+    PermissionDenied,
+    VolumeUnavailable,
+    Cancelled,
+    Recovery,
+    Filesystem,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationErrorDetail {
+    pub code: OperationErrorCode,
+    pub message: String,
+}
+
+fn classify_operation_error(message: &str) -> OperationErrorCode {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("source changed") || lower.contains("source was changed") {
+        OperationErrorCode::SourceChanged
+    } else if lower.contains("no space left")
+        || lower.contains("disk full")
+        || lower.contains("not enough space")
+    {
+        OperationErrorCode::InsufficientSpace
+    } else if lower.contains("permission denied") || lower.contains("operation not permitted") {
+        OperationErrorCode::PermissionDenied
+    } else if lower.contains("volume offline")
+        || lower.contains("not mounted")
+        || lower.contains("no such device")
+    {
+        OperationErrorCode::VolumeUnavailable
+    } else if lower.contains("cancel") {
+        OperationErrorCode::Cancelled
+    } else if lower.contains("undo")
+        || lower.contains("recovery")
+        || lower.contains("ownership")
+        || lower.contains("identity")
+    {
+        OperationErrorCode::Recovery
+    } else if lower.contains("conflict")
+        || lower.contains("already exists")
+        || lower.contains("changed after")
+        || lower.contains("changed and was preserved")
+        || lower.contains("destination appeared")
+        || lower.contains("cannot verify")
+    {
+        OperationErrorCode::Conflict
+    } else {
+        OperationErrorCode::Filesystem
+    }
+}
+
+fn append_operation_error(snapshot: &mut OperationSnapshot, message: String) {
+    snapshot.error_details.push(OperationErrorDetail {
+        code: classify_operation_error(&message),
+        message: message.clone(),
+    });
+    snapshot.errors.push(message);
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct OperationConflict {
     pub source: String,
@@ -78,6 +143,8 @@ pub struct OperationSnapshot {
     pub completed_bytes: u64,
     pub current_item: Option<String>,
     pub errors: Vec<String>,
+    #[serde(default)]
+    pub error_details: Vec<OperationErrorDetail>,
     pub cancel_requested: bool,
     pub undo_status: UndoStatus,
     #[serde(default)]
@@ -92,25 +159,43 @@ enum UndoAction {
     PendingCopy {
         source: String,
         path: String,
+        #[serde(default)]
+        partial_path: String,
+        #[serde(default)]
+        identity: Option<SourceIdentity>,
     },
     PendingMove {
         from: String,
         to: String,
+        #[serde(default)]
+        source_identity: Option<SourceIdentity>,
+        #[serde(default)]
+        target_identity: Option<SourceIdentity>,
     },
     PendingArchiveOutput {
         path: String,
         partial_path: String,
+        #[serde(default)]
+        identity: Option<SourceIdentity>,
+        #[serde(default)]
+        ready: bool,
     },
     RemoveCreatedPath {
         path: String,
+        #[serde(default)]
+        identity: Option<SourceIdentity>,
     },
     MoveBack {
         from: String,
         to: String,
+        #[serde(default)]
+        identity: Option<SourceIdentity>,
     },
     RestoreBackup {
         backup_path: String,
         original_path: String,
+        #[serde(default)]
+        identity: Option<SourceIdentity>,
     },
 }
 
@@ -261,6 +346,16 @@ fn persist_record_map_to_path(
 }
 
 fn operation_record_from_persisted(mut persisted: PersistedOperationRecord) -> OperationRecord {
+    let known_error_count = persisted.snapshot.error_details.len();
+    if known_error_count < persisted.snapshot.errors.len() {
+        let missing = persisted.snapshot.errors[known_error_count..].to_vec();
+        for message in missing {
+            persisted.snapshot.error_details.push(OperationErrorDetail {
+                code: classify_operation_error(&message),
+                message,
+            });
+        }
+    }
     if let Some(request) = persisted.request.as_mut() {
         request.normalize();
     }
@@ -280,7 +375,8 @@ fn operation_record_from_persisted(mut persisted: PersistedOperationRecord) -> O
             persisted.snapshot.current_item = None;
         } else {
             persisted.snapshot.status = OperationStatus::Failed;
-            persisted.snapshot.errors.push(
+            append_operation_error(
+                &mut persisted.snapshot,
                 "Operation was interrupted by an application restart. Retry to continue from the durable partial copy."
                     .to_string(),
             );
@@ -292,7 +388,8 @@ fn operation_record_from_persisted(mut persisted: PersistedOperationRecord) -> O
         UndoStatus::Queued | UndoStatus::Running
     ) {
         persisted.snapshot.undo_status = UndoStatus::Failed;
-        persisted.snapshot.errors.push(
+        append_operation_error(
+            &mut persisted.snapshot,
             "Undo was interrupted by an application restart. Retry undo to continue.".to_string(),
         );
     } else if persisted.undo_actions.is_empty()
@@ -437,6 +534,82 @@ fn source_identity(path: &Path) -> Option<SourceIdentity> {
 
 fn source_identity_matches(path: &Path, expected: &SourceIdentity) -> bool {
     source_identity(path).as_ref() == Some(expected)
+}
+
+fn object_identity_matches(path: &Path, expected: &SourceIdentity) -> bool {
+    let Some(actual) = source_identity(path) else {
+        return false;
+    };
+    object_identities_match(expected, &actual)
+}
+
+fn object_identities_match(expected: &SourceIdentity, actual: &SourceIdentity) -> bool {
+    match (expected.device, expected.inode, actual.device, actual.inode) {
+        (Some(expected_device), Some(expected_inode), Some(actual_device), Some(actual_inode)) => {
+            expected.kind == actual.kind
+                && expected_device == actual_device
+                && expected_inode == actual_inode
+        }
+        _ => actual == expected,
+    }
+}
+
+fn verify_created_path_identity(
+    path: &Path,
+    expected: Option<&SourceIdentity>,
+) -> Result<bool, String> {
+    if !path_exists(path) {
+        return Ok(false);
+    }
+    if expected.is_some_and(|identity| source_identity_matches(path, identity)) {
+        return Ok(true);
+    }
+    Err(format!(
+        "The created item changed after the operation; undo stopped and preserved it: {}",
+        path.display()
+    ))
+}
+
+fn same_undo_intent(left: &UndoAction, right: &UndoAction) -> bool {
+    match (left, right) {
+        (
+            UndoAction::PendingCopy {
+                source: left_source,
+                path: left_path,
+                ..
+            },
+            UndoAction::PendingCopy {
+                source: right_source,
+                path: right_path,
+                ..
+            },
+        ) => left_source == right_source && left_path == right_path,
+        (
+            UndoAction::PendingMove {
+                from: left_from,
+                to: left_to,
+                ..
+            },
+            UndoAction::PendingMove {
+                from: right_from,
+                to: right_to,
+                ..
+            },
+        ) => left_from == right_from && left_to == right_to,
+        (
+            UndoAction::PendingArchiveOutput {
+                path: left_path,
+                partial_path: left_partial,
+                ..
+            },
+            UndoAction::PendingArchiveOutput {
+                path: right_path,
+                partial_path: right_partial,
+                ..
+            },
+        ) => left_path == right_path && left_partial == right_partial,
+        _ => left == right,
+    }
 }
 
 fn source_bytes(paths: &[String]) -> u64 {
@@ -635,15 +808,32 @@ fn remove_path_if_exists(path: &Path) -> Result<(), String> {
     }
 }
 
-fn restore_backup(backup_path: &str, original_path: &str) -> Result<(), String> {
+fn restore_backup(
+    backup_path: &str,
+    original_path: &str,
+    expected_identity: Option<&SourceIdentity>,
+) -> Result<(), String> {
     let backup = Path::new(backup_path);
     let original = Path::new(original_path);
     if !path_exists(backup) {
-        return if path_exists(original) {
+        return if path_exists(original)
+            && expected_identity.is_some_and(|identity| source_identity_matches(original, identity))
+        {
             Ok(())
+        } else if path_exists(original) {
+            Err(format!(
+                "The original target changed before its recovery backup was restored: {}",
+                original_path
+            ))
         } else {
             Err(format!("Recovery backup is missing: {}", backup_path))
         };
+    }
+    if !expected_identity.is_some_and(|identity| source_identity_matches(backup, identity)) {
+        return Err(format!(
+            "The recovery backup changed and was preserved: {}",
+            backup_path
+        ));
     }
     if path_exists(original) {
         return Err(format!(
@@ -654,11 +844,21 @@ fn restore_backup(backup_path: &str, original_path: &str) -> Result<(), String> 
     rename_without_replace(backup, original).map_err(|error| error.to_string())
 }
 
-fn discard_backup_to_trash(backup_path: &str, original_path: &str) -> Result<(), String> {
+fn discard_backup_to_trash(
+    backup_path: &str,
+    original_path: &str,
+    expected_identity: Option<&SourceIdentity>,
+) -> Result<(), String> {
     let backup = Path::new(backup_path);
     let original = Path::new(original_path);
     if !path_exists(backup) {
         return Ok(());
+    }
+    if !expected_identity.is_some_and(|identity| source_identity_matches(backup, identity)) {
+        return Err(format!(
+            "The recovery backup changed and was preserved: {}",
+            backup_path
+        ));
     }
     if !path_exists(original) {
         return rename_without_replace(backup, original).map_err(|error| error.to_string());
@@ -948,6 +1148,7 @@ impl OperationManager {
             completed_bytes: 0,
             current_item: None,
             errors: Vec::new(),
+            error_details: Vec::new(),
             cancel_requested: false,
             undo_status: UndoStatus::None,
             retryable: false,
@@ -1030,6 +1231,7 @@ impl OperationManager {
             completed_bytes: 0,
             current_item: None,
             errors: Vec::new(),
+            error_details: Vec::new(),
             cancel_requested: false,
             undo_status: UndoStatus::None,
             retryable: false,
@@ -1164,6 +1366,22 @@ impl OperationManager {
             });
 
             let item_bytes = path_bytes(Path::new(path));
+            if matches!(request.kind, OperationKind::Move)
+                && !request
+                    .source_identities
+                    .get(item_index)
+                    .and_then(Option::as_ref)
+                    .is_some()
+            {
+                self.fail_resolved_item(
+                    app,
+                    &id,
+                    item_index,
+                    path,
+                    "Could not record the source identity; the item was not moved",
+                );
+                continue;
+            }
             if matches!(request.kind, OperationKind::Delete)
                 && path_exists(Path::new(path))
                 && !request
@@ -1239,19 +1457,31 @@ impl OperationManager {
                         Some(UndoAction::PendingCopy {
                             source: path.clone(),
                             path: destination.to_string(),
+                            partial_path: partial_path_for(Path::new(destination))
+                                .to_string_lossy()
+                                .to_string(),
+                            identity: None,
                         }),
                         Some(UndoAction::RemoveCreatedPath {
                             path: destination.to_string(),
+                            identity: None,
                         }),
                     ),
                     (OperationKind::Move, Some(destination)) => (
                         Some(UndoAction::PendingMove {
                             from: path.clone(),
                             to: destination.to_string(),
+                            source_identity: request
+                                .source_identities
+                                .get(item_index)
+                                .cloned()
+                                .flatten(),
+                            target_identity: None,
                         }),
                         Some(UndoAction::MoveBack {
                             from: path.clone(),
                             to: destination.to_string(),
+                            identity: None,
                         }),
                     ),
                     _ => (None, None),
@@ -1278,12 +1508,83 @@ impl OperationManager {
                 }
             }
 
+            if request.kind == OperationKind::Move
+                && path_exists(Path::new(path))
+                && request
+                    .source_identities
+                    .get(item_index)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|identity| !source_identity_matches(Path::new(path), identity))
+            {
+                self.fail_resolved_item(
+                    app,
+                    &id,
+                    item_index,
+                    path,
+                    "The item changed after the move was queued; it was not moved",
+                );
+                continue;
+            }
+
+            if let Some(UndoAction::PendingCopy {
+                partial_path,
+                identity,
+                ..
+            }) = pending_undo_action
+                .as_ref()
+                .and_then(|action| self.stored_undo_intent(&id, action))
+            {
+                if path_exists(Path::new(&partial_path))
+                    && identity.as_ref().is_none_or(|expected| {
+                        !object_identity_matches(Path::new(&partial_path), expected)
+                    })
+                {
+                    self.fail_resolved_item(
+                        app,
+                        &id,
+                        item_index,
+                        &partial_path,
+                        "The copy staging file is not owned by this operation; it was preserved",
+                    );
+                    continue;
+                }
+            }
+            if let Some(UndoAction::PendingMove {
+                to,
+                target_identity,
+                ..
+            }) = pending_undo_action
+                .as_ref()
+                .and_then(|action| self.stored_undo_intent(&id, action))
+            {
+                let partial_path = partial_path_for(Path::new(&to));
+                if path_exists(&partial_path)
+                    && target_identity
+                        .as_ref()
+                        .is_none_or(|expected| !object_identity_matches(&partial_path, expected))
+                {
+                    self.fail_resolved_item(
+                        app,
+                        &id,
+                        item_index,
+                        &partial_path.to_string_lossy(),
+                        "The move staging file is not owned by this operation; it was preserved",
+                    );
+                    continue;
+                }
+            }
+
             let mut reports_byte_progress = false;
+            let mut copy_output_identity: Option<SourceIdentity> = None;
             let result = match request.kind {
                 OperationKind::Copy => retry_operation(|| {
+                    copy_output_identity = None;
                     let mut pending_bytes = 0_u64;
                     let mut last_emit = std::time::Instant::now();
-                    let result = copy_path_resumable(
+                    let pending = pending_undo_action
+                        .as_ref()
+                        .expect("copy operation should have a recovery intent");
+                    let result = copy_path_resumable_with_ready(
                         path.clone(),
                         destination_path.clone().unwrap_or_default(),
                         item_was_started && pending_was_persisted,
@@ -1306,6 +1607,57 @@ impl OperationManager {
                             }
                             !cancelled
                         },
+                        |ready_path, was_preexisting| {
+                            let stored = self.stored_undo_intent(&id, pending);
+                            if destination_path
+                                .as_deref()
+                                .is_some_and(|destination| Path::new(destination) == ready_path)
+                                && was_preexisting
+                            {
+                                let expected = match stored.as_ref() {
+                                    Some(UndoAction::PendingCopy {
+                                        identity: Some(identity),
+                                        ..
+                                    }) => identity,
+                                    _ => {
+                                        return Err(format!(
+                                            "Cannot verify ownership of the existing copy target: {}",
+                                            ready_path.display()
+                                        ))
+                                    }
+                                };
+                                if !source_identity_matches(ready_path, expected) {
+                                    return Err(format!(
+                                        "The existing copy target changed and was preserved: {}",
+                                        ready_path.display()
+                                    ));
+                                }
+                                return Ok(());
+                            }
+                            if was_preexisting {
+                                let expected = match stored.as_ref() {
+                                    Some(UndoAction::PendingCopy {
+                                        identity: Some(identity),
+                                        ..
+                                    }) => identity,
+                                    _ => {
+                                        return Err(format!(
+                                            "Cannot verify ownership of the existing copy staging path: {}",
+                                            ready_path.display()
+                                        ))
+                                    }
+                                };
+                                if !object_identity_matches(ready_path, expected) {
+                                    return Err(format!(
+                                        "The existing copy staging path changed and was preserved: {}",
+                                        ready_path.display()
+                                    ));
+                                }
+                            }
+                            let identity = self.update_pending_identity(&id, pending, ready_path)?;
+                            copy_output_identity = Some(identity.clone());
+                            Ok(())
+                        },
                     );
                     if pending_bytes > 0 {
                         let increment = pending_bytes;
@@ -1322,17 +1674,42 @@ impl OperationManager {
                 OperationKind::Move
                     if item_was_started
                         && pending_was_persisted
-                        && !path_exists(Path::new(path))
-                        && destination_path
-                            .as_deref()
-                            .is_some_and(|destination| path_exists(Path::new(destination))) =>
+                        && !path_exists(Path::new(path)) =>
                 {
-                    Ok(destination_path.clone())
+                    let Some(destination) = destination_path.as_deref() else {
+                        return self.fail_item(app, &id, path, "Move destination is missing");
+                    };
+                    let expected = pending_undo_action
+                        .as_ref()
+                        .and_then(|pending| self.stored_undo_intent(&id, pending))
+                        .and_then(|stored| match stored {
+                            UndoAction::PendingMove {
+                                target_identity,
+                                source_identity,
+                                ..
+                            } => target_identity.or(source_identity),
+                            _ => None,
+                        });
+                    if path_exists(Path::new(destination))
+                        && expected.as_ref().is_some_and(|identity| {
+                            source_identity_matches(Path::new(destination), identity)
+                        })
+                    {
+                        Ok(destination_path.clone())
+                    } else {
+                        Err(format!(
+                            "Cannot verify the interrupted move target; it was preserved: {}",
+                            destination
+                        ))
+                    }
                 }
                 OperationKind::Move => retry_operation(|| {
                     let mut pending_bytes = 0_u64;
                     let mut last_emit = std::time::Instant::now();
-                    let result = move_path_resumable(
+                    let pending = pending_undo_action
+                        .as_ref()
+                        .expect("move operation should have a recovery intent");
+                    let result = move_path_resumable_with_ready(
                         path.clone(),
                         destination_path.clone().unwrap_or_default(),
                         item_was_started && pending_was_persisted,
@@ -1354,6 +1731,69 @@ impl OperationManager {
                                 last_emit = std::time::Instant::now();
                             }
                             !cancelled
+                        },
+                        |ready_path, was_preexisting| {
+                            let stored = self.stored_undo_intent(&id, pending);
+                            if path_exists(Path::new(path)) {
+                                let source_identity = stored.as_ref().and_then(|stored| match stored {
+                                    UndoAction::PendingMove {
+                                        source_identity: Some(identity),
+                                        ..
+                                    } => Some(identity),
+                                    _ => None,
+                                });
+                                if !source_identity.is_some_and(|identity| {
+                                    source_identity_matches(Path::new(path), identity)
+                                }) {
+                                    return Err(format!(
+                                        "The move source changed during the operation and was preserved: {}",
+                                        path
+                                    ));
+                                }
+                            }
+                            let is_final_destination = destination_path
+                                .as_deref()
+                                .is_some_and(|destination| Path::new(destination) == ready_path);
+                            if was_preexisting && is_final_destination {
+                                let expected = match stored.as_ref() {
+                                    Some(UndoAction::PendingMove {
+                                        target_identity: Some(identity),
+                                        ..
+                                    }) => identity,
+                                    _ => {
+                                        return Err(format!(
+                                            "Cannot verify ownership of the existing move target: {}",
+                                            ready_path.display()
+                                        ))
+                                    }
+                                };
+                                if !source_identity_matches(ready_path, expected) {
+                                    return Err(format!(
+                                        "The existing move target changed and was preserved: {}",
+                                        ready_path.display()
+                                    ));
+                                }
+                                return Ok(());
+                            }
+                            if was_preexisting {
+                                let expected = stored.as_ref().and_then(|stored| match stored {
+                                    UndoAction::PendingMove {
+                                        target_identity: Some(identity),
+                                        ..
+                                    } => Some(identity),
+                                    _ => None,
+                                });
+                                if !expected
+                                    .is_some_and(|identity| object_identity_matches(ready_path, identity))
+                                {
+                                    return Err(format!(
+                                        "Cannot verify ownership of the existing move staging path: {}",
+                                        ready_path.display()
+                                    ));
+                                }
+                            }
+                            self.update_pending_identity(&id, pending, ready_path)
+                                .map(|_| ())
                         },
                     );
                     if pending_bytes > 0 {
@@ -1379,13 +1819,42 @@ impl OperationManager {
             match result {
                 Ok(created_path) => {
                     debug_assert_eq!(created_path.is_some(), final_undo_action.is_some());
+                    let final_undo_action = final_undo_action.map(|action| match action {
+                        UndoAction::RemoveCreatedPath { path, .. } => {
+                            let identity = copy_output_identity.clone().or_else(|| {
+                                pending_undo_action
+                                    .as_ref()
+                                    .and_then(|pending| self.stored_undo_intent(&id, pending))
+                                    .and_then(|stored| match stored {
+                                        UndoAction::PendingCopy { identity, .. } => identity,
+                                        _ => None,
+                                    })
+                            });
+                            UndoAction::RemoveCreatedPath { path, identity }
+                        }
+                        UndoAction::MoveBack { from, to, .. } => {
+                            let identity = pending_undo_action
+                                .as_ref()
+                                .and_then(|pending| self.stored_undo_intent(&id, pending))
+                                .and_then(|stored| match stored {
+                                    UndoAction::PendingMove {
+                                        target_identity,
+                                        source_identity,
+                                        ..
+                                    } => target_identity.or(source_identity),
+                                    _ => None,
+                                });
+                            UndoAction::MoveBack { from, to, identity }
+                        }
+                        action => action,
+                    });
                     // 目录监听器按 WebView 注册，跨窗口拖拽时不能只依赖
                     // 单个窗口的 notify watcher；把受影响的目录变化广播给
                     // 所有窗口，让源窗口和目标窗口都立即失效并刷新缓存。
                     if matches!(request.kind, OperationKind::Move | OperationKind::Delete) {
                         if let Some(parent) = Path::new(path).parent() {
                             let parent = parent.to_string_lossy().to_string();
-                            let _ = app.emit("dir-change", &parent);
+                            crate::cache::notify_dir_change(app, &parent);
                         }
                     }
                     if matches!(request.kind, OperationKind::Copy | OperationKind::Move) {
@@ -1393,8 +1862,7 @@ impl OperationManager {
                             .as_deref()
                             .and_then(|target| Path::new(target).parent())
                         {
-                            let _ =
-                                app.emit("dir-change", destination.to_string_lossy().to_string());
+                            crate::cache::notify_dir_change(app, &destination.to_string_lossy());
                         }
                     }
                     self.complete_item(
@@ -1407,6 +1875,34 @@ impl OperationManager {
                     );
                 }
                 Err(error) => {
+                    let staging_identity_error = pending_undo_action.as_ref().and_then(|pending| {
+                        let stored = self.stored_undo_intent(&id, pending)?;
+                        let (partial_path, expected_identity) = match stored {
+                            UndoAction::PendingCopy {
+                                partial_path,
+                                identity,
+                                ..
+                            } => (PathBuf::from(partial_path), identity),
+                            UndoAction::PendingMove {
+                                to,
+                                target_identity,
+                                ..
+                            } => (partial_path_for(Path::new(&to)), target_identity),
+                            _ => return None,
+                        };
+                        if !path_exists(&partial_path) {
+                            return None;
+                        }
+                        (!expected_identity.as_ref().is_some_and(|identity| {
+                            object_identity_matches(&partial_path, identity)
+                        }))
+                        .then(|| {
+                            format!(
+                                "Cannot verify ownership of the operation staging path; it was preserved: {}",
+                                partial_path.display()
+                            )
+                        })
+                    });
                     let rollback_error = replacement.as_ref().and_then(|action| {
                         self.rollback_replacement(
                             &id,
@@ -1419,11 +1915,15 @@ impl OperationManager {
                     let cleanup_error = if replacement.is_none() {
                         pending_undo_action.as_ref().and_then(|action| {
                             let keep_for_undo = match action {
-                                UndoAction::PendingMove { from, to } => {
-                                    path_exists(Path::new(from))
-                                        && path_exists(Path::new(to))
-                                        && paths_equivalent(Path::new(from), Path::new(to))
-                                            .unwrap_or(false)
+                                UndoAction::PendingCopy {
+                                    path, partial_path, ..
+                                } => {
+                                    path_exists(Path::new(path))
+                                        || path_exists(Path::new(partial_path))
+                                }
+                                UndoAction::PendingMove { to, .. } => {
+                                    path_exists(Path::new(to))
+                                        || path_exists(&partial_path_for(Path::new(to)))
                                 }
                                 _ => false,
                             };
@@ -1433,7 +1933,8 @@ impl OperationManager {
                         })
                     } else {
                         None
-                    };
+                    }
+                    .or(staging_identity_error);
                     if cancel_requested.load(Ordering::Acquire) {
                         if let Some(recovery_error) = rollback_error.or(cleanup_error) {
                             self.fail_item(app, &id, path, &recovery_error);
@@ -1472,18 +1973,118 @@ impl OperationManager {
             }
         };
 
-        if request.started_items.first().copied().unwrap_or(false)
-            && path_exists(Path::new(&destination))
-        {
-            let pending = UndoAction::PendingArchiveOutput {
-                path: destination.clone(),
-                partial_path: partial_path_for(Path::new(&destination))
-                    .to_string_lossy()
-                    .to_string(),
-            };
-            self.complete_archive(app, &id, &destination, Some(pending));
-            self.finish(app, &id, OperationStatus::Completed);
+        let existing_pending = self.pending_archive_for_path(&id, &destination);
+        let partial_destination = existing_pending
+            .as_ref()
+            .and_then(|action| match action {
+                UndoAction::PendingArchiveOutput { partial_path, .. } => {
+                    Some(PathBuf::from(partial_path))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| partial_path_for(Path::new(&destination)));
+        let mut pending = existing_pending.unwrap_or_else(|| UndoAction::PendingArchiveOutput {
+            path: destination.clone(),
+            partial_path: partial_destination.to_string_lossy().to_string(),
+            identity: None,
+            ready: false,
+        });
+
+        if path_exists(Path::new(&destination)) {
+            let owns_destination = matches!(
+                &pending,
+                UndoAction::PendingArchiveOutput {
+                    identity: Some(identity),
+                    ready: true,
+                    ..
+                } if source_identity_matches(Path::new(&destination), identity)
+            );
+            if owns_destination {
+                self.complete_archive(app, &id, &destination, Some(pending));
+                self.finish(app, &id, OperationStatus::Completed);
+            } else {
+                self.fail_archive(
+                    app,
+                    &id,
+                    &format!(
+                        "The archive destination cannot be verified as this operation's output; it was preserved: {}",
+                        destination
+                    ),
+                );
+                self.finish(app, &id, OperationStatus::Failed);
+            }
             return;
+        }
+
+        if path_exists(&partial_destination) {
+            let partial_is_owned = matches!(
+                &pending,
+                UndoAction::PendingArchiveOutput {
+                    identity: Some(identity),
+                    ..
+                } if source_identity_matches(&partial_destination, identity)
+            );
+            if !partial_is_owned {
+                self.fail_archive(
+                    app,
+                    &id,
+                    &format!(
+                        "The archive staging file cannot be verified as this operation's output; it was preserved: {}",
+                        partial_destination.to_string_lossy()
+                    ),
+                );
+                self.finish(app, &id, OperationStatus::Failed);
+                return;
+            }
+
+            let ready = matches!(
+                &pending,
+                UndoAction::PendingArchiveOutput { ready: true, .. }
+            );
+            if ready {
+                if let Err(error) =
+                    rename_without_replace(&partial_destination, Path::new(&destination))
+                {
+                    self.fail_archive(app, &id, &error.to_string());
+                    self.finish(app, &id, OperationStatus::Failed);
+                    return;
+                }
+                if let Some(parent) = Path::new(&destination).parent() {
+                    crate::cache::notify_dir_change(app, &parent.to_string_lossy());
+                }
+                self.complete_archive(app, &id, &destination, Some(pending));
+                self.finish(app, &id, OperationStatus::Completed);
+                return;
+            }
+
+            if let Err(error) = remove_path_if_exists(&partial_destination) {
+                self.fail_archive(app, &id, &error);
+                self.finish(app, &id, OperationStatus::Failed);
+                return;
+            }
+            if let Err(error) = self.remove_undo_intent(&id, &pending) {
+                self.fail_archive(app, &id, &error);
+                self.finish(app, &id, OperationStatus::Failed);
+                return;
+            }
+            pending = UndoAction::PendingArchiveOutput {
+                path: destination.clone(),
+                partial_path: partial_destination.to_string_lossy().to_string(),
+                identity: None,
+                ready: false,
+            };
+        } else if self.has_undo_intent(&id, &pending) {
+            if let Err(error) = self.remove_undo_intent(&id, &pending) {
+                self.fail_archive(app, &id, &error);
+                self.finish(app, &id, OperationStatus::Failed);
+                return;
+            }
+            pending = UndoAction::PendingArchiveOutput {
+                path: destination.clone(),
+                partial_path: partial_destination.to_string_lossy().to_string(),
+                identity: None,
+                ready: false,
+            };
         }
 
         if let Err(error) = self.mark_all_items_started(&id) {
@@ -1498,8 +2099,7 @@ impl OperationManager {
             snapshot.current_item = request.paths.first().cloned();
         });
 
-        let partial_destination = partial_path_for(Path::new(&destination));
-        if let Err(error) = remove_path_if_exists(&partial_destination) {
+        if let Err(error) = self.stage_undo_intent(&id, &pending) {
             self.fail_archive(app, &id, &error);
             self.finish(app, &id, OperationStatus::Failed);
             return;
@@ -1512,41 +2112,64 @@ impl OperationManager {
         );
         match result {
             Ok(()) => {
-                let pending = UndoAction::PendingArchiveOutput {
-                    path: destination.clone(),
-                    partial_path: partial_destination.to_string_lossy().to_string(),
-                };
-                if let Err(error) = self.stage_undo_intent(&id, &pending) {
-                    let _ = remove_path_if_exists(&partial_destination);
+                if let Err(error) =
+                    self.update_pending_identity(&id, &pending, &partial_destination)
+                {
+                    self.fail_archive(app, &id, &error);
+                    self.finish(app, &id, OperationStatus::Failed);
+                    return;
+                }
+                if let Err(error) = self.mark_pending_archive_ready(&id, &pending) {
                     self.fail_archive(app, &id, &error);
                     self.finish(app, &id, OperationStatus::Failed);
                     return;
                 }
                 if path_exists(Path::new(&destination)) {
-                    let _ = self.remove_undo_intent(&id, &pending);
-                    self.fail_archive(app, &id, "Archive destination appeared while processing");
+                    self.fail_archive(
+                        app,
+                        &id,
+                        "Archive destination appeared while processing; the staged output was preserved",
+                    );
                     self.finish(app, &id, OperationStatus::Failed);
                     return;
                 }
                 if let Err(error) =
                     rename_without_replace(&partial_destination, Path::new(&destination))
                 {
-                    let cleanup_error = self.remove_undo_intent(&id, &pending).err();
                     self.fail_archive(app, &id, &error.to_string());
-                    if let Some(cleanup_error) = cleanup_error {
-                        self.fail_archive(app, &id, &cleanup_error);
-                    }
                     self.finish(app, &id, OperationStatus::Failed);
                     return;
                 }
                 if let Some(parent) = Path::new(&destination).parent() {
-                    let _ = app.emit("dir-change", parent.to_string_lossy().to_string());
+                    crate::cache::notify_dir_change(app, &parent.to_string_lossy());
                 }
-                self.complete_archive(app, &id, &destination, Some(pending));
+                let completed_pending = self.stored_undo_intent(&id, &pending).unwrap_or(pending);
+                self.complete_archive(app, &id, &destination, Some(completed_pending));
                 self.finish(app, &id, OperationStatus::Completed);
             }
             Err(error) => {
-                let _ = remove_path_if_exists(&partial_destination);
+                if path_exists(&partial_destination) {
+                    let known_identity =
+                        self.stored_undo_intent(&id, &pending)
+                            .and_then(|stored| match stored {
+                                UndoAction::PendingArchiveOutput { identity, .. } => identity,
+                                _ => None,
+                            });
+                    if !known_identity.as_ref().is_some_and(|identity| {
+                        object_identity_matches(&partial_destination, identity)
+                    }) {
+                        self.fail_archive(
+                            app,
+                            &id,
+                            &format!(
+                                "Archive staging ownership could not be verified; the file was preserved: {}",
+                                partial_destination.display()
+                            ),
+                        );
+                    }
+                } else if let Err(cleanup_error) = self.remove_undo_intent(&id, &pending) {
+                    self.fail_archive(app, &id, &cleanup_error);
+                }
                 if cancel_requested.load(Ordering::Acquire) {
                     self.finish(app, &id, OperationStatus::Cancelled);
                 } else {
@@ -1565,74 +2188,161 @@ impl OperationManager {
 
         for action in actions.iter().rev() {
             let (display_path, result) = match action {
-                UndoAction::PendingCopy { source, path } => {
-                    let result = if !path_exists(Path::new(path)) {
+                UndoAction::PendingCopy {
+                    path,
+                    partial_path,
+                    identity,
+                    ..
+                } => {
+                    let target_exists = path_exists(Path::new(path));
+                    let partial_exists = path_exists(Path::new(partial_path));
+                    let result = if !target_exists && !partial_exists {
                         Ok(())
-                    } else if path_exists(Path::new(source)) {
-                        match paths_equivalent(Path::new(source), Path::new(path)) {
-                            Ok(true) => delete_to_trash(path.clone()),
-                            Ok(false) => Err(format!(
-                                "Cannot verify that the interrupted copy owns this path: {}",
+                    } else if let Some(identity) = identity {
+                        if (target_exists && !source_identity_matches(Path::new(path), identity))
+                            || (partial_exists
+                                && !object_identity_matches(Path::new(partial_path), identity))
+                        {
+                            Err(format!(
+                                "The interrupted copy changed after the operation; undo stopped: {}",
                                 path
-                            )),
-                            Err(error) => Err(error),
+                            ))
+                        } else {
+                            let cleanup = if partial_exists {
+                                remove_path_if_exists(Path::new(partial_path))
+                            } else {
+                                Ok(())
+                            };
+                            cleanup.and_then(|()| {
+                                if target_exists {
+                                    delete_to_trash(path.clone())
+                                } else {
+                                    Ok(())
+                                }
+                            })
                         }
                     } else {
                         Err(format!(
-                            "Cannot verify that the interrupted copy owns this path: {}",
+                            "Cannot verify ownership of the interrupted copy; existing files were preserved: {}",
                             path
                         ))
                     };
                     (path.clone(), result)
                 }
-                UndoAction::PendingMove { from, to } => {
+                UndoAction::PendingMove {
+                    from,
+                    to,
+                    source_identity,
+                    target_identity,
+                } => {
                     let source_exists = path_exists(Path::new(from));
                     let destination_exists = path_exists(Path::new(to));
-                    let result = match (source_exists, destination_exists) {
-                        (true, false) => Ok(()),
-                        (true, true) => match paths_equivalent(Path::new(from), Path::new(to)) {
-                            Ok(true) => delete_to_trash(to.clone()),
-                            Ok(false) => Err(format!(
-                                "Cannot verify that the interrupted move owns this path: {}",
-                                to
-                            )),
-                            Err(error) => Err(error),
-                        },
+                    let partial = partial_path_for(Path::new(to));
+                    let partial_exists = path_exists(&partial);
+                    let expected_identity = target_identity.as_ref().or(source_identity.as_ref());
+                    let destination_matches = expected_identity
+                        .is_some_and(|identity| source_identity_matches(Path::new(to), identity));
+                    let partial_matches = target_identity
+                        .as_ref()
+                        .is_some_and(|identity| object_identity_matches(&partial, identity));
+                    let result = if partial_exists && !partial_matches {
+                        Err(format!(
+                            "Cannot verify ownership of the interrupted move staging file; it was preserved: {}",
+                            partial.to_string_lossy()
+                        ))
+                    } else {
+                        let cleanup_partial = || {
+                            if partial_exists {
+                                remove_path_if_exists(&partial)
+                            } else {
+                                Ok(())
+                            }
+                        };
+                        match (source_exists, destination_exists) {
+                        (true, false) => cleanup_partial(),
+                        (true, true) if target_identity.is_some() && destination_matches => {
+                            cleanup_partial().and_then(|()| delete_to_trash(to.clone()))
+                        }
+                        (true, true) => Err(format!(
+                            "Cannot verify that the interrupted move owns this path; it was preserved: {}",
+                            to
+                        )),
                         (false, true) => {
-                            if Path::new(from).parent().is_none() {
+                            if !destination_matches {
+                                Err(format!(
+                                    "The interrupted move target changed; it was preserved: {}",
+                                    to
+                                ))
+                            } else if Path::new(from).parent().is_none() {
                                 Err(format!("Invalid original path: {}", from))
                             } else {
-                                move_path_resumable(to.clone(), from.clone(), false, |_| true)
+                                cleanup_partial().and_then(|()| {
+                                    move_path_resumable(to.clone(), from.clone(), false, |_| true)
+                                })
                             }
                         }
                         (false, false) => Err(format!(
                             "Both paths for the interrupted move are missing: {}",
                             to
                         )),
+                    }
                     };
                     (to.clone(), result)
                 }
-                UndoAction::PendingArchiveOutput { path, partial_path } => {
-                    let result = if path_exists(Path::new(partial_path)) {
-                        // The exclusive publication never completed. Remove
-                        // only our hidden output and preserve any visible item.
-                        remove_path_if_exists(Path::new(partial_path))
-                    } else if path_exists(Path::new(path)) {
-                        delete_to_trash(path.clone())
-                    } else {
+                UndoAction::PendingArchiveOutput {
+                    path,
+                    partial_path,
+                    identity,
+                    ..
+                } => {
+                    let target_exists = path_exists(Path::new(path));
+                    let partial_exists = path_exists(Path::new(partial_path));
+                    let result = if !target_exists && !partial_exists {
                         Ok(())
+                    } else if let Some(identity) = identity {
+                        if (target_exists && !source_identity_matches(Path::new(path), identity))
+                            || (partial_exists
+                                && !object_identity_matches(Path::new(partial_path), identity))
+                        {
+                            Err(format!(
+                                "The archive output changed after the operation; undo stopped: {}",
+                                path
+                            ))
+                        } else {
+                            let cleanup = if partial_exists {
+                                remove_path_if_exists(Path::new(partial_path))
+                            } else {
+                                Ok(())
+                            };
+                            cleanup.and_then(|()| {
+                                if target_exists {
+                                    delete_to_trash(path.clone())
+                                } else {
+                                    Ok(())
+                                }
+                            })
+                        }
+                    } else {
+                        Err(format!(
+                            "Cannot verify ownership of the archive output; existing files were preserved: {}",
+                            path
+                        ))
                     };
                     (path.clone(), result)
                 }
-                UndoAction::RemoveCreatedPath { path } => {
-                    let result = if path_exists(Path::new(path)) {
-                        delete_to_trash(path.clone())
-                    } else {
-                        Ok(())
-                    };
+                UndoAction::RemoveCreatedPath { path, identity } => {
+                    let path_ref = Path::new(path);
+                    let result = verify_created_path_identity(path_ref, identity.as_ref())
+                        .and_then(|exists| {
+                            if exists {
+                                delete_to_trash(path.clone())
+                            } else {
+                                Ok(())
+                            }
+                        });
                     (path.clone(), result)
                 }
-                UndoAction::MoveBack { from, to } => {
+                UndoAction::MoveBack { from, to, identity } => {
                     let result = if path_exists(Path::new(from)) && !path_exists(Path::new(to)) {
                         // This action was already completed before a restart.
                         Ok(())
@@ -1640,6 +2350,14 @@ impl OperationManager {
                         Err(format!("Original path already exists: {}", from))
                     } else if Path::new(from).parent().is_none() {
                         Err(format!("Invalid original path: {}", from))
+                    } else if !identity
+                        .as_ref()
+                        .is_some_and(|identity| source_identity_matches(Path::new(to), identity))
+                    {
+                        Err(format!(
+                            "The moved item changed after the operation; undo stopped and preserved it: {}",
+                            to
+                        ))
                     } else {
                         move_path_resumable(to.clone(), from.clone(), false, |_| true)
                     };
@@ -1648,9 +2366,10 @@ impl OperationManager {
                 UndoAction::RestoreBackup {
                     backup_path,
                     original_path,
+                    identity,
                 } => (
                     original_path.clone(),
-                    restore_backup(backup_path, original_path),
+                    restore_backup(backup_path, original_path, identity.as_ref()),
                 ),
             };
 
@@ -1661,7 +2380,7 @@ impl OperationManager {
             match result {
                 Ok(()) => {
                     if let Some(parent) = Path::new(&display_path).parent() {
-                        let _ = app.emit("dir-change", parent.to_string_lossy().to_string());
+                        crate::cache::notify_dir_change(app, &parent.to_string_lossy());
                     }
                     match action {
                         UndoAction::PendingMove { from, .. }
@@ -1671,8 +2390,7 @@ impl OperationManager {
                             ..
                         } => {
                             if let Some(parent) = Path::new(from).parent() {
-                                let _ =
-                                    app.emit("dir-change", parent.to_string_lossy().to_string());
+                                crate::cache::notify_dir_change(app, &parent.to_string_lossy());
                             }
                         }
                         UndoAction::PendingCopy { .. }
@@ -1686,11 +2404,14 @@ impl OperationManager {
                 Err(error) => {
                     self.update(app, &operation_id, |snapshot| {
                         snapshot.undo_status = UndoStatus::Failed;
-                        snapshot.errors.push(format!(
-                            "Undo {}: {}",
-                            redact_path(&display_path),
-                            redact_error(&error)
-                        ));
+                        append_operation_error(
+                            snapshot,
+                            format!(
+                                "Undo {}: {}",
+                                redact_path(&display_path),
+                                redact_error(&error)
+                            ),
+                        );
                         snapshot.current_item = None;
                     });
                     return;
@@ -1752,6 +2473,87 @@ impl OperationManager {
                 format!("Failed to persist the selected destination: {}", error)
             })?;
         }
+        if matches!(request.conflict_policy, ConflictPolicy::KeepBoth) && started {
+            let partial = partial_path_for(Path::new(&target));
+            let pending_key = match request.kind {
+                OperationKind::Copy => UndoAction::PendingCopy {
+                    source: request.paths[item_index].clone(),
+                    path: target.clone(),
+                    partial_path: partial.to_string_lossy().to_string(),
+                    identity: None,
+                },
+                OperationKind::Move => UndoAction::PendingMove {
+                    from: request.paths[item_index].clone(),
+                    to: target.clone(),
+                    source_identity: request.source_identities.get(item_index).cloned().flatten(),
+                    target_identity: None,
+                },
+                _ => return Ok(Some(target)),
+            };
+            let pending = self.stored_undo_intent(id, &pending_key);
+            let destination_exists = path_exists(Path::new(&target));
+            let partial_exists = path_exists(&partial);
+            let destination_owned = match pending.as_ref() {
+                Some(UndoAction::PendingCopy {
+                    identity: Some(identity),
+                    ..
+                }) => source_identity_matches(Path::new(&target), identity),
+                Some(UndoAction::PendingMove {
+                    target_identity: Some(identity),
+                    ..
+                }) => source_identity_matches(Path::new(&target), identity),
+                Some(UndoAction::PendingMove {
+                    source_identity: Some(identity),
+                    ..
+                }) => source_identity_matches(Path::new(&target), identity),
+                _ => false,
+            };
+            let partial_owned = match pending.as_ref() {
+                Some(UndoAction::PendingCopy {
+                    identity: Some(identity),
+                    ..
+                }) => object_identity_matches(&partial, identity),
+                Some(UndoAction::PendingMove {
+                    target_identity: Some(identity),
+                    ..
+                }) => object_identity_matches(&partial, identity),
+                _ => false,
+            };
+
+            if partial_exists && !partial_owned {
+                return Err(format!(
+                    "The interrupted operation has an unverified staging file; it was preserved: {}",
+                    partial.to_string_lossy()
+                ));
+            }
+            if destination_exists && !destination_owned {
+                if partial_exists {
+                    remove_path_if_exists(&partial)?;
+                }
+                if let Some(pending) = pending.as_ref() {
+                    self.remove_undo_intent(id, pending)?;
+                }
+                target = unique_operation_path(Path::new(&target))
+                    .to_string_lossy()
+                    .to_string();
+                let mut records = self.records.lock().map_err(|error| error.to_string())?;
+                let record = records
+                    .get_mut(id)
+                    .ok_or_else(|| "Operation not found".to_string())?;
+                let stored_request = record
+                    .request
+                    .as_mut()
+                    .ok_or_else(|| "Operation recovery request is missing".to_string())?;
+                let stored_target = stored_request
+                    .target_paths
+                    .get_mut(item_index)
+                    .ok_or_else(|| "Operation item is missing".to_string())?;
+                *stored_target = Some(target.clone());
+                persist_record_map(&records).map_err(|error| {
+                    format!("Failed to persist the selected destination: {}", error)
+                })?;
+            }
+        }
         Ok(Some(target))
     }
 
@@ -1768,21 +2570,46 @@ impl OperationManager {
             .ok_or_else(|| "Archive destination is missing".to_string())?;
         let started = request.started_items.first().copied().unwrap_or(false);
         let previous_target = target.clone();
-        let previous_partial = partial_path_for(Path::new(&previous_target));
-        let pending = UndoAction::PendingArchiveOutput {
-            path: previous_target.clone(),
-            partial_path: previous_partial.to_string_lossy().to_string(),
-        };
-        let owns_published_target = started
-            && path_exists(Path::new(&previous_target))
-            && !path_exists(&previous_partial)
-            && self.has_undo_intent(id, &pending);
-        let should_retarget = (path_exists(Path::new(&previous_target)) && !owns_published_target)
-            || (!started && path_exists(&previous_partial));
+        let pending = self.pending_archive_for_path(id, &previous_target);
+        let previous_partial = pending
+            .as_ref()
+            .and_then(|action| match action {
+                UndoAction::PendingArchiveOutput { partial_path, .. } => {
+                    Some(PathBuf::from(partial_path))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| partial_path_for(Path::new(&previous_target)));
+        let pending_identity = pending.as_ref().and_then(|action| match action {
+            UndoAction::PendingArchiveOutput { identity, .. } => identity.as_ref(),
+            _ => None,
+        });
+        let pending_ready = pending.as_ref().is_some_and(|action| {
+            matches!(action, UndoAction::PendingArchiveOutput { ready: true, .. })
+        });
+        let target_exists = path_exists(Path::new(&previous_target));
+        let partial_exists = path_exists(&previous_partial);
+        let target_matches = pending_identity
+            .is_some_and(|identity| source_identity_matches(Path::new(&previous_target), identity));
+        let partial_matches = pending_identity
+            .is_some_and(|identity| source_identity_matches(&previous_partial, identity));
+
+        if started && target_exists && pending.is_some() && (!target_matches || !pending_ready) {
+            return Err(format!(
+                "The archive destination changed while the operation was interrupted; it was preserved: {}",
+                previous_target
+            ));
+        }
+        if started && partial_exists && !partial_matches {
+            return Err(format!(
+                "The archive staging file cannot be verified; it was preserved: {}",
+                previous_partial.to_string_lossy()
+            ));
+        }
+        let owns_published_target = started && target_exists && target_matches && pending_ready;
+        let should_retarget = (target_exists && !owns_published_target && pending.is_none())
+            || (!started && partial_exists);
         if should_retarget {
-            if started {
-                remove_path_if_exists(&previous_partial)?;
-            }
             target = unique_archive_path(
                 Path::new(&previous_target),
                 matches!(request.kind, OperationKind::Extract),
@@ -1800,9 +2627,6 @@ impl OperationManager {
             for stored_target in &mut stored_request.target_paths {
                 *stored_target = Some(target.clone());
             }
-            record
-                .undo_actions
-                .retain(|candidate| candidate != &pending);
             persist_record_map(&records)
                 .map_err(|error| format!("Failed to persist archive destination: {}", error))?;
         }
@@ -1849,7 +2673,11 @@ impl OperationManager {
         let record = records
             .get_mut(id)
             .ok_or_else(|| "Operation not found".to_string())?;
-        if record.undo_actions.contains(action) {
+        if record
+            .undo_actions
+            .iter()
+            .any(|candidate| same_undo_intent(candidate, action))
+        {
             return Ok(());
         }
         record.undo_actions.push(action.clone());
@@ -1866,12 +2694,169 @@ impl OperationManager {
         self.records
             .lock()
             .ok()
-            .and_then(|records| {
-                records
-                    .get(id)
-                    .map(|record| record.undo_actions.contains(action))
+            .map(|records| {
+                records.get(id).is_some_and(|record| {
+                    record
+                        .undo_actions
+                        .iter()
+                        .any(|candidate| same_undo_intent(candidate, action))
+                })
             })
             .unwrap_or(false)
+    }
+
+    fn stored_undo_intent(&self, id: &str, action: &UndoAction) -> Option<UndoAction> {
+        self.records.lock().ok().and_then(|records| {
+            records.get(id).and_then(|record| {
+                record
+                    .undo_actions
+                    .iter()
+                    .find(|candidate| same_undo_intent(candidate, action))
+                    .cloned()
+            })
+        })
+    }
+
+    fn pending_archive_for_path(&self, id: &str, path: &str) -> Option<UndoAction> {
+        self.records.lock().ok().and_then(|records| {
+            records.get(id).and_then(|record| {
+                record.undo_actions.iter().find_map(|action| match action {
+                    UndoAction::PendingArchiveOutput {
+                        path: stored_path, ..
+                    } if stored_path == path => Some(action.clone()),
+                    _ => None,
+                })
+            })
+        })
+    }
+
+    fn update_pending_identity(
+        &self,
+        id: &str,
+        action: &UndoAction,
+        object_path: &Path,
+    ) -> Result<SourceIdentity, String> {
+        let identity = source_identity(object_path).ok_or_else(|| {
+            format!(
+                "Could not verify the operation output: {}",
+                object_path.display()
+            )
+        })?;
+        let mut records = self.records.lock().map_err(|error| error.to_string())?;
+        let record = records
+            .get_mut(id)
+            .ok_or_else(|| "Operation not found".to_string())?;
+        let stored = record
+            .undo_actions
+            .iter_mut()
+            .find(|candidate| same_undo_intent(candidate, action))
+            .ok_or_else(|| "Operation recovery intent is missing".to_string())?;
+        let expected = match stored {
+            UndoAction::PendingCopy {
+                identity: expected, ..
+            }
+            | UndoAction::PendingArchiveOutput {
+                identity: expected, ..
+            } => expected,
+            UndoAction::PendingMove {
+                target_identity: expected,
+                from,
+                source_identity,
+                ..
+            } => {
+                // A same-volume rename preserves the source file object. If
+                // the source path has disappeared, never adopt an unrelated
+                // object that raced into the destination after the rename.
+                if !path_exists(Path::new(from))
+                    && !source_identity
+                        .as_ref()
+                        .is_some_and(|source| source_identity_matches(object_path, source))
+                {
+                    return Err(format!(
+                        "The move target does not match the queued source object: {}",
+                        object_path.display()
+                    ));
+                }
+                expected
+            }
+            _ => return Err("This recovery intent cannot record an output identity".to_string()),
+        };
+        let previous_identity = expected.clone();
+        if expected
+            .as_ref()
+            .is_some_and(|expected| !object_identities_match(expected, &identity))
+        {
+            return Err(format!(
+                "The operation output changed before it could be recorded: {}",
+                object_path.display()
+            ));
+        }
+        *expected = Some(identity.clone());
+        if let Err(error) = persist_record_map(&records) {
+            // Keep the in-memory action aligned with the durable record.
+            if let Some(stored) = records.get_mut(id).and_then(|record| {
+                record
+                    .undo_actions
+                    .iter_mut()
+                    .find(|candidate| same_undo_intent(candidate, action))
+            }) {
+                match stored {
+                    UndoAction::PendingCopy { identity, .. }
+                    | UndoAction::PendingArchiveOutput { identity, .. } => {
+                        *identity = previous_identity
+                    }
+                    UndoAction::PendingMove {
+                        target_identity, ..
+                    } => *target_identity = previous_identity,
+                    _ => {}
+                }
+            }
+            return Err(format!(
+                "Could not persist operation output identity: {}",
+                error
+            ));
+        }
+        Ok(identity)
+    }
+
+    fn mark_pending_archive_ready(&self, id: &str, action: &UndoAction) -> Result<(), String> {
+        let mut records = self.records.lock().map_err(|error| error.to_string())?;
+        let record = records
+            .get_mut(id)
+            .ok_or_else(|| "Operation not found".to_string())?;
+        let stored = record
+            .undo_actions
+            .iter_mut()
+            .find(|candidate| same_undo_intent(candidate, action))
+            .ok_or_else(|| "Archive recovery intent is missing".to_string())?;
+        let UndoAction::PendingArchiveOutput {
+            ready, identity, ..
+        } = stored
+        else {
+            return Err("Archive recovery intent is invalid".to_string());
+        };
+        if identity.is_none() {
+            return Err("Archive output identity was not recorded".to_string());
+        }
+        let previous_ready = *ready;
+        *ready = true;
+        if let Err(error) = persist_record_map(&records) {
+            if let Some(UndoAction::PendingArchiveOutput { ready, .. }) =
+                records.get_mut(id).and_then(|record| {
+                    record
+                        .undo_actions
+                        .iter_mut()
+                        .find(|candidate| same_undo_intent(candidate, action))
+                })
+            {
+                *ready = previous_ready;
+            }
+            return Err(format!(
+                "Could not persist archive completion state: {}",
+                error
+            ));
+        }
+        Ok(())
     }
 
     fn remove_undo_intent(&self, id: &str, action: &UndoAction) -> Result<(), String> {
@@ -1882,7 +2867,7 @@ impl OperationManager {
         let Some(position) = record
             .undo_actions
             .iter()
-            .position(|candidate| candidate == action)
+            .position(|candidate| same_undo_intent(candidate, action))
         else {
             return Ok(());
         };
@@ -1908,9 +2893,11 @@ impl OperationManager {
                     UndoAction::RestoreBackup {
                         backup_path,
                         original_path: stored_original,
+                        identity,
                     } if stored_original == original_path => Some(UndoAction::RestoreBackup {
                         backup_path: backup_path.clone(),
                         original_path: stored_original.clone(),
+                        identity: identity.clone(),
                     }),
                     _ => None,
                 })
@@ -1918,10 +2905,23 @@ impl OperationManager {
         });
 
         if let Some(action) = existing_action {
-            let UndoAction::RestoreBackup { backup_path, .. } = &action else {
+            let UndoAction::RestoreBackup {
+                backup_path,
+                identity,
+                ..
+            } = &action
+            else {
                 unreachable!();
             };
             if path_exists(Path::new(backup_path)) {
+                if !identity.as_ref().is_some_and(|identity| {
+                    source_identity_matches(Path::new(backup_path), identity)
+                }) {
+                    return Err(format!(
+                        "The recovery backup changed and was preserved: {}",
+                        backup_path
+                    ));
+                }
                 return Ok(Some(action));
             }
             if !path_exists(Path::new(original_path)) {
@@ -1930,8 +2930,26 @@ impl OperationManager {
                     original_path
                 ));
             }
+            if !identity
+                .as_ref()
+                .is_some_and(|identity| source_identity_matches(Path::new(original_path), identity))
+            {
+                return Err(format!(
+                    "The replacement target changed before it could be protected: {}",
+                    original_path
+                ));
+            }
             rename_without_replace(Path::new(original_path), Path::new(backup_path))
                 .map_err(|error| error.to_string())?;
+            if !identity
+                .as_ref()
+                .is_some_and(|identity| source_identity_matches(Path::new(backup_path), identity))
+            {
+                return Err(format!(
+                    "The replacement backup changed while it was being staged: {}",
+                    backup_path
+                ));
+            }
             return Ok(Some(action));
         }
 
@@ -1941,9 +2959,16 @@ impl OperationManager {
         let backup_path = backup_path_for(Path::new(original_path), id, item_index)
             .to_string_lossy()
             .to_string();
+        let identity = source_identity(Path::new(original_path)).ok_or_else(|| {
+            format!(
+                "Could not record the existing target identity: {}",
+                original_path
+            )
+        })?;
         let action = UndoAction::RestoreBackup {
             backup_path: backup_path.clone(),
             original_path: original_path.to_string(),
+            identity: Some(identity.clone()),
         };
 
         {
@@ -1974,6 +2999,12 @@ impl OperationManager {
             }
             return Err(format!("Could not protect the existing target: {}", error));
         }
+        if !source_identity_matches(Path::new(&backup_path), &identity) {
+            return Err(format!(
+                "The replacement backup changed while it was being staged: {}",
+                backup_path
+            ));
+        }
         Ok(Some(action))
     }
 
@@ -1987,23 +3018,53 @@ impl OperationManager {
         let UndoAction::RestoreBackup {
             backup_path,
             original_path,
+            identity,
         } = action
         else {
             return Ok(());
         };
 
         if let Some(destination) = destination {
-            if path_exists(Path::new(destination)) {
+            let partial = partial_path_for(Path::new(destination));
+            let expected_identity = pending_action
+                .and_then(|pending| self.stored_undo_intent(id, pending))
+                .and_then(|pending| match pending {
+                    UndoAction::PendingCopy { identity, .. } => identity,
+                    UndoAction::PendingMove {
+                        target_identity,
+                        source_identity,
+                        ..
+                    } => target_identity.or(source_identity),
+                    _ => None,
+                });
+            let destination_exists = path_exists(Path::new(destination));
+            let partial_exists = path_exists(&partial);
+            if (destination_exists || partial_exists)
+                && !expected_identity.as_ref().is_some_and(|identity| {
+                    (!destination_exists
+                        || source_identity_matches(Path::new(destination), identity))
+                        && (!partial_exists || object_identity_matches(&partial, identity))
+                })
+            {
+                return Err(format!(
+                    "Replacement rollback could not verify ownership of the new output; it was preserved: {}",
+                    destination
+                ));
+            }
+            if destination_exists {
                 delete_to_trash(destination.to_string())?;
             }
-            remove_path_if_exists(&partial_path_for(Path::new(destination)))?;
+            if partial_exists {
+                remove_path_if_exists(&partial)?;
+            }
         }
-        restore_backup(backup_path, original_path)?;
+        restore_backup(backup_path, original_path, identity.as_ref())?;
 
         let mut records = self.records.lock().map_err(|error| error.to_string())?;
         if let Some(record) = records.get_mut(id) {
             record.undo_actions.retain(|candidate| {
-                candidate != action && pending_action.is_none_or(|pending| candidate != pending)
+                candidate != action
+                    && pending_action.is_none_or(|pending| !same_undo_intent(candidate, pending))
             });
         }
         persist_record_map(&records)
@@ -2034,7 +3095,7 @@ impl OperationManager {
             if let Some((pending, action)) = undo_transition {
                 record
                     .undo_actions
-                    .retain(|candidate| candidate != &pending);
+                    .retain(|candidate| !same_undo_intent(candidate, &pending));
                 if !record.undo_actions.contains(&action) {
                     record.undo_actions.push(action);
                 }
@@ -2051,10 +3112,13 @@ impl OperationManager {
             if let Err(error) = persist_record_map(&records) {
                 if let Some(record) = records.get_mut(id) {
                     record.snapshot.failed_items += 1;
-                    record.snapshot.errors.push(format!(
-                        "Filesystem work completed, but recovery state could not be persisted: {}",
-                        error
-                    ));
+                    append_operation_error(
+                        &mut record.snapshot,
+                        format!(
+                            "Filesystem work completed, but recovery state could not be persisted: {}",
+                            error
+                        ),
+                    );
                 }
             }
             records.get(id).map(|record| record.snapshot.clone())
@@ -2092,9 +3156,10 @@ impl OperationManager {
     fn fail_item(&self, app: &AppHandle, id: &str, path: &str, error: &str) {
         self.update(app, id, |snapshot| {
             snapshot.failed_items += 1;
-            snapshot
-                .errors
-                .push(format!("{}: {}", redact_path(path), redact_error(error)));
+            append_operation_error(
+                snapshot,
+                format!("{}: {}", redact_path(path), redact_error(error)),
+            );
             snapshot.current_item = None;
         });
     }
@@ -2120,10 +3185,10 @@ impl OperationManager {
                 }
             }
             record.snapshot.failed_items += 1;
-            record
-                .snapshot
-                .errors
-                .push(format!("{}: {}", redact_path(path), redact_error(error)));
+            append_operation_error(
+                &mut record.snapshot,
+                format!("{}: {}", redact_path(path), redact_error(error)),
+            );
             record.snapshot.current_item = None;
             if let Err(error) = persist_record_map(&records) {
                 eprintln!("Failed to persist rejected operation item: {}", error);
@@ -2152,13 +3217,18 @@ impl OperationManager {
             if let Some(request) = record.request.as_mut() {
                 request.resolved_items.fill(true);
             }
-            if let Some(pending) = pending_action {
+            let output_identity = pending_action.as_ref().and_then(|pending| match pending {
+                UndoAction::PendingArchiveOutput { identity, .. } => identity.clone(),
+                _ => None,
+            });
+            if let Some(pending) = pending_action.as_ref() {
                 record
                     .undo_actions
-                    .retain(|candidate| candidate != &pending);
+                    .retain(|candidate| !same_undo_intent(candidate, pending));
             }
             let action = UndoAction::RemoveCreatedPath {
                 path: destination.to_string(),
+                identity: output_identity,
             };
             if !record.undo_actions.contains(&action) {
                 record.undo_actions.push(action);
@@ -2169,10 +3239,13 @@ impl OperationManager {
             if let Err(error) = persist_record_map(&records) {
                 if let Some(record) = records.get_mut(id) {
                     record.snapshot.failed_items = record.snapshot.total_items;
-                    record.snapshot.errors.push(format!(
-                        "Archive completed, but recovery state could not be persisted: {}",
-                        error
-                    ));
+                    append_operation_error(
+                        &mut record.snapshot,
+                        format!(
+                            "Archive completed, but recovery state could not be persisted: {}",
+                            error
+                        ),
+                    );
                 }
             }
             records.get(id).map(|record| record.snapshot.clone())
@@ -2185,7 +3258,7 @@ impl OperationManager {
     fn fail_archive(&self, app: &AppHandle, id: &str, error: &str) {
         self.update(app, id, |snapshot| {
             snapshot.failed_items = snapshot.total_items;
-            snapshot.errors.push(redact_error(error));
+            append_operation_error(snapshot, redact_error(error));
             snapshot.current_item = None;
         });
     }
@@ -2213,23 +3286,6 @@ impl OperationManager {
     }
 
     fn complete_undo(&self, app: &AppHandle, id: &str) {
-        let cleanup_result = self.request(id).map_or(Ok(()), |request| {
-            request
-                .target_paths
-                .iter()
-                .flatten()
-                .try_for_each(|target| remove_path_if_exists(&partial_path_for(Path::new(target))))
-        });
-        if let Err(error) = cleanup_result {
-            self.update(app, id, |snapshot| {
-                snapshot.undo_status = UndoStatus::Failed;
-                snapshot
-                    .errors
-                    .push(format!("Undo cleanup failed: {}", redact_error(&error)));
-            });
-            return;
-        }
-
         let snapshot = {
             let Ok(mut records) = self.records.lock() else {
                 return;
@@ -2498,7 +3554,7 @@ impl OperationManager {
 
     pub fn clear(&self, id: &str) -> Result<(), String> {
         let mut records = self.records.lock().map_err(|error| error.to_string())?;
-        let (undo_actions, request) = {
+        let undo_actions = {
             let Some(record) = records.get(id) else {
                 return Ok(());
             };
@@ -2511,24 +3567,19 @@ impl OperationManager {
             ) {
                 return Ok(());
             }
-            (record.undo_actions.clone(), record.request.clone())
+            record.undo_actions.clone()
         };
 
         for action in &undo_actions {
             if let UndoAction::RestoreBackup {
                 backup_path,
                 original_path,
+                identity,
             } = action
             {
-                discard_backup_to_trash(backup_path, original_path)?;
+                discard_backup_to_trash(backup_path, original_path, identity.as_ref())?;
             }
         }
-        if let Some(request) = request {
-            for target in request.target_paths.iter().flatten() {
-                remove_path_if_exists(&partial_path_for(Path::new(target)))?;
-            }
-        }
-
         records.remove(id);
         if let Err(error) = persist_record_map(&records) {
             return Err(format!("Failed to persist cleared operation: {}", error));
@@ -2651,20 +3702,28 @@ pub fn clear_file_operation(
 #[cfg(test)]
 mod tests {
     use super::{
-        conflicts, load_operation_records, new_file_request, persist_record_map_to_path,
-        restore_backup, source_identity, source_identity_matches, zip_entry_is_safe,
-        ConflictPolicy, OperationKind, OperationRequest, OperationSnapshot, OperationStatus,
-        PersistedOperationRecord, UndoAction, UndoStatus,
+        conflicts, load_operation_records, new_file_request, object_identity_matches,
+        persist_record_map_to_path, restore_backup, source_identity, source_identity_matches,
+        verify_created_path_identity, zip_entry_is_safe, ConflictPolicy, OperationKind,
+        OperationRequest, OperationSnapshot, OperationStatus, PersistedOperationRecord, UndoAction,
+        UndoStatus,
     };
     use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static NEXT_TEST_ROOT: AtomicU64 = AtomicU64::new(1);
 
     fn test_root(name: &str) -> std::path::PathBuf {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock should be valid")
             .as_nanos();
-        std::env::temp_dir().join(format!("imageexplorer-{name}-{suffix}"))
+        let sequence = NEXT_TEST_ROOT.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "imageexplorer-{name}-{}-{suffix}-{sequence}",
+            std::process::id()
+        ))
     }
 
     fn snapshot(id: &str, status: OperationStatus, undo_status: UndoStatus) -> OperationSnapshot {
@@ -2680,6 +3739,7 @@ mod tests {
             completed_bytes: 2,
             current_item: Some("/tmp/source.txt".to_string()),
             errors: Vec::new(),
+            error_details: Vec::new(),
             cancel_requested: false,
             undo_status,
             retryable: false,
@@ -2748,6 +3808,47 @@ mod tests {
     }
 
     #[test]
+    fn partial_identity_remains_owned_while_copy_bytes_are_written() {
+        let root = test_root("partial-identity");
+        fs::create_dir_all(&root).expect("create test root");
+        let partial = root.join(".photo.raw.imageexplorer-part");
+        fs::write(&partial, b"").expect("create partial file");
+        let identity = source_identity(&partial).expect("capture partial identity");
+
+        fs::write(&partial, b"copied bytes").expect("append copied bytes");
+
+        assert!(object_identity_matches(&partial, &identity));
+        assert!(!source_identity_matches(&partial, &identity));
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn undo_preserves_an_external_replacement_at_the_created_path() {
+        let root = test_root("undo-replacement");
+        fs::create_dir_all(&root).expect("create test root");
+        let created = root.join("copied.raw");
+        let replacement = root.join("external-replacement.raw");
+        let moved_original = root.join("original-owned-by-operation.raw");
+        fs::write(&created, b"operation output").expect("write copied output");
+        let identity = source_identity(&created).expect("capture copied output identity");
+
+        fs::rename(&created, &moved_original).expect("move original out of target path");
+        fs::write(&replacement, b"external replacement").expect("write replacement");
+        fs::rename(&replacement, &created).expect("install external replacement");
+
+        assert!(verify_created_path_identity(&created, Some(&identity)).is_err());
+        assert_eq!(
+            fs::read(&created).expect("read preserved replacement"),
+            b"external replacement"
+        );
+        assert_eq!(
+            fs::read(&moved_original).expect("read preserved original output"),
+            b"operation output"
+        );
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
     fn zip_entry_validation_rejects_cross_platform_path_escape() {
         assert!(zip_entry_is_safe("folder/photo.raw"));
         assert!(!zip_entry_is_safe("../photo.raw"));
@@ -2772,10 +3873,13 @@ mod tests {
         let action = UndoAction::RestoreBackup {
             backup_path: "/tmp/.imageexplorer-replaced-op-1".to_string(),
             original_path: "/tmp/destination/source.txt".to_string(),
+            identity: None,
         };
         let pending = UndoAction::PendingCopy {
             source: "/tmp/source.txt".to_string(),
             path: "/tmp/destination/source.txt".to_string(),
+            partial_path: "/tmp/.source.txt.imageexplorer-part".to_string(),
+            identity: None,
         };
         let payload = serde_json::to_vec(&vec![PersistedOperationRecord {
             snapshot: snapshot("op-1", OperationStatus::Running, UndoStatus::Available),
@@ -2814,6 +3918,7 @@ mod tests {
         };
         let action = UndoAction::RemoveCreatedPath {
             path: "/tmp/destination/source.txt".to_string(),
+            identity: None,
         };
         let payload = serde_json::to_vec(&vec![PersistedOperationRecord {
             snapshot: snapshot("op-complete", OperationStatus::Running, UndoStatus::None),
@@ -2892,18 +3997,27 @@ mod tests {
         let original = root.join("photo.raw");
         let backup = root.join(".imageexplorer-replaced-op-1-0");
         fs::write(&original, b"original").expect("write original target");
+        let identity = source_identity(&original).expect("capture original target identity");
         fs::rename(&original, &backup).expect("stage recovery backup");
         fs::write(&original, b"replacement").expect("write replacement target");
         fs::remove_file(&original).expect("remove replacement before restore");
 
-        restore_backup(&backup.to_string_lossy(), &original.to_string_lossy())
-            .expect("restore original target");
+        restore_backup(
+            &backup.to_string_lossy(),
+            &original.to_string_lossy(),
+            Some(&identity),
+        )
+        .expect("restore original target");
         assert_eq!(
             fs::read(&original).expect("read restored target"),
             b"original"
         );
-        restore_backup(&backup.to_string_lossy(), &original.to_string_lossy())
-            .expect("repeating a completed restore should be safe");
+        restore_backup(
+            &backup.to_string_lossy(),
+            &original.to_string_lossy(),
+            Some(&identity),
+        )
+        .expect("repeating a completed restore should be safe");
 
         fs::remove_dir_all(root).expect("remove test root");
     }

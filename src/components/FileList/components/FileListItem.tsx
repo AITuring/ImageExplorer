@@ -7,6 +7,7 @@ import { formatFileSize, formatDate } from "@/utils/format";
 interface FileListItemProps {
   entry: FileEntry;
   isSelected: boolean;
+  isFocused?: boolean;
   isEditing: boolean;
   editValue: string;
   onEditValueChange: (value: string) => void;
@@ -21,6 +22,7 @@ interface FileListItemProps {
 export const FileListItem = memo(function FileListItem({
   entry,
   isSelected,
+  isFocused = false,
   isEditing,
   editValue,
   onEditValueChange,
@@ -45,7 +47,7 @@ export const FileListItem = memo(function FileListItem({
     <div
       className={`flex w-full cursor-default items-center rounded-md p-2 text-sm transition-colors ${
         isSelected ? "bg-accent/80 ring-primary/20 ring-1" : "hover:bg-accent/60 focus:bg-accent/60"
-      }`}
+      } ${isFocused ? "outline-primary outline outline-1 outline-offset-[-1px]" : ""}`}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
     >

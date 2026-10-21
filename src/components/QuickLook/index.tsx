@@ -39,6 +39,10 @@ import {
 } from "@/utils/file";
 import { formatFileSize, formatDate } from "@/utils/format";
 import { RAW_IMAGE_EXTENSIONS } from "@/constants/fileTypes";
+import {
+  isInteractiveKeyboardTarget,
+  shouldIgnoreKeyboardCommand,
+} from "@/lib/keyboardShortcuts";
 
 interface QuickLookProps {
   entry: FileEntry | null;
@@ -1076,6 +1080,21 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     if (!entry) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      const eventTarget = e.target instanceof Element ? e.target : null;
+      const activeElement = document.activeElement instanceof Element ? document.activeElement : null;
+      const quickLookIsActive = [eventTarget, activeElement].some((element) =>
+        element?.closest('[data-keyboard-scope="quick-look"]')
+      );
+      if (
+        e.defaultPrevented ||
+        shouldIgnoreKeyboardCommand(e, { allowOverlaySelector: '[data-keyboard-scope="quick-look"]' }) ||
+        !quickLookIsActive ||
+        isInteractiveKeyboardTarget(eventTarget) ||
+        isInteractiveKeyboardTarget(activeElement)
+      ) {
+        return;
+      }
+
       if (e.key === "Tab") {
         const dialog = dialogRef.current;
         if (!dialog) return;
@@ -1108,6 +1127,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
       }
 
       if (e.key === "Escape") {
+        e.preventDefault();
         onClose();
         return;
       }
@@ -1507,6 +1527,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
         style={dialogStyle}
         role="dialog"
         aria-modal="true"
+        data-keyboard-scope="quick-look"
         aria-label={t("common.quick_look.preview")}
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}

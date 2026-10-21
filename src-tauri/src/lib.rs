@@ -34,6 +34,7 @@ use operations::{
 };
 use serde::Serialize;
 use std::process::Child;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use trash_commands::{empty_trash, list_trash, restore_trash_entry};
@@ -71,25 +72,23 @@ async fn search_indexed(
             search_engine.search(&query_clone, limit_val)
         })
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())??;
 
-        if !sqlite_results.is_empty() {
-            let results: Vec<IndexedFile> = sqlite_results
-                .into_iter()
-                .map(|r| IndexedFile {
-                    name: r.name,
-                    name_lower: r.name_lower,
-                    path: r.path,
-                    is_dir: r.is_dir,
-                    size: r.size as u64,
-                    modified: r.modified.map(|m| m as u64),
-                    extension: r.extension,
-                    is_hidden: r.is_hidden,
-                })
-                .collect();
+        let results: Vec<IndexedFile> = sqlite_results
+            .into_iter()
+            .map(|r| IndexedFile {
+                name: r.name,
+                name_lower: r.name_lower,
+                path: r.path,
+                is_dir: r.is_dir,
+                size: r.size as u64,
+                modified: r.modified.map(|m| m as u64),
+                extension: r.extension,
+                is_hidden: r.is_hidden,
+            })
+            .collect();
 
-            return Ok(SearchResponse { results });
-        }
+        return Ok(SearchResponse { results });
     }
 
     // 回退到内存索引（阻塞等待，避免索引构建期间返回空结果）
@@ -168,14 +167,27 @@ fn build_index_background(
                         idx.file_count = count as usize;
                     }
 
-                    let _ = app.emit("index-status", "ready");
-
                     // 启动增量监听
                     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
                     if let Ok(mut senders) = stop_senders.lock() {
                         senders.push(stop_tx);
                     }
-                    start_sqlite_watcher(db.clone(), home_str, stop_rx);
+                    if let Err(error) = start_sqlite_watcher(
+                        db.clone(),
+                        home_str,
+                        stop_rx,
+                        Arc::new(AtomicBool::new(false)),
+                    ) {
+                        eprintln!("Failed to start SQLite index watcher: {error}");
+                        if let Err(marker_error) =
+                            IndexBuilder::new(db.connection()).mark_rebuild_required()
+                        {
+                            eprintln!(
+                                "Failed to mark SQLite index for a retry on next launch: {marker_error}"
+                            );
+                        }
+                    }
+                    let _ = app.emit("index-status", "ready");
                     return;
                 }
             }
@@ -189,32 +201,55 @@ fn build_index_background(
 
             // 使用 SQLite 构建索引
             if let Some(ref db) = database {
+                // Watch before scanning. Events are buffered until the staged
+                // snapshot commits, then replayed against the active index.
+                let is_building = Arc::new(AtomicBool::new(true));
+                let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+                if let Ok(mut senders) = stop_senders.lock() {
+                    senders.push(stop_tx);
+                }
+                let watcher_started = match start_sqlite_watcher(
+                    db.clone(),
+                    home_str.clone(),
+                    stop_rx,
+                    is_building.clone(),
+                ) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        eprintln!(
+                            "Failed to start SQLite index watcher before initial scan: {error}"
+                        );
+                        false
+                    }
+                };
+
                 let builder = IndexBuilder::new(db.connection());
                 match builder.build(&home_str, Some(&app)) {
                     Ok(count) => {
                         println!("SQLite index built: {} files", count);
-                        let _ = db.update_indexed_time();
+                        is_building.store(false, Ordering::Release);
 
                         // 更新内存索引状态
                         if let Ok(mut idx) = index.write() {
                             idx.is_building = false;
                             idx.file_count = count;
                         }
-
-                        // 启动增量监听
-                        let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-                        if let Ok(mut senders) = stop_senders.lock() {
-                            senders.push(stop_tx);
-                        }
-                        start_sqlite_watcher(db.clone(), home_str, stop_rx);
                     }
                     Err(e) => {
-                        eprintln!("SQLite index build failed: {}, falling back to memory", e);
-                        let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-                        if let Ok(mut senders) = stop_senders.lock() {
-                            senders.push(stop_tx);
+                        eprintln!(
+                            "SQLite index build failed; keeping the last committed index: {}",
+                            e
+                        );
+                        is_building.store(false, Ordering::Release);
+                        if let Ok(mut idx) = index.write() {
+                            idx.is_building = false;
+                            idx.file_count = db.file_count().max(0) as usize;
                         }
-                        fallback_to_memory_index(&app, &index, &home_str, stop_rx);
+                    }
+                }
+                if !watcher_started {
+                    if let Err(error) = builder.mark_rebuild_required() {
+                        eprintln!("Failed to mark SQLite index for retry: {error}");
                     }
                 }
             } else {
@@ -251,35 +286,34 @@ fn fallback_to_memory_index(
 }
 
 /// 启动 SQLite 增量监听器（支持优雅关闭）
-fn start_sqlite_watcher(db: SharedDatabase, root: String, stop_rx: std::sync::mpsc::Receiver<()>) {
-    use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+fn start_sqlite_watcher(
+    db: SharedDatabase,
+    root: String,
+    stop_rx: std::sync::mpsc::Receiver<()>,
+    is_building: Arc<AtomicBool>,
+) -> Result<(), String> {
+    use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut watcher = RecommendedWatcher::new(
+        move |res| {
+            let _ = tx.send(res);
+        },
+        Config::default(),
+    )
+    .map_err(|error| format!("could not create watcher: {error}"))?;
+
+    // Register synchronously before returning so the initial scan cannot
+    // begin in the gap between starting the worker and installing the watch.
+    watcher
+        .watch(std::path::Path::new(&root), RecursiveMode::Recursive)
+        .map_err(|error| format!("could not watch {root}: {error}"))?;
 
     std::thread::spawn(move || {
-        let (tx, rx) = std::sync::mpsc::channel();
+        // Keep the OS watcher alive for the full lifetime of the event loop.
+        let _watcher = watcher;
         let updater = IndexUpdater::new(db.connection());
-
-        let mut watcher = RecommendedWatcher::new(
-            move |res| {
-                let _ = tx.send(res);
-            },
-            Config::default(),
-        )
-        .expect("Failed to create watcher");
-
-        if let Err(e) = watcher.watch(std::path::Path::new(&root), RecursiveMode::Recursive) {
-            eprintln!("Failed to watch root for SQLite index: {:?}", e);
-            return;
-        }
-
-        let should_ignore = |path: &std::path::Path| -> bool {
-            let path_str = path.to_string_lossy();
-            for pattern in config::WATCHER_EXCLUDE_PATTERNS {
-                if path_str.contains(pattern) {
-                    return true;
-                }
-            }
-            false
-        };
+        let mut pending_events = Vec::new();
 
         loop {
             if stop_rx.try_recv().is_ok() {
@@ -287,36 +321,22 @@ fn start_sqlite_watcher(db: SharedDatabase, root: String, stop_rx: std::sync::mp
                 break;
             }
 
+            if !is_building.load(Ordering::Acquire) {
+                for event in pending_events.drain(..) {
+                    apply_sqlite_index_event(&updater, event);
+                }
+            }
+
             match rx.recv_timeout(std::time::Duration::from_millis(500)) {
-                Ok(Ok(event)) => match event.kind {
-                    EventKind::Create(_) => {
-                        for path in event.paths {
-                            if should_ignore(&path) {
-                                continue;
-                            }
-                            let path_str = path.to_string_lossy().to_string();
-                            let _ = updater.upsert(&path_str, path.is_dir());
-                        }
+                Ok(Ok(event)) if is_building.load(Ordering::Acquire) => {
+                    pending_events.push(event);
+                }
+                Ok(Ok(event)) => {
+                    for pending in pending_events.drain(..) {
+                        apply_sqlite_index_event(&updater, pending);
                     }
-                    EventKind::Remove(_) => {
-                        for path in event.paths {
-                            let path_str = path.to_string_lossy().to_string();
-                            let _ = updater.remove(&path_str);
-                        }
-                    }
-                    EventKind::Modify(notify::event::ModifyKind::Name(_))
-                        if event.paths.len() == 2 =>
-                    {
-                        let from = &event.paths[0];
-                        let to = &event.paths[1];
-                        let _ = updater.rename(
-                            &from.to_string_lossy(),
-                            &to.to_string_lossy(),
-                            to.is_dir(),
-                        );
-                    }
-                    _ => {}
-                },
+                    apply_sqlite_index_event(&updater, event);
+                }
                 Ok(Err(e)) => eprintln!("SQLite watcher error: {:?}", e),
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -326,6 +346,76 @@ fn start_sqlite_watcher(db: SharedDatabase, root: String, stop_rx: std::sync::mp
             }
         }
     });
+    Ok(())
+}
+
+fn apply_sqlite_index_event(updater: &IndexUpdater, event: notify::Event) {
+    use notify::EventKind;
+
+    let result = match event.kind {
+        EventKind::Create(_)
+        | EventKind::Modify(
+            notify::event::ModifyKind::Data(_) | notify::event::ModifyKind::Metadata(_),
+        ) => {
+            for path in event.paths {
+                if config::is_index_excluded(&path) {
+                    continue;
+                }
+                let path_str = path.to_string_lossy().to_string();
+                let result = if path.is_dir() {
+                    updater.upsert_subtree(&path_str).map(|_| ())
+                } else {
+                    updater.upsert(&path_str, false)
+                };
+                if let Err(error) = result {
+                    eprintln!("SQLite index upsert failed: {error}");
+                }
+            }
+            Ok(())
+        }
+        EventKind::Remove(_) => {
+            for path in event.paths {
+                let path_str = path.to_string_lossy().to_string();
+                if let Err(error) = updater.remove(&path_str) {
+                    eprintln!("SQLite index removal failed: {error}");
+                }
+            }
+            Ok(())
+        }
+        EventKind::Modify(notify::event::ModifyKind::Name(_)) if event.paths.len() == 2 => {
+            let first = &event.paths[0];
+            let second = &event.paths[1];
+            // Backends differ in path ordering. A completed rename normally
+            // leaves only the destination on disk.
+            let (from, to) = match (first.exists(), second.exists()) {
+                (false, true) => (first, second),
+                (true, false) => (second, first),
+                _ => (first, second),
+            };
+            let from_path = from.to_string_lossy().to_string();
+            let to_path = to.to_string_lossy().to_string();
+            let from_excluded = config::is_index_excluded(from);
+            let to_excluded = config::is_index_excluded(to);
+            if to_excluded {
+                updater.remove(&from_path)
+            } else if from_excluded {
+                // The old subtree was intentionally absent from the index, so
+                // scan the destination before publishing its indexed rows.
+                if to.is_dir() {
+                    updater.upsert_subtree(&to_path).map(|_| ())
+                } else {
+                    updater.upsert(&to_path, false)
+                }
+            } else {
+                updater.rename(&from_path, &to_path, to.is_dir())
+            }
+        }
+        _ => Ok(()),
+    };
+
+    if let Err(error) = result {
+        eprintln!("SQLite index event update failed: {error}");
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -394,34 +484,14 @@ pub fn run() {
         })
         .on_menu_event(|app, event| {
             if event.id() == "new-window" {
-                // 直接在 Rust 端创建新窗口
-                use std::time::{SystemTime, UNIX_EPOCH};
-                let timestamp = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis();
-                let window_id = format!("window-{}", timestamp);
-                let url = format!("index.html?windowId={}", window_id);
-
-                println!("Creating new window: {} with url: {}", window_id, url);
-
-                match tauri::webview::WebviewWindowBuilder::new(
-                    app,
-                    &window_id,
-                    tauri::WebviewUrl::App(url.into()),
-                )
-                .title("ImageExplorer")
-                .inner_size(1000.0, 700.0)
-                .min_inner_size(800.0, 600.0)
-                .transparent(true)
-                .title_bar_style(tauri::TitleBarStyle::Overlay)
-                .hidden_title(true)
-                // Keep HTML5 drag/drop available in dynamically-created windows.
-                .disable_drag_drop_handler()
-                .build()
+                if let Some(window) = app
+                    .webview_windows()
+                    .values()
+                    .find(|window| window.is_focused().unwrap_or(false))
                 {
-                    Ok(_) => println!("Window {} created successfully", window_id),
-                    Err(e) => eprintln!("Failed to create window {}: {:?}", window_id, e),
+                    if let Err(error) = window.emit("menu-new-window-request", ()) {
+                        eprintln!("Failed to route the new-window command: {error}");
+                    }
                 }
             }
         })

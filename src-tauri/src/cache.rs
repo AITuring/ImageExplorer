@@ -4,7 +4,10 @@
  */
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter};
 
 use crate::commands::fs::FileEntry;
 
@@ -28,6 +31,11 @@ const MAX_ICON_CACHE_BYTES: usize = 64 * 1024 * 1024;
 /// 目录列表缓存
 static DIR_CACHE: Lazy<DashMap<String, CacheEntry<Vec<FileEntry>>>> = Lazy::new(DashMap::new);
 
+/// Serializes cache publication with invalidation so an in-flight scan cannot
+/// put an older directory snapshot back after a change event removed it.
+static DIR_CACHE_GATE: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+static DIR_CACHE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
 /// 图标缓存
 static ICON_CACHE: Lazy<DashMap<String, CacheEntry<String>>> = Lazy::new(DashMap::new);
 
@@ -50,19 +58,40 @@ fn evict_cache<T>(cache: &DashMap<String, CacheEntry<T>>, ttl: Duration, max_siz
     }
 }
 
-/// 获取目录缓存
-pub fn get_dir_cache(path: &str) -> Option<Vec<FileEntry>> {
-    let entry = DIR_CACHE.get(path)?;
-    if entry.timestamp.elapsed() > DIR_CACHE_TTL {
-        drop(entry);
-        DIR_CACHE.remove(path);
-        return None;
-    }
-    Some(entry.data.clone())
+/// Read the directory cache and its generation as one snapshot.
+pub fn get_dir_cache_snapshot(path: &str) -> (u64, Option<Vec<FileEntry>>) {
+    let _guard = DIR_CACHE_GATE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let generation = DIR_CACHE_GENERATION.load(Ordering::Acquire);
+    let cached = if let Some(entry) = DIR_CACHE.get(path) {
+        if entry.timestamp.elapsed() > DIR_CACHE_TTL {
+            drop(entry);
+            DIR_CACHE.remove(path);
+            None
+        } else {
+            Some(entry.data.clone())
+        }
+    } else {
+        None
+    };
+
+    (generation, cached)
 }
 
-/// 设置目录缓存
-pub fn set_dir_cache(path: String, entries: Vec<FileEntry>) {
+/// Publish a scan only if no directory change occurred after it started.
+pub fn set_dir_cache_if_generation(
+    path: String,
+    entries: Vec<FileEntry>,
+    expected_generation: u64,
+) -> bool {
+    let _guard = DIR_CACHE_GATE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if DIR_CACHE_GENERATION.load(Ordering::Acquire) != expected_generation {
+        return false;
+    }
+
     if DIR_CACHE.len() >= MAX_DIR_CACHE_ENTRIES {
         evict_cache(&DIR_CACHE, DIR_CACHE_TTL, MAX_DIR_CACHE_ENTRIES);
     }
@@ -73,11 +102,23 @@ pub fn set_dir_cache(path: String, entries: Vec<FileEntry>) {
             timestamp: Instant::now(),
         },
     );
+    true
 }
 
 /// 清除目录缓存
 pub fn invalidate_dir_cache(path: &str) {
+    let _guard = DIR_CACHE_GATE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    DIR_CACHE_GENERATION.fetch_add(1, Ordering::AcqRel);
     DIR_CACHE.remove(path);
+}
+
+/// Invalidate backend data before notifying every window to discard its local
+/// snapshot and reload the changed directory.
+pub fn notify_dir_change(app: &AppHandle, path: &str) {
+    invalidate_dir_cache(path);
+    let _ = app.emit("dir-change", path.to_string());
 }
 
 /// 获取图标缓存
@@ -135,4 +176,30 @@ pub fn dir_cache_size() -> usize {
 #[allow(dead_code)]
 pub fn icon_cache_size() -> usize {
     ICON_CACHE.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{get_dir_cache_snapshot, invalidate_dir_cache, set_dir_cache_if_generation};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn directory_cache_rejects_a_scan_started_before_invalidation() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be valid")
+            .as_nanos();
+        let path = format!("cache-generation-{}-{suffix}", std::process::id());
+        let (started_generation, cached) = get_dir_cache_snapshot(&path);
+        assert!(cached.is_none());
+
+        invalidate_dir_cache(&path);
+
+        assert!(!set_dir_cache_if_generation(
+            path.clone(),
+            Vec::new(),
+            started_generation
+        ));
+        assert!(get_dir_cache_snapshot(&path).1.is_none());
+    }
 }

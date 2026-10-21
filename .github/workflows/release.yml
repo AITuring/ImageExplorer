@@ -22,6 +22,7 @@ jobs:
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
       - run: pnpm install --frozen-lockfile
+      - run: pnpm check:ci
       - run: pnpm release:check
         env:
           RELEASE_STRICT: "1"

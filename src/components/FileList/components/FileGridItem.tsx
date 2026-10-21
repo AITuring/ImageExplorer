@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 interface FileGridItemProps {
   entry: FileEntry;
   isSelected: boolean;
+  isFocused?: boolean;
   isEditing: boolean;
   editValue: string;
   onEditValueChange: (value: string) => void;
@@ -33,6 +34,7 @@ interface FileGridItemProps {
 export const FileGridItem = memo(function FileGridItem({
   entry,
   isSelected,
+  isFocused = false,
   isEditing,
   editValue,
   onEditValueChange,
@@ -83,7 +85,7 @@ export const FileGridItem = memo(function FileGridItem({
         isSelected
           ? "bg-accent/80 ring-primary/20 ring-1"
           : "hover:bg-accent/60 hover:ring-border/60 ring-1 ring-transparent"
-      }`}
+      } ${isFocused ? "outline-primary outline outline-1 outline-offset-[-1px]" : ""}`}
       style={!isSelected && photoGroupColor ? { backgroundColor: photoGroupColor } : undefined}
       onClick={onClick}
       onDoubleClick={onDoubleClick}

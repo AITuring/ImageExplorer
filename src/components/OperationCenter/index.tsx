@@ -129,6 +129,11 @@ function OperationRow({
 
       {operation.errors.length > 0 && (
         <p className="text-destructive line-clamp-2 text-xs" title={operation.errors.join("\n")}>
+          {operation.error_details[0] && (
+            <span className="font-medium">
+              {t(`operations.error_code_${operation.error_details[0].code}`)}: {" "}
+            </span>
+          )}
           {operation.errors[0]}
         </p>
       )}

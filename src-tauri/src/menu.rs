@@ -78,7 +78,7 @@ pub fn create_menu(handle: &AppHandle) -> Result<Menu<tauri::Wry>, tauri::Error>
         "new-window",
         t!("menu.new_window").as_ref(),
         true,
-        Some("CmdOrCtrl+Alt+N"),
+        Some("CmdOrCtrl+N"),
     )?;
 
     let file_menu = Submenu::with_items(

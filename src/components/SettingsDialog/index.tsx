@@ -120,6 +120,10 @@ function SettingsDialogComponent({ open, onOpenChange }: SettingsDialogProps) {
     "com.apple.Terminal"
   );
   const [showHiddenFiles, setShowHiddenFiles] = useSetting<boolean>("show_hidden_files", false);
+  const [legacyTabNumberShortcuts, setLegacyTabNumberShortcuts] = useSetting<boolean>(
+    "legacy_cmd_number_tabs",
+    false
+  );
 
   const [activeTab, setActiveTab] = useState<TabId>("general");
   const [permissionStatus, setPermissionStatus] = useState<"unknown" | "authorized" | "denied">(
@@ -143,7 +147,9 @@ function SettingsDialogComponent({ open, onOpenChange }: SettingsDialogProps) {
         { label: t("settings.shortcuts.close_tab"), keys: [MOD, "W"] },
         { label: t("settings.shortcuts.prev_tab"), keys: [MOD, SHIFT, "["] },
         { label: t("settings.shortcuts.next_tab"), keys: [MOD, SHIFT, "]"] },
-        { label: t("settings.shortcuts.switch_tab", { n: "1-9" }), keys: [MOD, "1-9"] },
+        ...(legacyTabNumberShortcuts
+          ? [{ label: t("settings.shortcuts.switch_tab", { n: "1-9" }), keys: [MOD, "1-9"] }]
+          : []),
       ],
     },
     {
@@ -151,16 +157,22 @@ function SettingsDialogComponent({ open, onOpenChange }: SettingsDialogProps) {
       items: [
         { label: t("settings.shortcuts.new_file"), keys: [MOD, OPT, "N"] },
         { label: t("settings.shortcuts.new_folder"), keys: [MOD, SHIFT, "N"] },
+        { label: t("settings.shortcuts.rename"), keys: ["Return"] },
+        { label: t("settings.shortcuts.open"), keys: [MOD, "O"] },
         { label: t("settings.shortcuts.copy"), keys: [MOD, "C"] },
         { label: t("settings.shortcuts.cut"), keys: [MOD, "X"] },
         { label: t("settings.shortcuts.paste"), keys: [MOD, "V"] },
+        { label: t("settings.shortcuts.move_paste"), keys: [MOD, OPT, "V"] },
         { label: t("settings.shortcuts.delete"), keys: [MOD, "⌫"] },
         { label: t("settings.shortcuts.select_all"), keys: [MOD, "A"] },
       ],
     },
     {
       title: t("settings.shortcuts.section_navigation"),
-      items: [{ label: t("settings.shortcuts.quick_look"), keys: ["Space"] }],
+      items: [
+        { label: t("settings.shortcuts.change_view"), keys: [MOD, "1-4"] },
+        { label: t("settings.shortcuts.quick_look"), keys: ["Space"] },
+      ],
     },
   ];
 
@@ -292,6 +304,10 @@ function SettingsDialogComponent({ open, onOpenChange }: SettingsDialogProps) {
   // 使用 createPortal 渲染到 body，避免被父元素的 transform 影响
   return createPortal(
     <div
+      role="dialog"
+      aria-modal={open}
+      aria-hidden={!open}
+      aria-label={t("settings.title")}
       className={`fixed inset-0 z-[9999] flex items-center justify-center transition-opacity duration-150 ${
         open ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
       }`}
@@ -499,6 +515,34 @@ function SettingsDialogComponent({ open, onOpenChange }: SettingsDialogProps) {
                       </div>
                     </div>
                   ))}
+                  <div className="bg-card/50 flex items-center justify-between gap-6 rounded-lg border p-4 shadow-sm">
+                    <div className="space-y-1">
+                      <label className="text-sm leading-none font-medium">
+                        {t("settings.shortcuts.legacy_tab_number_shortcuts")}
+                      </label>
+                      <p className="text-muted-foreground text-xs">
+                        {t("settings.shortcuts.legacy_tab_number_shortcuts_desc")}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={legacyTabNumberShortcuts}
+                      aria-label={t("settings.shortcuts.legacy_tab_number_shortcuts")}
+                      onClick={() => setLegacyTabNumberShortcuts(!legacyTabNumberShortcuts)}
+                      className={cn(
+                        "relative h-6 w-11 rounded-full transition-colors",
+                        legacyTabNumberShortcuts ? "bg-blue-500" : "bg-muted"
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "bg-white absolute top-0.5 h-5 w-5 rounded-full shadow transition-transform",
+                          legacyTabNumberShortcuts ? "translate-x-5" : "translate-x-0.5"
+                        )}
+                      />
+                    </button>
+                  </div>
                 </div>
               )}
 

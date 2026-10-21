@@ -118,6 +118,22 @@ export function useFileOperations({
     }
   }, [clipboard, currentPath, t]);
 
+  const handlePasteAsMove = useCallback(async () => {
+    if (!clipboard.hasPending()) return;
+
+    try {
+      const operationId = await enqueueFileOperation({
+        kind: "move",
+        paths: [...clipboard.paths],
+        destDir: currentPath,
+      });
+      if (operationId) clipboard.clear();
+    } catch (error) {
+      console.error("Failed to enqueue move operation:", error);
+      alert(t("file_list.error_paste", { error: String(error) }));
+    }
+  }, [clipboard, currentPath, t]);
+
   const handleDelete = useCallback(
     async (entries: FileEntry[]) => {
       try {
@@ -220,6 +236,7 @@ export function useFileOperations({
     handleCopy,
     handleCut,
     handlePaste,
+    handlePasteAsMove,
     handleDelete,
     handleCompress,
     handleExtract,

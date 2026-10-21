@@ -29,7 +29,7 @@ export async function requestDirectoryAccess(path: string, title: string) {
 
   // Confirm access before changing the current tab. The dialog grants the
   // selected folder a security-scoped sandbox extension for this process.
-  await invoke("get_entries", { path: selected });
+  await invoke("get_entries", { path: selected, forceRefresh: false });
   grantedDirectories.add(selected);
   return selected;
 }
@@ -46,7 +46,7 @@ export async function ensureDirectoryAccess(path: string, title: string) {
   }
 
   try {
-    await invoke("get_entries", { path });
+    await invoke("get_entries", { path, forceRefresh: false });
     grantedDirectories.add(path);
     return path;
   } catch (error) {

@@ -7,6 +7,7 @@ import { FileEntry, FileActions } from "@/types";
 import { useViewMode } from "@/stores/viewMode";
 import { usePhotoAnalysisMode } from "@/stores/photoAnalysisMode";
 import { useTabs } from "@/hooks/useTabs";
+import { useSetting } from "@/hooks/useSetting";
 import { QuickLook } from "@/components/QuickLook";
 import { SMART_FOLDER_PREFIX } from "@/constants/config";
 import { invoke } from "@tauri-apps/api/core";
@@ -22,7 +23,7 @@ import { getPhotoGroupColor } from "@/lib/photoAnalysis";
 import { FileListHeader } from "./components/FileListHeader";
 import { FileListItem } from "./components/FileListItem";
 import { FileGridItem } from "./components/FileGridItem";
-import { FileColumnView } from "./components/FileColumnView";
+import { FileColumnView, type ColumnSelectionContext } from "./components/FileColumnView";
 import { FileGalleryView } from "./components/FileGalleryView";
 import { BatchRenameDialog } from "@/components/BatchRenameDialog";
 import { readFileDragData } from "@/lib/dragData";
@@ -98,9 +99,13 @@ function makeDragHandlers(
 
 export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProps) {
   const { t } = useTranslation();
-  const { viewMode } = useViewMode();
+  const { viewMode, setViewMode } = useViewMode();
   const { enabled: photoAnalysisEnabled } = usePhotoAnalysisMode();
   const { addTab } = useTabs();
+  const [legacyTabNumberShortcuts] = useSetting<boolean>("legacy_cmd_number_tabs", false);
+  const [gridColumns, setGridColumns] = useState(6);
+  const [columnSelectionContext, setColumnSelectionContext] =
+    useState<ColumnSelectionContext | null>(null);
 
   // 1. 数据加载
   const { entries, showHiddenFiles, loading, error, loadEntries } = useFileEntries(currentPath);
@@ -109,6 +114,13 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   // 2. 排序
   const { sortField, sortDirection, handleSort, handleArrange, sortedEntries } =
     useFileSort(entries);
+  const activeColumnContext =
+    viewMode === "column" && columnSelectionContext?.rootPath === currentPath
+      ? columnSelectionContext
+      : null;
+  const selectionEntries = activeColumnContext?.visibleEntries ?? sortedEntries;
+  const keyboardEntries = activeColumnContext?.activeEntries ?? sortedEntries;
+  const operationPath = activeColumnContext?.locationPath ?? currentPath;
 
   // 3. 选择状态
   const {
@@ -124,11 +136,11 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     setEditingPath,
     editValue,
     setEditValue,
-  } = useFileSelection();
+  } = useFileSelection(selectionEntries);
 
   // 4. 重命名
   const { handleStartRename, handleSubmitRename, handleCancelRename } = useFileRename({
-    entries,
+    entries: selectionEntries,
     selectedPath,
     editingPath,
     editValue,
@@ -153,10 +165,11 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     handleCopyPath,
     handleNewFile,
     handleNewFolder,
+    handlePasteAsMove,
     handleOpenInTerminal,
     handleMove,
   } = useFileOperations({
-    currentPath,
+    currentPath: operationPath,
     onRefresh: () => loadEntries(false),
     onNavigate,
     onStartRename: (path: string, name: string) => {
@@ -175,17 +188,21 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   const { quickLookEntry, setQuickLookEntry, useNativeQuickLook } = useQuickLook({
     selectedPath,
     editingPath,
-    entries: sortedEntries,
+    entries: keyboardEntries,
     forceCustomImagePreview: viewMode === "icon" && photoAnalysisEnabled,
   });
 
   // 7. 键盘快捷键
   useFileKeyboardShortcuts({
-    editingPath,
     selectedPath,
     selectedPaths,
-    sortedEntries,
-    entries,
+    sortedEntries: keyboardEntries,
+    entries: selectionEntries,
+    viewMode,
+    gridColumns,
+    legacyTabNumberShortcuts,
+    setViewMode,
+    openEntry: handleOpen,
     selectAll,
     selectSingle,
     selectRange,
@@ -193,6 +210,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     handleCopy,
     handleCut,
     handlePaste,
+    handlePasteAsMove,
     handleDelete,
     handleNewFile,
     handleNewFolder,
@@ -212,7 +230,6 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   }, []);
 
   // 计算网格每行列数
-  const [gridColumns, setGridColumns] = useState(6);
   const updateGridColumns = useCallback(() => {
     const el = gridScrollRef.current;
     if (!el) return;
@@ -338,11 +355,16 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   ]);
 
   // 点击处理
-  const handleClick = (entry: FileEntry, index: number, e: React.MouseEvent) => {
+  const handleClick = (
+    entry: FileEntry,
+    index: number,
+    e: React.MouseEvent,
+    sourceEntries: FileEntry[] = sortedEntries
+  ) => {
     if (e.metaKey || e.ctrlKey) {
       toggleSelection(entry.path, index);
     } else if (e.shiftKey) {
-      selectRange(sortedEntries, index);
+      selectRange(sourceEntries, index);
     } else {
       selectSingle(entry.path, index);
     }
@@ -376,8 +398,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
 
   // 当前选中的文件列表
   const selectedFileEntries = useMemo(
-    () => sortedEntries.filter((e) => selectedPaths.includes(e.path)),
-    [sortedEntries, selectedPaths]
+    () => selectionEntries.filter((e) => selectedPaths.includes(e.path)),
+    [selectionEntries, selectedPaths]
   );
   const selectedPathSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
 
@@ -387,12 +409,12 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
         setIsFileDragOver(false);
         return;
       }
-      if (currentPath.startsWith(SMART_FOLDER_PREFIX)) return;
+      if (operationPath.startsWith(SMART_FOLDER_PREFIX)) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "copy";
       setIsFileDragOver(true);
     },
-    [currentPath]
+    [operationPath]
   );
 
   const handleFileContainerDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
@@ -403,7 +425,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
 
   const handleFileContainerDrop = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
-      if (currentPath.startsWith(SMART_FOLDER_PREFIX)) return;
+      if (operationPath.startsWith(SMART_FOLDER_PREFIX)) return;
       const data = readFileDragData(e.dataTransfer);
       if (!data) return;
 
@@ -411,10 +433,10 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       e.stopPropagation();
       setIsFileDragOver(false);
       data.paths
-        .filter((path) => path !== currentPath)
-        .forEach((path) => handleMove(path, currentPath));
+        .filter((path) => path !== operationPath)
+        .forEach((path) => handleMove(path, operationPath));
     },
-    [currentPath, handleMove]
+    [operationPath, handleMove]
   );
 
   // 文件操作对象
@@ -439,7 +461,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       setBatchRenameFiles(entries);
       setShowBatchRename(true);
     },
-    currentPath,
+    currentPath: operationPath,
   };
 
   // Loading 状态
@@ -512,7 +534,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
         type="empty-area"
         emptyAreaActions={{
           onPaste: handlePaste,
-          onRefresh: loadEntries,
+          onRefresh: () => loadEntries(false, true),
           onNewFile: handleNewFile,
           onNewFolder: handleNewFolder,
           onOpenInTerminal: handleOpenInTerminal,
@@ -537,7 +559,18 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
             <FileColumnView
               currentPath={currentPath}
               selectedPaths={selectedPaths}
-              onClick={(entry, index, e) => handleClick(entry, index, e)}
+              focusedPath={selectedPath}
+              selectedFileEntries={selectedFileEntries}
+              fileActions={fileActions}
+              editingPath={editingPath}
+              editValue={editValue}
+              onEditValueChange={setEditValue}
+              onSubmitRename={handleSubmitRename}
+              onCancelRename={handleCancelRename}
+              onContextChange={setColumnSelectionContext}
+              onClick={(entry, index, columnEntries, e) =>
+                handleClick(entry, index, e, columnEntries)
+              }
               onDoubleClick={handleOpen}
               onNavigate={(path) => onNavigate(path)}
               handleMove={handleMove}
@@ -547,6 +580,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
             <FileGalleryView
               sortedEntries={sortedEntries}
               selectedPaths={selectedPaths}
+              focusedPath={selectedPath}
               selectedFileEntries={selectedFileEntries}
               editingPath={editingPath}
               editValue={editValue}
@@ -555,6 +589,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
               onSubmitRename={handleSubmitRename}
               onCancelRename={handleCancelRename}
               onClick={(entry, index, e) => handleClick(entry, index, e)}
+              onNameClick={(entry, index, e) => handleNameClick(entry, index, e)}
               onDoubleClick={handleOpen}
               handleMove={handleMove}
               scrollContainerRef={galleryScrollRef}
@@ -602,6 +637,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                           <FileListItem
                             entry={entry}
                             isSelected={selectedPathSet.has(entry.path)}
+                            isFocused={selectedPath === entry.path}
                             isEditing={editingPath === entry.path}
                             editValue={editValue}
                             onEditValueChange={setEditValue}
@@ -672,6 +708,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                                   <FileGridItem
                                     entry={entry}
                                     isSelected={selectedPathSet.has(entry.path)}
+                                    isFocused={selectedPath === entry.path}
                                     isEditing={editingPath === entry.path}
                                     editValue={editValue}
                                     onEditValueChange={setEditValue}

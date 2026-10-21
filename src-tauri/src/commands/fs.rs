@@ -77,28 +77,72 @@ const PROTECTED_DIRS: &[&str] = &[
 
 /// 路径工具模块
 mod path_utils {
+    use std::io;
     use std::path::{Path, PathBuf};
+
+    fn candidate_path(base_path: &Path, counter: u64) -> PathBuf {
+        let stem = base_path.file_stem().unwrap_or_default().to_string_lossy();
+        let ext = base_path
+            .extension()
+            .map(|extension| format!(".{}", extension.to_string_lossy()))
+            .unwrap_or_default();
+        base_path.with_file_name(format!("{} {}{}", stem, counter, ext))
+    }
 
     /// 获取唯一路径（处理名称冲突）
     pub fn get_unique_path(base_path: &Path) -> PathBuf {
         if !base_path.exists() {
             return base_path.to_path_buf();
         }
-
-        let stem = base_path.file_stem().unwrap_or_default().to_string_lossy();
-        let ext = base_path
-            .extension()
-            .map(|e| format!(".{}", e.to_string_lossy()))
-            .unwrap_or_default();
-
-        let mut counter = 1;
+        let mut counter = 1_u64;
         loop {
-            let new_name = format!("{} {}{}", stem, counter, ext);
-            let new_path = base_path.with_file_name(new_name);
+            let new_path = candidate_path(base_path, counter);
             if !new_path.exists() {
                 return new_path;
             }
-            counter += 1;
+            counter = counter.saturating_add(1);
+        }
+    }
+
+    /// Create a file without replacing a path that appeared after name selection.
+    pub fn create_unique_file(base_path: &Path) -> io::Result<PathBuf> {
+        let mut counter = 0_u64;
+        loop {
+            let candidate = if counter == 0 {
+                base_path.to_path_buf()
+            } else {
+                candidate_path(base_path, counter)
+            };
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(_) => return Ok(candidate),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    counter = counter.checked_add(1).ok_or(error)?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// Create a directory without replacing a path that appeared after name selection.
+    pub fn create_unique_directory(base_path: &Path) -> io::Result<PathBuf> {
+        let mut counter = 0_u64;
+        loop {
+            let candidate = if counter == 0 {
+                base_path.to_path_buf()
+            } else {
+                candidate_path(base_path, counter)
+            };
+            match std::fs::create_dir(&candidate) {
+                Ok(()) => return Ok(candidate),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    counter = counter.checked_add(1).ok_or(error)?;
+                }
+                Err(error) => return Err(error),
+            }
         }
     }
 
@@ -133,6 +177,81 @@ mod path_utils {
     #[cfg(not(target_os = "macos"))]
     pub fn is_protected_path(_path: &Path) -> bool {
         true
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{create_unique_directory, create_unique_file};
+        use std::collections::HashSet;
+        use std::fs;
+        use std::path::PathBuf;
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        fn test_root(name: &str) -> PathBuf {
+            let suffix = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos();
+            std::env::temp_dir().join(format!(
+                "imageexplorer-path-utils-{}-{name}-{suffix}",
+                std::process::id()
+            ))
+        }
+
+        #[test]
+        fn concurrent_file_creation_never_truncates_the_existing_candidate() {
+            let root = test_root("files");
+            fs::create_dir_all(&root).expect("create test root");
+            let base = root.join("New File.txt");
+            fs::write(&base, b"existing data").expect("write preexisting file");
+
+            let worker_count = 8;
+            let barrier = Arc::new(Barrier::new(worker_count));
+            let workers = (0..worker_count)
+                .map(|_| {
+                    let base = base.clone();
+                    let barrier = Arc::clone(&barrier);
+                    thread::spawn(move || {
+                        barrier.wait();
+                        create_unique_file(&base).expect("create unique file")
+                    })
+                })
+                .collect::<Vec<_>>();
+            let created = workers
+                .into_iter()
+                .map(|worker| worker.join().expect("file creator should not panic"))
+                .collect::<Vec<_>>();
+            let unique = created.iter().collect::<HashSet<_>>();
+
+            assert_eq!(unique.len(), worker_count);
+            assert!(created.iter().all(|path| path.is_file()));
+            assert_eq!(
+                fs::read(&base).expect("read existing file"),
+                b"existing data"
+            );
+            fs::remove_dir_all(root).expect("remove test root");
+        }
+
+        #[test]
+        fn directory_creation_retries_an_existing_candidate() {
+            let root = test_root("directories");
+            fs::create_dir_all(&root).expect("create test root");
+            let base = root.join("New Folder");
+            fs::create_dir(&base).expect("create preexisting directory");
+            fs::write(base.join("keep.txt"), b"keep").expect("write preexisting child");
+
+            let created = create_unique_directory(&base).expect("create unique directory");
+
+            assert_eq!(created, root.join("New Folder 1"));
+            assert!(created.is_dir());
+            assert_eq!(
+                fs::read(base.join("keep.txt")).expect("read existing child"),
+                b"keep"
+            );
+            fs::remove_dir_all(root).expect("remove test root");
+        }
     }
 }
 
@@ -276,7 +395,7 @@ pub struct FileEntry {
 }
 
 #[tauri::command]
-pub async fn get_entries(path: String) -> Result<Vec<FileEntry>, String> {
+pub async fn get_entries(path: String, force_refresh: bool) -> Result<Vec<FileEntry>, String> {
     // Directory scans can block for seconds on sleeping or disconnected
     // external volumes. Use a detached filesystem thread instead of Tokio's
     // blocking pool: the window remains responsive, and a stuck volume cannot
@@ -286,13 +405,34 @@ pub async fn get_entries(path: String) -> Result<Vec<FileEntry>, String> {
         .name("imageexplorer-directory-scan".to_string())
         .spawn(move || {
             let result = (|| {
-                if let Some(cached) = crate::cache::get_dir_cache(&path) {
-                    return Ok(cached);
+                if force_refresh {
+                    crate::cache::invalidate_dir_cache(&path);
                 }
 
-                let entries = load_directory_entries(&path)?;
-                crate::cache::set_dir_cache(path, entries.clone());
-                Ok(entries)
+                // If a watcher invalidates the cache while the scan is in
+                // flight, retry once against the new generation. A later
+                // event will schedule another refresh, while this scan must
+                // never publish its stale result back into the shared cache.
+                for attempt in 0..2 {
+                    let (generation, cached) = crate::cache::get_dir_cache_snapshot(&path);
+                    if let Some(cached) = cached {
+                        return Ok(cached);
+                    }
+
+                    let entries = load_directory_entries(&path)?;
+                    if crate::cache::set_dir_cache_if_generation(
+                        path.clone(),
+                        entries.clone(),
+                        generation,
+                    ) {
+                        return Ok(entries);
+                    }
+                    if attempt == 1 {
+                        return Ok(entries);
+                    }
+                }
+
+                unreachable!("directory scan retry loop always returns")
             })();
             let _ = result_sender.blocking_send(result);
         })
@@ -1573,8 +1713,8 @@ end tell"#,
 
 #[tauri::command]
 pub fn create_directory(path: String) -> Result<String, String> {
-    let target_path = path_utils::get_unique_path(Path::new(&path));
-    fs::create_dir(&target_path).map_err(|e| e.to_string())?;
+    let target_path =
+        path_utils::create_unique_directory(Path::new(&path)).map_err(|error| error.to_string())?;
     // 清除父目录缓存
     if let Some(parent) = target_path.parent() {
         crate::cache::invalidate_dir_cache(&parent.to_string_lossy());
@@ -1584,8 +1724,8 @@ pub fn create_directory(path: String) -> Result<String, String> {
 
 #[tauri::command]
 pub fn create_file(path: String) -> Result<String, String> {
-    let target_path = path_utils::get_unique_path(Path::new(&path));
-    fs::File::create(&target_path).map_err(|e| e.to_string())?;
+    let target_path =
+        path_utils::create_unique_file(Path::new(&path)).map_err(|error| error.to_string())?;
     // 清除父目录缓存
     if let Some(parent) = target_path.parent() {
         crate::cache::invalidate_dir_cache(&parent.to_string_lossy());
@@ -1640,7 +1780,7 @@ pub fn copy_file(src: String, dest_dir: String) -> Result<String, String> {
     let src_path = Path::new(&src);
     let dest_dir_path = Path::new(&dest_dir);
 
-    if !src_path.exists() {
+    if !path_exists(src_path) {
         return Err(format!("Source does not exist: {}", src));
     }
 
@@ -1661,40 +1801,23 @@ pub fn copy_file(src: String, dest_dir: String) -> Result<String, String> {
     let dest_path = dest_dir_path.join(&*file_name);
 
     // 如果目标已存在，添加后缀
-    let final_dest = if dest_path.exists() {
+    let final_dest = if path_exists(&dest_path) {
         path_utils::get_unique_path(&dest_path)
     } else {
         dest_path
     };
 
-    if src_path.is_dir() {
-        copy_dir_recursive(src_path, &final_dest)?;
-    } else {
-        fs::copy(src_path, &final_dest).map_err(|e| e.to_string())?;
-    }
+    copy_path_resumable(
+        src.clone(),
+        final_dest.to_string_lossy().to_string(),
+        false,
+        |_| true,
+    )?;
 
     // 清除目标目录缓存
     crate::cache::invalidate_dir_cache(&dest_dir);
 
     Ok(final_dest.to_string_lossy().to_string())
-}
-
-fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
-    fs::create_dir_all(dest).map_err(|e| e.to_string())?;
-
-    for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let src_path = entry.path();
-        let dest_path = dest.join(entry.file_name());
-
-        if src_path.is_dir() {
-            copy_dir_recursive(&src_path, &dest_path)?;
-        } else {
-            fs::copy(&src_path, &dest_path).map_err(|e| e.to_string())?;
-        }
-    }
-
-    Ok(())
 }
 
 const COPY_BUFFER_SIZE: usize = 8 * 1024 * 1024;
@@ -1907,26 +2030,18 @@ fn open_partial_for_read(path: &Path) -> Result<fs::File, String> {
     options.open(path).map_err(|error| error.to_string())
 }
 
-fn open_partial_for_append(path: &Path) -> Result<fs::File, String> {
+fn open_partial_for_append(path: &Path, create_new: bool) -> Result<fs::File, String> {
     let mut options = fs::OpenOptions::new();
-    options.create(true).append(true);
+    options.append(true);
+    if create_new {
+        options.create_new(true);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
     options.open(path).map_err(|error| error.to_string())
-}
-
-fn remove_copy_staging_path(path: &Path) -> Result<(), String> {
-    let Ok(metadata) = fs::symlink_metadata(path) else {
-        return Ok(());
-    };
-    if metadata.is_dir() && !metadata.file_type().is_symlink() {
-        fs::remove_dir_all(path).map_err(|error| error.to_string())
-    } else {
-        fs::remove_file(path).map_err(|error| error.to_string())
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1998,19 +2113,24 @@ fn create_symbolic_link(_source: &Path, _destination: &Path) -> Result<(), Strin
     Err("Symbolic-link copying is not supported on this platform".to_string())
 }
 
-fn copy_symlink_resumable<F>(
+fn copy_symlink_resumable<F, C>(
     source: &Path,
     destination: &Path,
     visible_destination: bool,
     accept_existing_destination: bool,
     on_progress: &mut F,
+    on_ready: &mut C,
 ) -> Result<(), String>
 where
     F: FnMut(u64) -> bool,
+    C: FnMut(&Path, bool) -> Result<(), String>,
 {
     if path_exists(destination) {
         if paths_equivalent(source, destination)? {
             return if (accept_existing_destination || !visible_destination) && on_progress(0) {
+                if visible_destination {
+                    on_ready(destination, true)?;
+                }
                 Ok(())
             } else if visible_destination && !accept_existing_destination {
                 Err(format!(
@@ -2027,7 +2147,10 @@ where
                 destination.to_string_lossy()
             ));
         }
-        remove_copy_staging_path(destination)?;
+        return Err(format!(
+            "Unsafe symbolic-link staging path already exists: {}",
+            destination.display()
+        ));
     }
 
     let publication_path = if visible_destination {
@@ -2049,6 +2172,9 @@ where
         }
         create_symbolic_link(source, &publication_path)?;
     }
+    if visible_destination {
+        on_ready(&publication_path, resumed_staging_link)?;
+    }
 
     let link_bytes = if resumed_staging_link {
         0
@@ -2061,8 +2187,10 @@ where
         return Err("Operation cancelled".to_string());
     }
     if !paths_equivalent(source, &publication_path)? {
-        remove_copy_staging_path(&publication_path)?;
-        return Err("Symbolic-link target changed while it was being copied".to_string());
+        return Err(format!(
+            "Symbolic-link target changed while it was being copied; staging was preserved: {}",
+            publication_path.display()
+        ));
     }
     if visible_destination {
         rename_without_replace(&publication_path, destination).map_err(|error| {
@@ -2085,9 +2213,27 @@ pub(crate) fn partial_path_for(destination: &Path) -> std::path::PathBuf {
     ))
 }
 
-fn copy_single_resumable<F>(src: &Path, dest: &Path, on_progress: &mut F) -> Result<(), String>
+fn source_name_for_staging_entry(name: &std::ffi::OsStr) -> Option<std::ffi::OsString> {
+    let name = name.to_string_lossy();
+    let source_name = name
+        .strip_prefix('.')?
+        .strip_suffix(".imageexplorer-part")?;
+    if source_name.is_empty() {
+        return None;
+    }
+    Some(std::ffi::OsString::from(source_name))
+}
+
+fn copy_single_resumable<F, C>(
+    src: &Path,
+    dest: &Path,
+    on_progress: &mut F,
+    on_ready: &mut C,
+    report_ready: bool,
+) -> Result<(), String>
 where
     F: FnMut(u64) -> bool,
+    C: FnMut(&Path, bool) -> Result<(), String>,
 {
     let source_metadata = fs::metadata(src).map_err(|error| error.to_string())?;
     let source_size = source_metadata.len();
@@ -2098,6 +2244,9 @@ where
                 "Destination exists and does not match the source: {}",
                 dest.to_string_lossy()
             ));
+        }
+        if report_ready {
+            on_ready(dest, true)?;
         }
         return if on_progress(0) {
             // A durable destination can exist when an operation completed its
@@ -2110,20 +2259,29 @@ where
     }
 
     let partial = partial_path_for(dest);
-    let mut offset = match fs::symlink_metadata(&partial) {
-        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => metadata.len(),
+    let (offset, create_new) = match fs::symlink_metadata(&partial) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+            (metadata.len(), false)
+        }
         Ok(_) => {
             return Err(format!(
                 "Unsafe copy staging path already exists: {}",
                 partial.to_string_lossy()
             ))
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (0, true),
         Err(error) => return Err(error.to_string()),
     };
+    if !create_new && report_ready {
+        // A partial file is resumable only if the operation journal already
+        // proves that this exact object belongs to the interrupted copy.
+        on_ready(&partial, true)?;
+    }
     if offset > source_size || !partial_matches_source_prefix(src, &partial, offset)? {
-        let _ = fs::remove_file(&partial);
-        offset = 0;
+        return Err(format!(
+            "Existing copy staging data no longer matches the source and was preserved: {}",
+            partial.display()
+        ));
     }
 
     if let Some(parent) = dest.parent() {
@@ -2133,7 +2291,12 @@ where
     source
         .seek(SeekFrom::Start(offset))
         .map_err(|error| error.to_string())?;
-    let mut output = open_partial_for_append(&partial)?;
+    let mut output = open_partial_for_append(&partial, create_new)?;
+    if report_ready && create_new {
+        // Persist ownership immediately after exclusive creation and before
+        // writing any bytes, so a crash cannot leave an unclaimed partial.
+        on_ready(&partial, false)?;
+    }
     let mut buffer = vec![0_u8; COPY_BUFFER_SIZE];
     loop {
         let read = source
@@ -2154,10 +2317,15 @@ where
     drop(output);
     let source_after = source.metadata().map_err(|error| error.to_string())?;
     if source_after.len() != source_size || source_after.modified().ok() != source_modified {
-        let _ = fs::remove_file(&partial);
-        return Err("Source changed while it was being copied; retry the operation".to_string());
+        return Err(format!(
+            "Source changed while it was being copied; staging was preserved for review: {}",
+            partial.display()
+        ));
     }
     apply_copied_metadata(src, &partial)?;
+    if report_ready {
+        on_ready(&partial, true)?;
+    }
     rename_without_replace(&partial, dest).map_err(|error| {
         format!(
             "Could not publish the copied file without replacing another item: {}",
@@ -2167,32 +2335,70 @@ where
     Ok(())
 }
 
-fn copy_dir_recursive_resumable<F>(
+fn copy_dir_recursive_resumable<F, C>(
     src: &Path,
     dest: &Path,
     on_progress: &mut F,
+    on_ready: &mut C,
     is_root_staging_directory: bool,
 ) -> Result<(), String>
 where
     F: FnMut(u64) -> bool,
+    C: FnMut(&Path, bool) -> Result<(), String>,
 {
-    if path_exists(dest) && !fs::symlink_metadata(dest).is_ok_and(|metadata| metadata.is_dir()) {
+    if path_exists(dest)
+        && !fs::symlink_metadata(dest)
+            .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+    {
         if is_root_staging_directory {
             return Err(format!(
                 "Unsafe directory staging path already exists: {}",
                 dest.to_string_lossy()
             ));
         }
-        remove_copy_staging_path(dest)?;
+        return Err(format!(
+            "A copied directory staging item changed type and was preserved: {}",
+            dest.display()
+        ));
     }
-    fs::create_dir_all(dest).map_err(|error| error.to_string())?;
+    if is_root_staging_directory {
+        if path_exists(dest) {
+            on_ready(dest, true)?;
+        } else {
+            // create_dir is exclusive; create_dir_all could follow a path
+            // planted after the preceding existence check.
+            fs::create_dir(dest).map_err(|error| error.to_string())?;
+            on_ready(dest, false)?;
+        }
+    } else {
+        if path_exists(dest) {
+            if !fs::symlink_metadata(dest)
+                .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+            {
+                return Err(format!(
+                    "A copied directory staging item changed type and was preserved: {}",
+                    dest.display()
+                ));
+            }
+        } else {
+            fs::create_dir(dest).map_err(|error| error.to_string())?;
+        }
+    }
 
-    // The source may have changed since a cancelled attempt. Remove stale
-    // entries only from this private hidden staging tree before resuming.
+    // Stale entries can be user-created replacements, so never delete them
+    // merely because the current source no longer has the same name.
     for entry in fs::read_dir(dest).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
-        if !path_exists(&src.join(entry.file_name())) {
-            remove_copy_staging_path(&entry.path())?;
+        let entry_name = entry.file_name();
+        let source_path = source_name_for_staging_entry(&entry_name)
+            .map(|source_name| src.join(source_name))
+            .filter(|candidate| path_exists(candidate))
+            .unwrap_or_else(|| src.join(&entry_name));
+        if !path_exists(&source_path) {
+            return Err(format!(
+                "A copy staging item no longer exists in the source and was preserved: {}",
+                entry.path().display()
+            ));
         }
     }
 
@@ -2202,17 +2408,23 @@ where
         let dest_path = dest.join(entry.file_name());
         let source_metadata = fs::symlink_metadata(&src_path).map_err(|error| error.to_string())?;
         if source_metadata.file_type().is_symlink() {
-            copy_symlink_resumable(&src_path, &dest_path, false, true, on_progress)?;
+            copy_symlink_resumable(&src_path, &dest_path, false, true, on_progress, on_ready)?;
         } else if source_metadata.is_dir() {
-            copy_dir_recursive_resumable(&src_path, &dest_path, on_progress, false)?;
+            copy_dir_recursive_resumable(&src_path, &dest_path, on_progress, on_ready, false)?;
         } else {
             if path_exists(&dest_path) && !paths_equivalent(&src_path, &dest_path)? {
-                remove_copy_staging_path(&dest_path)?;
+                return Err(format!(
+                    "A copied file staging item changed and was preserved: {}",
+                    dest_path.display()
+                ));
             }
-            copy_single_resumable(&src_path, &dest_path, on_progress)?;
+            copy_single_resumable(&src_path, &dest_path, on_progress, on_ready, false)?;
         }
     }
     apply_copied_metadata(src, dest)?;
+    if is_root_staging_directory {
+        on_ready(dest, true)?;
+    }
     Ok(())
 }
 
@@ -2223,10 +2435,32 @@ pub fn copy_path_resumable<F>(
     src: String,
     destination: String,
     accept_existing_destination: bool,
-    mut on_progress: F,
+    on_progress: F,
 ) -> Result<(), String>
 where
     F: FnMut(u64) -> bool,
+{
+    copy_path_resumable_with_ready(
+        src,
+        destination,
+        accept_existing_destination,
+        on_progress,
+        |_, _| Ok(()),
+    )
+}
+
+/// Like `copy_path_resumable`, but reports each completed root output before
+/// publishing it so the operation log can durably record its identity.
+pub(crate) fn copy_path_resumable_with_ready<F, C>(
+    src: String,
+    destination: String,
+    accept_existing_destination: bool,
+    mut on_progress: F,
+    mut on_ready: C,
+) -> Result<(), String>
+where
+    F: FnMut(u64) -> bool,
+    C: FnMut(&Path, bool) -> Result<(), String>,
 {
     let src_path = Path::new(&src);
     let destination_path = Path::new(&destination);
@@ -2245,6 +2479,7 @@ where
             true,
             accept_existing_destination,
             &mut on_progress,
+            &mut on_ready,
         );
     }
 
@@ -2271,6 +2506,7 @@ where
                 destination
             ));
         }
+        on_ready(destination_path, true)?;
         if on_progress(0) {
             return Ok(());
         }
@@ -2283,7 +2519,7 @@ where
 
     if source_metadata.is_dir() {
         let partial = partial_path_for(destination_path);
-        copy_dir_recursive_resumable(src_path, &partial, &mut on_progress, true)?;
+        copy_dir_recursive_resumable(src_path, &partial, &mut on_progress, &mut on_ready, true)?;
         if !on_progress(0) {
             return Err("Operation cancelled".to_string());
         }
@@ -2300,7 +2536,13 @@ where
             )
         })?;
     } else {
-        copy_single_resumable(src_path, destination_path, &mut on_progress)?;
+        copy_single_resumable(
+            src_path,
+            destination_path,
+            &mut on_progress,
+            &mut on_ready,
+            true,
+        )?;
     }
 
     if let Some(parent) = destination_path.parent() {
@@ -2316,10 +2558,32 @@ pub fn move_path_resumable<F>(
     src: String,
     destination: String,
     accept_existing_destination: bool,
-    mut on_progress: F,
+    on_progress: F,
 ) -> Result<(), String>
 where
     F: FnMut(u64) -> bool,
+{
+    move_path_resumable_with_ready(
+        src,
+        destination,
+        accept_existing_destination,
+        on_progress,
+        |_, _| Ok(()),
+    )
+}
+
+/// Like `move_path_resumable`, but reports the destination identity before a
+/// cross-volume move removes its source.
+pub(crate) fn move_path_resumable_with_ready<F, C>(
+    src: String,
+    destination: String,
+    accept_existing_destination: bool,
+    mut on_progress: F,
+    mut on_ready: C,
+) -> Result<(), String>
+where
+    F: FnMut(u64) -> bool,
+    C: FnMut(&Path, bool) -> Result<(), String>,
 {
     let src_path = Path::new(&src);
     let destination_path = Path::new(&destination);
@@ -2332,6 +2596,7 @@ where
 
     let source_parent = src_path.parent().map(|parent| parent.to_path_buf());
     if rename_without_replace(src_path, destination_path).is_ok() {
+        on_ready(destination_path, false)?;
         if let Some(parent) = source_parent.as_deref() {
             crate::cache::invalidate_dir_cache(&parent.to_string_lossy());
         }
@@ -2341,12 +2606,16 @@ where
         return Ok(());
     }
 
-    copy_path_resumable(
+    copy_path_resumable_with_ready(
         src.clone(),
         destination.clone(),
         accept_existing_destination,
         &mut on_progress,
+        &mut on_ready,
     )?;
+    // Recheck both the completed target and source immediately before the
+    // destructive cross-volume source removal.
+    on_ready(destination_path, true)?;
     if !on_progress(0) {
         return Err("Operation cancelled".to_string());
     }
@@ -2780,14 +3049,21 @@ mod file_entry_tests {
     };
     use std::fs;
     use std::path::Path;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static NEXT_TEST_ROOT: AtomicU64 = AtomicU64::new(1);
 
     fn test_root() -> std::path::PathBuf {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock should be after the epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("imageexplorer-file-entry-{stamp}"))
+        let sequence = NEXT_TEST_ROOT.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "imageexplorer-file-entry-{}-{stamp}-{sequence}",
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -2940,7 +3216,7 @@ mod file_entry_tests {
     }
 
     #[test]
-    fn changed_source_invalidates_a_stale_partial_prefix() {
+    fn changed_source_preserves_a_stale_partial_prefix_and_source() {
         let root = test_root();
         let source = root.join("source.raw");
         let destination = root.join("destination.raw");
@@ -2958,18 +3234,21 @@ mod file_entry_tests {
 
         let replacement = vec![2_u8; 8 * 1024 * 1024 + 1];
         fs::write(&source, &replacement).expect("replace source bytes");
-        copy_path_resumable(
+        let resumed = copy_path_resumable(
             source.to_string_lossy().to_string(),
             destination.to_string_lossy().to_string(),
             true,
             |_| true,
-        )
-        .expect("restart copy from the changed source");
-
-        assert_eq!(
-            fs::read(&destination).expect("read copied destination"),
-            replacement
         );
+
+        assert!(resumed.is_err());
+        assert!(!destination.exists());
+        assert_eq!(fs::read(&source).expect("read source"), replacement);
+        let preserved_partial =
+            fs::read(partial_path_for(&destination)).expect("read preserved partial");
+        assert_eq!(preserved_partial.len(), 8 * 1024 * 1024);
+        assert!(preserved_partial.first().is_some_and(|byte| *byte == 1));
+        assert!(preserved_partial.last().is_some_and(|byte| *byte == 1));
         fs::remove_dir_all(root).expect("remove test root");
     }
 
@@ -3088,6 +3367,42 @@ mod file_entry_tests {
             b"camera data"
         );
 
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn cross_volume_move_keeps_a_source_changed_before_deletion() {
+        let root = test_root();
+        let source = root.join("source.raw");
+        let destination = root.join("destination.raw");
+        fs::create_dir_all(&root).expect("create test root");
+        fs::write(&source, b"original camera data").expect("write original source");
+        fs::write(&destination, b"original camera data").expect("write copied destination");
+        let mut changed_source = false;
+
+        let result = move_path_resumable(
+            source.to_string_lossy().to_string(),
+            destination.to_string_lossy().to_string(),
+            true,
+            |_| {
+                if !changed_source {
+                    fs::write(&source, b"source changed during move")
+                        .expect("change source before deletion");
+                    changed_source = true;
+                }
+                true
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read(&source).expect("read retained source"),
+            b"source changed during move"
+        );
+        assert_eq!(
+            fs::read(&destination).expect("read preserved destination"),
+            b"original camera data"
+        );
         fs::remove_dir_all(root).expect("remove test root");
     }
 

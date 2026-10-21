@@ -1,4 +1,4 @@
-import { memo, useRef, useCallback, useEffect, type RefObject } from "react";
+import { memo, useRef, useCallback, useEffect, useState, type RefObject } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { FileEntry } from "@/types/index";
 import { FileThumbnail } from "@/components/FileThumbnail";
@@ -6,6 +6,7 @@ import { AppContextMenu } from "@/components/AppContextMenu";
 import type { FileActions } from "@/types";
 import { readFileDragData } from "@/lib/dragData";
 import { makeNativeFileDragGestureHandlers } from "@/lib/nativeFileDragGesture";
+import { Input } from "@/components/ui/input";
 
 /** 网格项尺寸 */
 const ITEM_SIZE = 180;
@@ -15,6 +16,7 @@ const ROW_HEIGHT = ITEM_SIZE + GAP;
 interface FileGalleryViewProps {
   sortedEntries: FileEntry[];
   selectedPaths: string[];
+  focusedPath: string | null;
   selectedFileEntries: FileEntry[];
   editingPath: string | null;
   editValue: string;
@@ -23,6 +25,7 @@ interface FileGalleryViewProps {
   onSubmitRename: () => void;
   onCancelRename: () => void;
   onClick: (entry: FileEntry, index: number, e: React.MouseEvent) => void;
+  onNameClick: (entry: FileEntry, index: number, e: React.MouseEvent) => void;
   onDoubleClick: (entry: FileEntry) => void;
   handleMove: (src: string, dest: string) => void;
   scrollContainerRef?: RefObject<HTMLDivElement | null>;
@@ -32,19 +35,44 @@ interface FileGalleryViewProps {
 const GalleryItem = memo(function GalleryItem({
   entry,
   isSelected,
+  isFocused,
+  isEditing,
+  editValue,
+  onEditValueChange,
+  onSubmitRename,
+  onCancelRename,
   onClick,
+  onNameClick,
   onDoubleClick,
 }: {
   entry: FileEntry;
   isSelected: boolean;
+  isFocused: boolean;
+  isEditing: boolean;
+  editValue: string;
+  onEditValueChange: (value: string) => void;
+  onSubmitRename: () => void;
+  onCancelRename: () => void;
   onClick: (e: React.MouseEvent) => void;
+  onNameClick: (e: React.MouseEvent) => void;
   onDoubleClick: () => void;
 }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!isEditing) return;
+    const frame = requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [isEditing]);
+
   return (
     <div
       className={`group flex cursor-default flex-col items-center overflow-hidden rounded-lg transition-colors ${
         isSelected ? "bg-accent/80 ring-primary/20 ring-1" : "hover:bg-accent/50"
-      }`}
+      } ${isFocused ? "outline-primary outline outline-1 outline-offset-[-1px]" : ""}`}
       style={{ width: ITEM_SIZE, height: ITEM_SIZE }}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
@@ -62,12 +90,38 @@ const GalleryItem = memo(function GalleryItem({
       </div>
       {/* 文件名 */}
       <div className="flex w-full flex-1 items-center justify-center px-2">
-        <span
-          className="line-clamp-2 w-full text-center text-xs font-medium break-all"
-          title={entry.name}
-        >
-          {entry.name}
-        </span>
+        {isEditing ? (
+          <Input
+            ref={inputRef}
+            value={editValue}
+            onChange={(event) => onEditValueChange(event.target.value)}
+            onBlur={onSubmitRename}
+            onKeyDown={(event) => {
+              event.stopPropagation();
+              if (event.key === "Enter") {
+                event.preventDefault();
+                onSubmitRename();
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                onCancelRename();
+              }
+            }}
+            onClick={(event) => event.stopPropagation()}
+            aria-label={`Rename ${entry.name}`}
+            className="h-7 px-1 text-center text-xs"
+          />
+        ) : (
+          <span
+            className="line-clamp-2 w-full cursor-text text-center text-xs font-medium break-all"
+            title={entry.name}
+            onClick={(event) => {
+              event.stopPropagation();
+              onNameClick(event);
+            }}
+          >
+            {entry.name}
+          </span>
+        )}
       </div>
     </div>
   );
@@ -76,21 +130,29 @@ const GalleryItem = memo(function GalleryItem({
 export function FileGalleryView({
   sortedEntries,
   selectedPaths,
+  focusedPath,
   selectedFileEntries,
+  editingPath,
+  editValue,
   fileActions,
+  onEditValueChange,
+  onSubmitRename,
+  onCancelRename,
   onClick,
+  onNameClick,
   onDoubleClick,
   handleMove,
   scrollContainerRef,
 }: FileGalleryViewProps) {
   const internalScrollRef = useRef<HTMLDivElement>(null);
   const scrollRef = scrollContainerRef ?? internalScrollRef;
-  const columnsRef = useRef(4);
+  const [columns, setColumns] = useState(4);
 
   const updateColumns = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    columnsRef.current = Math.max(1, Math.floor(el.clientWidth / (ITEM_SIZE + GAP)));
+    const nextColumns = Math.max(1, Math.floor(el.clientWidth / (ITEM_SIZE + GAP)));
+    setColumns((current) => (current === nextColumns ? current : nextColumns));
   }, [scrollRef]);
 
   useEffect(() => {
@@ -102,7 +164,7 @@ export function FileGalleryView({
     return () => observer.disconnect();
   }, [scrollRef, updateColumns]);
 
-  const rowCount = Math.ceil(sortedEntries.length / columnsRef.current);
+  const rowCount = Math.ceil(sortedEntries.length / columns);
 
   const virtualizer = useVirtualizer({
     count: rowCount,
@@ -121,7 +183,7 @@ export function FileGalleryView({
         }}
       >
         {virtualizer.getVirtualItems().map((virtualRow) => {
-          const cols = columnsRef.current;
+          const cols = columns;
           const startIdx = virtualRow.index * cols;
           const rowEntries = sortedEntries.slice(startIdx, startIdx + cols);
           return (
@@ -178,7 +240,14 @@ export function FileGalleryView({
                         <GalleryItem
                           entry={entry}
                           isSelected={selectedPaths.includes(entry.path)}
+                          isFocused={focusedPath === entry.path}
+                          isEditing={editingPath === entry.path}
+                          editValue={editValue}
+                          onEditValueChange={onEditValueChange}
+                          onSubmitRename={onSubmitRename}
+                          onCancelRename={onCancelRename}
                           onClick={(e) => onClick(entry, globalIndex, e)}
+                          onNameClick={(e) => onNameClick(entry, globalIndex, e)}
                           onDoubleClick={() => onDoubleClick(entry)}
                         />
                       </AppContextMenu>
