@@ -12,7 +12,7 @@
     "lint:check": "eslint .",
     "format": "prettier --write .",
     "typecheck": "tsc --noEmit",
-    "test:frontend": "node --experimental-strip-types --test tests/selection-model.test.mjs",
+    "test:frontend": "node --experimental-strip-types --test tests/*.test.mjs",
     "check": "pnpm lint && pnpm typecheck",
     "cargo:check": "PATH=\"$HOME/.cargo/bin:$PATH\" cargo check --manifest-path src-tauri/Cargo.toml",
     "cargo:clippy": "PATH=\"$HOME/.cargo/bin:$PATH\" cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",

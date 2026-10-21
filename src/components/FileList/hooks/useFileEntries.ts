@@ -6,6 +6,7 @@ import { SMART_FOLDER_PREFIX, DIR_CHANGE_DEBOUNCE_MS } from "@/constants/config"
 import { getCachedEntries, setCachedEntries, invalidateCache } from "@/lib/entriesCache";
 import { filterHiddenEntries } from "@/utils/file";
 import { useSetting } from "@/hooks/useSetting";
+import { RequestGeneration } from "@/lib/requestGeneration";
 
 interface UseFileEntriesResult {
   entries: FileEntry[];
@@ -20,7 +21,7 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const loadRequestRef = useRef(0);
+  const loadRequestRef = useRef(new RequestGeneration());
   const [showHiddenFiles] = useSetting<boolean>("show_hidden_files", false);
 
   const entries = useMemo(
@@ -31,7 +32,7 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
   // 加载目录内容
   const loadEntries = useCallback(
     async (showLoading = true, forceRefresh = false) => {
-      const requestId = ++loadRequestRef.current;
+      const requestId = loadRequestRef.current.begin();
       if (showLoading) setLoading(true);
       setError(null);
       try {
@@ -47,14 +48,14 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
         }
         // 跨窗口移动可能让旧请求在新请求之后返回；只接受最后一次加载结果，
         // 避免旧目录快照把已经完成的移动重新画回列表。
-        if (requestId !== loadRequestRef.current) return;
+        if (!loadRequestRef.current.isCurrent(requestId)) return;
         setAllEntries(result);
         // 缓存完整结果，显示偏好只在渲染边界应用
         setCachedEntries(currentPath, result);
       } catch (e) {
-        if (requestId === loadRequestRef.current) setError(String(e));
+        if (loadRequestRef.current.isCurrent(requestId)) setError(String(e));
       } finally {
-        if (showLoading && requestId === loadRequestRef.current) setLoading(false);
+        if (showLoading && loadRequestRef.current.isCurrent(requestId)) setLoading(false);
       }
     },
     [currentPath]
@@ -71,6 +72,7 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
 
   // 加载目录内容 + 启动监听
   useEffect(() => {
+    const requestGeneration = loadRequestRef.current;
     let cancelled = false;
     let unlistenDirChangeFn: (() => void) | null = null;
     let unlistenIndexReadyFn: (() => void) | null = null;
@@ -96,7 +98,7 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
         if (event.payload === currentPath) {
           // Discard scans that began before this event, then reload after the
           // watcher burst settles.
-          loadRequestRef.current += 1;
+          loadRequestRef.current.invalidate();
           setLoading(false);
           // 清除缓存
           invalidateCache(currentPath);
@@ -151,7 +153,7 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
     return () => {
       cancelled = true;
       // Requests from the previous directory cannot update the new location.
-      loadRequestRef.current += 1;
+      requestGeneration.invalidate();
       unlistenDirChangeFn?.();
       unlistenIndexReadyFn?.();
       if (debounceRef.current) {
