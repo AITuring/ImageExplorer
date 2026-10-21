@@ -79,6 +79,8 @@ macOS 可通过 `brew install exiftool` 安装 ExifTool，也可以用
 
 ## 开发路线
 
+后续开发请参考 [与 macOS Finder 的差异分析及详细开发计划](./docs/finder-gap-analysis-and-development-plan.zh-CN.md)，包含代码证据、优先级、22 个开发任务、依赖、工期估算和实机验收标准。以下 M1–M8 为已有功能的历史里程碑，不代表所有 Finder 兼容场景均已验收。
+
 当前实现状态按里程碑跟踪：
 
 | 里程碑 | 状态 | 范围 |
