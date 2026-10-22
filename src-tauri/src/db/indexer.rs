@@ -92,7 +92,8 @@ impl IndexBuilder {
         let mut count = 0;
         let mut last_emit = std::time::Instant::now();
 
-        for entry in walker.flatten() {
+        for result in walker {
+            let entry = result.map_err(|error| format!("index scan traversal failed: {error}"))?;
             let path = entry.path();
             let path_str = path.to_string_lossy().to_string();
 
@@ -771,6 +772,36 @@ mod tests {
         drop(guard);
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn traversal_failure_preserves_active_index_and_can_be_marked_for_retry() {
+        let conn = connection();
+        let updater = IndexUpdater::new(conn.clone());
+        updater
+            .upsert("/previous-index/keep.txt", false)
+            .expect("seed previous index");
+
+        let missing_root = temp_dir("missing-root");
+        let builder = IndexBuilder::new(conn.clone());
+        let error = builder
+            .build(missing_root.to_str().expect("utf-8 temp path"), None)
+            .expect_err("missing root should fail the authoritative scan");
+        assert!(error.contains("index scan traversal failed"));
+        assert_eq!(indexed_paths(&conn), vec!["/previous-index/keep.txt"]);
+
+        builder
+            .mark_rebuild_required()
+            .expect("persist retry marker");
+        let guard = conn.lock().expect("database lock");
+        let building: String = guard
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'index_building'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("index build state");
+        assert_eq!(building, "1");
     }
 
     #[test]

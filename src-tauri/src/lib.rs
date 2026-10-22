@@ -34,7 +34,7 @@ use operations::{
 };
 use serde::Serialize;
 use std::process::Child;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use trash_commands::{empty_trash, list_trash, restore_trash_entry};
@@ -132,7 +132,16 @@ fn get_index_status(index: tauri::State<'_, SharedIndex>) -> IndexStatus {
 
 /// Watcher 停止信号发送端（用于优雅关闭）
 pub type WatcherStopSenders = Arc<Mutex<Vec<std::sync::mpsc::Sender<()>>>>;
+pub type WatcherRecoverySenders = Arc<Mutex<Vec<std::sync::mpsc::SyncSender<()>>>>;
+pub type WatcherRecoveryGeneration = Arc<AtomicU64>;
 pub type NativeQuickLookState = Mutex<Option<Child>>;
+
+struct SqliteWatcherRecoveryContext {
+    index: SharedIndex,
+    app: AppHandle,
+    senders: WatcherRecoverySenders,
+    generation: WatcherRecoveryGeneration,
+}
 
 /// 后台构建索引（优先使用 SQLite，回退到内存索引）
 fn build_index_background(
@@ -140,69 +149,18 @@ fn build_index_background(
     index: SharedIndex,
     database: Option<SharedDatabase>,
     stop_senders: WatcherStopSenders,
+    recovery_senders: WatcherRecoverySenders,
+    recovery_generation: WatcherRecoveryGeneration,
 ) {
     tauri::async_runtime::spawn_blocking(move || {
         // 获取用户主目录
         if let Some(home) = dirs::home_dir() {
             let home_str = home.to_string_lossy().to_string();
 
-            // 延迟启动索引，让应用先完全加载
-            println!(
-                "Delaying index build for {} seconds to allow UI to load...",
-                config::INDEX_BUILD_DELAY_SECS
-            );
-            std::thread::sleep(std::time::Duration::from_secs(
-                config::INDEX_BUILD_DELAY_SECS,
-            ));
-
-            // 检查是否有 SQLite 数据库且不需要重建
             if let Some(ref db) = database {
-                if !db.needs_rebuild() {
-                    let count = db.file_count();
-                    println!("SQLite index ready: {} files (skipping rebuild)", count);
-
-                    // 更新内存索引状态（用于 API 兼容）
-                    if let Ok(mut idx) = index.write() {
-                        idx.is_building = false;
-                        idx.file_count = count as usize;
-                    }
-
-                    // 启动增量监听
-                    let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-                    if let Ok(mut senders) = stop_senders.lock() {
-                        senders.push(stop_tx);
-                    }
-                    if let Err(error) = start_sqlite_watcher(
-                        db.clone(),
-                        home_str,
-                        stop_rx,
-                        Arc::new(AtomicBool::new(false)),
-                    ) {
-                        eprintln!("Failed to start SQLite index watcher: {error}");
-                        if let Err(marker_error) =
-                            IndexBuilder::new(db.connection()).mark_rebuild_required()
-                        {
-                            eprintln!(
-                                "Failed to mark SQLite index for a retry on next launch: {marker_error}"
-                            );
-                        }
-                    }
-                    let _ = app.emit("index-status", "ready");
-                    return;
-                }
-            }
-
-            // 需要构建索引
-            if let Ok(mut idx) = index.write() {
-                idx.is_building = true;
-            }
-            println!("Starting index build...");
-            let _ = app.emit("index-status", "building");
-
-            // 使用 SQLite 构建索引
-            if let Some(ref db) = database {
-                // Watch before scanning. Events are buffered until the staged
-                // snapshot commits, then replayed against the active index.
+                // Install the watcher before the startup delay. Buffering
+                // changes here closes the gap between the previous snapshot
+                // and a later decision to reuse or rebuild it.
                 let is_building = Arc::new(AtomicBool::new(true));
                 let (stop_tx, stop_rx) = std::sync::mpsc::channel();
                 if let Ok(mut senders) = stop_senders.lock() {
@@ -213,23 +171,50 @@ fn build_index_background(
                     home_str.clone(),
                     stop_rx,
                     is_building.clone(),
+                    SqliteWatcherRecoveryContext {
+                        index: index.clone(),
+                        app: app.clone(),
+                        senders: recovery_senders.clone(),
+                        generation: recovery_generation.clone(),
+                    },
                 ) {
                     Ok(()) => true,
                     Err(error) => {
-                        eprintln!(
-                            "Failed to start SQLite index watcher before initial scan: {error}"
-                        );
+                        eprintln!("Failed to start SQLite index watcher at startup: {error}");
                         false
                     }
                 };
 
+                println!(
+                    "Delaying index decision for {} seconds to allow UI to load...",
+                    config::INDEX_BUILD_DELAY_SECS
+                );
+                std::thread::sleep(std::time::Duration::from_secs(
+                    config::INDEX_BUILD_DELAY_SECS,
+                ));
+
                 let builder = IndexBuilder::new(db.connection());
+                if !db.needs_rebuild() && watcher_started {
+                    let count = db.file_count();
+                    println!("SQLite index ready: {} files (skipping rebuild)", count);
+
+                    if let Ok(mut idx) = index.write() {
+                        idx.is_building = false;
+                        idx.file_count = count as usize;
+                    }
+                    is_building.store(false, Ordering::Release);
+                    let _ = app.emit("index-status", "ready");
+                    return;
+                }
+
+                if let Ok(mut idx) = index.write() {
+                    idx.is_building = true;
+                }
+                println!("Starting SQLite index build...");
+                let _ = app.emit("index-status", "building");
                 match builder.build(&home_str, Some(&app)) {
                     Ok(count) => {
                         println!("SQLite index built: {} files", count);
-                        is_building.store(false, Ordering::Release);
-
-                        // 更新内存索引状态
                         if let Ok(mut idx) = index.write() {
                             idx.is_building = false;
                             idx.file_count = count;
@@ -240,27 +225,42 @@ fn build_index_background(
                             "SQLite index build failed; keeping the last committed index: {}",
                             e
                         );
-                        is_building.store(false, Ordering::Release);
                         if let Ok(mut idx) = index.write() {
                             idx.is_building = false;
                             idx.file_count = db.file_count().max(0) as usize;
                         }
+                        if let Err(marker_error) = builder.mark_rebuild_required() {
+                            eprintln!("Failed to mark SQLite index for a retry: {marker_error}");
+                        }
                     }
                 }
+                is_building.store(false, Ordering::Release);
                 if !watcher_started {
                     if let Err(error) = builder.mark_rebuild_required() {
                         eprintln!("Failed to mark SQLite index for retry: {error}");
                     }
                 }
-            } else {
-                // 无 SQLite，使用内存索引
-                let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-                if let Ok(mut senders) = stop_senders.lock() {
-                    senders.push(stop_tx);
-                }
-                fallback_to_memory_index(&app, &index, &home_str, stop_rx);
+                let _ = app.emit("index-status", "ready");
+                return;
             }
 
+            // SQLite is unavailable: retain the existing in-memory fallback.
+            println!(
+                "Delaying memory index build for {} seconds to allow UI to load...",
+                config::INDEX_BUILD_DELAY_SECS
+            );
+            std::thread::sleep(std::time::Duration::from_secs(
+                config::INDEX_BUILD_DELAY_SECS,
+            ));
+            if let Ok(mut idx) = index.write() {
+                idx.is_building = true;
+            }
+            let _ = app.emit("index-status", "building");
+            let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+            if let Ok(mut senders) = stop_senders.lock() {
+                senders.push(stop_tx);
+            }
+            fallback_to_memory_index(&app, &index, &home_str, stop_rx);
             let _ = app.emit("index-status", "ready");
         }
     });
@@ -291,7 +291,166 @@ fn start_sqlite_watcher(
     root: String,
     stop_rx: std::sync::mpsc::Receiver<()>,
     is_building: Arc<AtomicBool>,
+    recovery: SqliteWatcherRecoveryContext,
 ) -> Result<(), String> {
+    let (recovery_tx, recovery_rx) = std::sync::mpsc::sync_channel(1);
+    let (watcher, rx) = create_sqlite_event_watcher(&root)?;
+
+    if let Ok(mut senders) = recovery.senders.lock() {
+        senders.push(recovery_tx.clone());
+    }
+    if recovery.generation.load(Ordering::Acquire) > 0 {
+        let _ = recovery_tx.try_send(());
+    }
+
+    let SqliteWatcherRecoveryContext {
+        index,
+        app,
+        senders: _,
+        generation: _,
+    } = recovery;
+    std::thread::spawn(move || {
+        // Keep the OS watcher alive and replace it if its backend reports an
+        // error or drops the event channel.
+        let mut watcher = watcher;
+        let mut rx = rx;
+        let updater = IndexUpdater::new(db.connection());
+        let builder = IndexBuilder::new(db.connection());
+        let mut pending_events = PendingIndexEvents::default();
+        let mut watcher_disconnected = false;
+        let mut watcher_had_error = false;
+
+        loop {
+            if stop_rx.try_recv().is_ok() {
+                println!("SQLite watcher received stop signal, shutting down");
+                break;
+            }
+
+            while recovery_rx.try_recv().is_ok() {
+                pending_events.request_reconciliation();
+            }
+
+            if !is_building.load(Ordering::Acquire) && pending_events.reconciliation_requested {
+                // Events already queued before the scan are represented by the
+                // filesystem snapshot. Discard them so stale rename/remove
+                // records cannot be replayed over the newly committed snapshot.
+                pending_events.begin_reconciliation();
+                loop {
+                    match rx.try_recv() {
+                        Ok(Ok(_event)) => {}
+                        Ok(Err(error)) => {
+                            eprintln!(
+                                "SQLite watcher error while preparing reconciliation: {error:?}"
+                            );
+                            match replace_sqlite_event_watcher(&mut watcher, &mut rx, &root) {
+                                Ok(()) => watcher_had_error = false,
+                                Err(restart_error) => {
+                                    watcher_had_error = true;
+                                    watcher_disconnected = true;
+                                    eprintln!("Failed to restart SQLite watcher: {restart_error}");
+                                }
+                            }
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty)
+                        | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                    }
+                }
+
+                is_building.store(true, Ordering::Release);
+                if let Ok(mut idx) = index.write() {
+                    idx.is_building = true;
+                }
+                let _ = app.emit("index-status", "building");
+
+                match builder.build(&root, None) {
+                    Ok(count) => {
+                        if let Ok(mut idx) = index.write() {
+                            idx.is_building = false;
+                            idx.file_count = count;
+                        }
+                        println!("SQLite index reconciled after watcher gap: {count} files");
+                    }
+                    Err(error) => {
+                        eprintln!("SQLite index reconciliation failed: {error}");
+                        if let Err(marker_error) = builder.mark_rebuild_required() {
+                            eprintln!(
+                                "Failed to persist SQLite index recovery marker: {marker_error}"
+                            );
+                        }
+                        if let Ok(mut idx) = index.write() {
+                            idx.is_building = false;
+                            idx.file_count = db.file_count().max(0) as usize;
+                        }
+                    }
+                }
+
+                is_building.store(false, Ordering::Release);
+                let _ = app.emit("index-status", "ready");
+
+                if watcher_disconnected || watcher_had_error {
+                    // The snapshot restores current search results, but there
+                    // may no longer be a reliable live watcher. Retry a full
+                    // rebuild on the next launch instead of trusting it.
+                    if let Err(error) = builder.mark_rebuild_required() {
+                        eprintln!("Failed to persist watcher recovery marker: {error}");
+                    }
+                }
+                if watcher_disconnected {
+                    break;
+                }
+            }
+
+            match rx.recv_timeout(std::time::Duration::from_millis(500)) {
+                Ok(Ok(event)) => pending_events.push(event),
+                Ok(Err(error)) => {
+                    eprintln!("SQLite watcher error; scheduling index reconciliation: {error:?}");
+                    pending_events.request_reconciliation();
+                    match replace_sqlite_event_watcher(&mut watcher, &mut rx, &root) {
+                        Ok(()) => watcher_had_error = false,
+                        Err(restart_error) => {
+                            watcher_had_error = true;
+                            watcher_disconnected = true;
+                            eprintln!("Failed to restart SQLite watcher: {restart_error}");
+                        }
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    eprintln!("SQLite watcher channel disconnected; attempting restart");
+                    pending_events.request_reconciliation();
+                    match replace_sqlite_event_watcher(&mut watcher, &mut rx, &root) {
+                        Ok(()) => {
+                            watcher_disconnected = false;
+                            watcher_had_error = false;
+                        }
+                        Err(error) => {
+                            watcher_disconnected = true;
+                            watcher_had_error = true;
+                            eprintln!("Failed to restart disconnected SQLite watcher: {error}");
+                        }
+                    }
+                }
+            }
+
+            if !is_building.load(Ordering::Acquire) {
+                for event in pending_events.take_events() {
+                    apply_sqlite_index_event(&updater, event);
+                }
+            }
+        }
+    });
+    Ok(())
+}
+
+fn create_sqlite_event_watcher(
+    root: &str,
+) -> Result<
+    (
+        notify::RecommendedWatcher,
+        std::sync::mpsc::Receiver<Result<notify::Event, notify::Error>>,
+    ),
+    String,
+> {
     use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -302,51 +461,81 @@ fn start_sqlite_watcher(
         Config::default(),
     )
     .map_err(|error| format!("could not create watcher: {error}"))?;
-
-    // Register synchronously before returning so the initial scan cannot
-    // begin in the gap between starting the worker and installing the watch.
     watcher
-        .watch(std::path::Path::new(&root), RecursiveMode::Recursive)
+        .watch(std::path::Path::new(root), RecursiveMode::Recursive)
         .map_err(|error| format!("could not watch {root}: {error}"))?;
+    Ok((watcher, rx))
+}
 
-    std::thread::spawn(move || {
-        // Keep the OS watcher alive for the full lifetime of the event loop.
-        let _watcher = watcher;
-        let updater = IndexUpdater::new(db.connection());
-        let mut pending_events = Vec::new();
+fn replace_sqlite_event_watcher(
+    watcher: &mut notify::RecommendedWatcher,
+    rx: &mut std::sync::mpsc::Receiver<Result<notify::Event, notify::Error>>,
+    root: &str,
+) -> Result<(), String> {
+    let (replacement, replacement_rx) = create_sqlite_event_watcher(root)?;
+    *watcher = replacement;
+    *rx = replacement_rx;
+    Ok(())
+}
 
-        loop {
-            if stop_rx.try_recv().is_ok() {
-                println!("SQLite watcher received stop signal, shutting down");
-                break;
-            }
+#[derive(Default)]
+struct PendingIndexEvents {
+    events: Vec<notify::Event>,
+    reconciliation_requested: bool,
+}
 
-            if !is_building.load(Ordering::Acquire) {
-                for event in pending_events.drain(..) {
-                    apply_sqlite_index_event(&updater, event);
-                }
-            }
+impl PendingIndexEvents {
+    fn push(&mut self, event: notify::Event) {
+        if event.need_rescan() {
+            self.request_reconciliation();
+        } else if !self.reconciliation_requested {
+            self.events.push(event);
+        }
+    }
 
-            match rx.recv_timeout(std::time::Duration::from_millis(500)) {
-                Ok(Ok(event)) if is_building.load(Ordering::Acquire) => {
-                    pending_events.push(event);
-                }
-                Ok(Ok(event)) => {
-                    for pending in pending_events.drain(..) {
-                        apply_sqlite_index_event(&updater, pending);
-                    }
-                    apply_sqlite_index_event(&updater, event);
-                }
-                Ok(Err(e)) => eprintln!("SQLite watcher error: {:?}", e),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    println!("SQLite watcher channel disconnected, exiting");
-                    break;
-                }
+    fn request_reconciliation(&mut self) {
+        self.events.clear();
+        self.reconciliation_requested = true;
+    }
+
+    fn begin_reconciliation(&mut self) {
+        self.events.clear();
+        self.reconciliation_requested = false;
+    }
+
+    fn take_events(&mut self) -> Vec<notify::Event> {
+        std::mem::take(&mut self.events)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn register_macos_wake_observer(
+    recovery_senders: WatcherRecoverySenders,
+    recovery_generation: WatcherRecoveryGeneration,
+) -> Result<objc2::rc::Retained<objc2_foundation::NSObject>, String> {
+    use block2::RcBlock;
+    use objc2_app_kit::{NSWorkspace, NSWorkspaceDidWakeNotification};
+    use objc2_foundation::NSNotification;
+
+    let workspace = unsafe { NSWorkspace::sharedWorkspace() };
+    let notification_center = unsafe { workspace.notificationCenter() };
+    let wake_block = RcBlock::new(move |_notification: std::ptr::NonNull<NSNotification>| {
+        recovery_generation.fetch_add(1, Ordering::AcqRel);
+        if let Ok(senders) = recovery_senders.lock() {
+            for sender in senders.iter() {
+                let _ = sender.try_send(());
             }
         }
     });
-    Ok(())
+    let observer = unsafe {
+        notification_center.addObserverForName_object_queue_usingBlock(
+            Some(NSWorkspaceDidWakeNotification),
+            None,
+            None,
+            &wake_block,
+        )
+    };
+    Ok(observer)
 }
 
 fn apply_sqlite_index_event(updater: &IndexUpdater, event: notify::Event) {
@@ -440,9 +629,13 @@ pub fn run() {
     // Watcher 停止信号管理
     let stop_senders: WatcherStopSenders = Arc::new(Mutex::new(Vec::new()));
     let stop_senders_for_exit = stop_senders.clone();
+    let recovery_senders: WatcherRecoverySenders = Arc::new(Mutex::new(Vec::new()));
+    let recovery_senders_for_setup = recovery_senders.clone();
+    let recovery_generation: WatcherRecoveryGeneration = Arc::new(AtomicU64::new(0));
+    let recovery_generation_for_setup = recovery_generation.clone();
     let operation_manager = OperationManager::default();
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -478,6 +671,8 @@ pub fn run() {
                 shared_index.clone(),
                 shared_database.clone(),
                 stop_senders.clone(),
+                recovery_senders_for_setup.clone(),
+                recovery_generation_for_setup.clone(),
             );
 
             Ok(())
@@ -569,23 +764,93 @@ pub fn run() {
             clear_file_operation
         ])
         .build(tauri::generate_context!())
-        .expect("error while building tauri application")
-        .run(move |_app_handle, event| {
-            if let tauri::RunEvent::Exit = event {
-                println!("Application exiting, stopping watchers...");
-                if let Ok(senders) = stop_senders_for_exit.lock() {
-                    for sender in senders.iter() {
-                        let _ = sender.send(());
-                    }
-                }
-                if let Ok(mut native_quick_look) =
-                    _app_handle.state::<NativeQuickLookState>().lock()
-                {
-                    if let Some(mut child) = native_quick_look.take() {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                    }
+        .expect("error while building tauri application");
+
+    #[cfg(target_os = "macos")]
+    let wake_observer = match register_macos_wake_observer(recovery_senders, recovery_generation) {
+        Ok(observer) => Some(observer),
+        Err(error) => {
+            eprintln!("Failed to register macOS wake observer: {error}");
+            None
+        }
+    };
+
+    app.run(move |app_handle, event| {
+        #[cfg(target_os = "macos")]
+        let _keep_wake_observer_alive = wake_observer.as_ref();
+
+        if let tauri::RunEvent::Exit = event {
+            println!("Application exiting, stopping watchers...");
+            if let Ok(senders) = stop_senders_for_exit.lock() {
+                for sender in senders.iter() {
+                    let _ = sender.send(());
                 }
             }
-        });
+            if let Ok(mut native_quick_look) = app_handle.state::<NativeQuickLookState>().lock() {
+                if let Some(mut child) = native_quick_look.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod watcher_recovery_tests {
+    use super::PendingIndexEvents;
+    use notify::{event::Flag, Event, EventKind};
+
+    #[test]
+    fn rescan_notice_discards_deltas_until_authoritative_scan_starts() {
+        let mut queue = PendingIndexEvents::default();
+        queue.push(Event::new(EventKind::Other));
+        assert_eq!(queue.events.len(), 1);
+
+        queue.push(Event::new(EventKind::Any).set_flag(Flag::Rescan));
+        assert!(queue.reconciliation_requested);
+        assert!(queue.events.is_empty());
+
+        queue.push(Event::new(EventKind::Other));
+        assert!(queue.events.is_empty());
+
+        queue.begin_reconciliation();
+        assert!(!queue.reconciliation_requested);
+        assert!(queue.events.is_empty());
+        queue.push(Event::new(EventKind::Other));
+        assert_eq!(queue.events.len(), 1);
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_wake_observer_tests {
+    use super::{register_macos_wake_observer, WatcherRecoveryGeneration, WatcherRecoverySenders};
+    use objc2_app_kit::{NSWorkspace, NSWorkspaceDidWakeNotification};
+    use std::sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc, Arc, Mutex,
+    };
+    use std::time::Duration;
+
+    #[test]
+    fn workspace_wake_notification_requests_index_recovery() {
+        let (recovery_tx, recovery_rx) = mpsc::sync_channel(1);
+        let senders: WatcherRecoverySenders = Arc::new(Mutex::new(vec![recovery_tx]));
+        let generation: WatcherRecoveryGeneration = Arc::new(AtomicU64::new(0));
+        let observer = register_macos_wake_observer(senders, generation.clone())
+            .expect("register wake observer");
+
+        let workspace = unsafe { NSWorkspace::sharedWorkspace() };
+        let notification_center = unsafe { workspace.notificationCenter() };
+        unsafe {
+            notification_center.postNotificationName_object(NSWorkspaceDidWakeNotification, None);
+        }
+
+        recovery_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("wake notification should enqueue index recovery");
+        assert_eq!(generation.load(Ordering::Acquire), 1);
+
+        unsafe { notification_center.removeObserver(&observer) };
+    }
 }

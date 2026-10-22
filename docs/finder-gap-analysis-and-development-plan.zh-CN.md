@@ -474,6 +474,7 @@ flowchart LR
 
 - **F03｜自动检查通过；本机单窗口实机场景通过，阶段仍待补验**：目录缓存 generation、监听事件先失效后广播、分栏目录刷新已实现。在 macOS 27.0 arm64 的 `/private/tmp` 验收目录中，从系统外创建 `watched-after-debug.txt` 后，当前目录列表显示了该文件；应用内快捷键新建的 `created-by-debug-app` 文件夹也出现在列表和文件系统中。Finder 单文件创建/删除增补见下条；Finder 改名、多窗口一致性、快速切目录及外置卷仍待验收。
 - **F03｜Finder 外部创建/删除增补验收（2026-10-22）**：在 `/private/tmp/imageexplorer-f02.rNU7mL/library`，Finder 对 `A.png` 执行复制/粘贴，ImageExplorer 列表随后显示 `A_副本.png`；再从 Finder 将副本移到废纸篓，ImageExplorer 列表随监听事件移除了该条目。副本移入废纸篓而未永久删除。该记录覆盖单窗口、同卷、单文件创建与删除，不代表 Finder 改名、批量操作、多窗口或外置卷已通过。
+- **F03｜Finder 外部改名单窗口增补验收（2026-10-22）**：同一隔离目录中，Finder 将 `A.png` 改为 `A-finder.png.png` 后，ImageExplorer 的单个分栏窗口随监听刷新显示新名称；随后恢复为 `A.png`，ImageExplorer 再次显示恢复名。Finder 保留扩展名导致最终名称带双 `.png`，该行为来自 Finder 重命名输入，不影响验证目录更新。此项不覆盖同时打开的多窗口；第二窗口未能与改名事件并行观察。
 - **F05｜自动检查通过；本机复制与撤销实机场景通过，阶段仍待补验**：新建文件/目录采用独占创建和冲突重试；操作日志校验目标身份，替换对象时停止撤销；跨卷移动在删除源前复核源和目标；错误带结构化类别，未归属或不匹配的 partial 保留。在当前工作树 debug app 中，复制记录持久化了文件身份（类型、大小、修改时间、设备号和 inode）。对副本做原子替换后点击撤销，操作中心显示“文件已变化，已保留”，撤销状态为失败；shell 核对被替换文件仍存在，inode 为 `205761762`、长度 39 字节、SHA-256 为 `fe6502ceafeea7b2bba51b239ef7d2ea20341ce2904b8f23fbb8772376aa5c8b`。未修改的副本可正常撤销并移除。目标卷空间不足、真实进程强退恢复、跨卷移动及 Finder 操作仍待实机验证。
 - **验收环境与进程确认**：使用 `/private/tmp/imageexplorer-acceptance.x3GqUH` 隔离目录，应用来自 `src-tauri/target/debug/ImageExplorer`，通过临时 `ImageExplorerDev.app` 和独立 bundle ID `app.imageexplorer.codexdev` 打开；Activity Monitor 确认执行路径指向当前工作树 debug 二进制。该隔离 app 与目录在验收后清理。首次使用同名已安装 release app 的结果不作为代码验收证据。
 - **自动检查记录**：`cargo test` 38 项通过；`cargo clippy --all-targets -- -D warnings`、`cargo fmt -- --check`、`git diff --check`、`pnpm typecheck`、6 个改动前端文件的 ESLint 检查及 `pnpm build` 均退出码为 0。Rust 测试链接器仍输出 `window_vibrancy` 重复符号警告；前端生产构建报告现有动态/静态导入分块和 500 kB chunk 警告。
@@ -496,13 +497,14 @@ flowchart LR
 - **图库｜方向键浏览通过**：保持 B 为焦点时按 Down，描边移动到 C；再按 Up，描边回到 B。图库按条目序列处理上下键；当前共享键盘分派器未为图库定义左右键移动。
 - **外部删除｜选择/焦点清理通过**：图标视图选中 `C.png` 后从独立进程删除，目录监听刷新使卡片消失并清掉失效焦点；恢复文件后卡片重新出现且未自动重选。
 - **排序｜focus、selection 与 anchor 实机通过**：选中 B 后切到名称降序，滚动到 B 所在位置，截图确认 B 仍选中且有焦点描边；按 Shift+Up 后焦点移到 C、B 仍保留在范围内；再按 Shift+Down 后焦点回到 B、C 退出范围。按当前降序顺序，这一往返确认锚点仍为 B。
-- **仍待处理**：分栏 Quick Look 的预览画面尚未完成视觉验收；Finder 外部改名和多窗口一致性仍待实机验收。单窗口 Finder 创建/删除事件的本轮结果记在 10.1。系统进程开关已确认，Quick Look 窗口仍无法被当前 CUA 捕获。F02 继续保持开发中。
+- **仍待处理**：分栏 Quick Look 的预览画面尚未完成视觉验收；Finder 外部改名的单窗口结果记在 10.1，多窗口同时刷新仍待实机验收。单窗口 Finder 创建/删除事件的本轮结果也记在 10.1。系统进程开关已确认，Quick Look 窗口仍无法被当前 CUA 捕获。F02 继续保持开发中。
 
 ### 10.4 F04 索引一致性恢复切片（2026-10-22）
 
 - **开发进度｜子树补录和启动监听顺序已实现；自动回归通过，实机事件仍待验收**：全量扫描改为分批写入暂存表，成功时在单事务内替换活动表、重建 FTS 并切换索引状态；失败时删除暂存表并保留上次已提交索引。SQLite 文件/目录改名和删除更新为单事务子树操作，路径边界不会把 `oldish` 当成 `old` 的子目录。新建/更新目录及排除目录移入索引范围时，使用 `files_subtree_staging` 临时表分批扫描；完整扫描后在一个事务中替换该子树，扫描错误不会发布部分目录树。扫描与增量事件共用排除规则；增量监听覆盖创建、数据/元数据修改、删除和双路径改名。初次重建前同步创建监听器并完成根目录递归 watch 注册，再启动扫描；事件在线程尚未开始消费时仍由通道暂存，扫描期间缓存事件，切换后按接收顺序回放。索引无需重建时也先注册监听再发布 `ready`。监听注册失败会保留当前可用索引/本次快照，并写入需下次启动重建的标记。SQLite 搜索将合法空结果与查询/读取错误分开返回。
 - **自动回归｜通过**：新增子树补录测试，验证深层目录入索引、重复扫描移除已消失条目、排除目录根和后代均被过滤；`cargo test --manifest-path src-tauri/Cargo.toml` 共 44 项通过，`cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`、`cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` 和 `git diff --check` 通过。链接器仍报告已知 `window_vibrancy` 重复符号警告。
-- **未完成边界**：文件系统休眠/断线期间漏事件后的唤醒对账、监听溢出恢复和真实 Finder 批量移动/删除仍需补做。F04 保持开发中。
+- **唤醒/丢事件恢复｜代码与自动回归通过，实机生命周期未验收（2026-10-22）**：SQLite watcher 在启动延迟前注册，期间缓存文件事件；macOS `NSWorkspaceDidWakeNotification`、Notify `Event::need_rescan()` 和 watcher 回调错误会合并为一次全量对账。唤醒代际会锁存 watcher 启动前到达的系统唤醒通知。对账开始前丢弃已被快照覆盖的旧增量事件；回调错误或事件通道断开时先重新注册 watcher。若重扫失败，保留活动索引并持久化下次启动重建标记；遍历错误现在会使全量扫描失败，不再静默发布部分快照。新增回归覆盖 Rescan 清除旧事件队列、遍历失败保留旧索引/重试标记，并通过主动发布 macOS workspace wake notification 验证原生 observer 到恢复队列的链路；`cargo test --manifest-path src-tauri/Cargo.toml --offline` 共 47 项通过，Rust fmt 与 Clippy 通过。测试链接器仍有既有 `window_vibrancy` 重复符号警告。
+- **未完成边界**：唤醒、Rescan 和错误重连目前只有自动回归与静态代码证据，尚未在真实睡眠/唤醒和系统 watcher 溢出中验收；SQLite watcher 初次注册失败时会保留旧索引并要求下次启动重建，但当前进程没有可工作的监听；SQLite 不可用而回退至内存索引时，本轮尚未接入唤醒对账。Finder 批量移动/删除仍待实机验收。F04 保持开发中。
 
 ### 10.5 F06 持续集成门槛起步（2026-10-22）
 
