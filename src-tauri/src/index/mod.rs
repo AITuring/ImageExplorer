@@ -3,7 +3,7 @@ use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watche
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::thread;
 use std::time::SystemTime;
 use tauri::Emitter;
@@ -19,6 +19,8 @@ pub struct IndexedFile {
     pub extension: Option<String>,
     pub is_hidden: bool,
 }
+
+pub type FileIndexData = (HashMap<String, IndexedFile>, Vec<(String, String)>);
 
 pub struct FileIndex {
     // ... (existing fields)
@@ -42,10 +44,7 @@ impl FileIndex {
     }
 
     /// 扫描文件系统并返回索引数据（不占用锁）
-    pub fn scan(
-        root: &str,
-        app: Option<&tauri::AppHandle>,
-    ) -> (HashMap<String, IndexedFile>, Vec<(String, String)>) {
+    pub fn scan(root: &str, app: Option<&tauri::AppHandle>) -> Result<FileIndexData, String> {
         let mut files = HashMap::new();
         let mut name_index = Vec::new();
 
@@ -87,7 +86,9 @@ impl FileIndex {
         let mut count = 0;
         let mut last_emit = std::time::Instant::now();
 
-        for entry in walker.flatten() {
+        for entry in walker {
+            let entry =
+                entry.map_err(|error| format!("failed to walk index root {root}: {error}"))?;
             let path = entry.path();
             let path_str = path.to_string_lossy().to_string();
 
@@ -99,17 +100,15 @@ impl FileIndex {
                 let name = file_name.to_string_lossy().to_string();
                 let name_lower = name.to_lowercase();
 
-                let (size, modified) = if let Ok(metadata) = entry.metadata() {
-                    let size = metadata.len();
-                    let modified = metadata
-                        .modified()
-                        .ok()
-                        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs());
-                    (size, modified)
-                } else {
-                    (0, None)
-                };
+                let metadata = entry
+                    .metadata()
+                    .map_err(|error| format!("failed to read metadata for {path_str}: {error}"))?;
+                let size = metadata.len();
+                let modified = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs());
 
                 let extension = path.extension().map(|e| e.to_string_lossy().to_string());
 
@@ -143,7 +142,7 @@ impl FileIndex {
             }
         }
 
-        (files, name_index)
+        Ok((files, name_index))
     }
 
     /// 更新索引数据
@@ -275,56 +274,244 @@ pub fn create_shared_index() -> SharedIndex {
     Arc::new(RwLock::new(FileIndex::new()))
 }
 
-/// 启动后台索引监听器（支持优雅关闭）
+enum MemoryWatcherMessage {
+    Event(notify::Result<Event>),
+    InitialSnapshot(Result<FileIndexData, String>),
+    RecoverySnapshot(Result<FileIndexData, String>),
+}
+
+#[derive(Default)]
+struct PendingMemoryEvents {
+    events: Vec<Event>,
+    reconciliation_requested: bool,
+}
+
+impl PendingMemoryEvents {
+    fn push(&mut self, result: notify::Result<Event>) {
+        match result {
+            Ok(event) if event.need_rescan() => self.request_reconciliation(),
+            Ok(event) if !self.reconciliation_requested => self.events.push(event),
+            Ok(_) => {}
+            Err(error) => {
+                eprintln!("Memory index watcher error: {error:?}");
+                self.request_reconciliation();
+            }
+        }
+    }
+
+    fn request_reconciliation(&mut self) {
+        self.events.clear();
+        self.reconciliation_requested = true;
+    }
+
+    fn begin_reconciliation(&mut self) {
+        self.events.clear();
+        self.reconciliation_requested = false;
+    }
+
+    fn finish_snapshot(&mut self, succeeded: bool) -> (Vec<Event>, bool) {
+        let follow_up = self.reconciliation_requested;
+        self.reconciliation_requested = false;
+        if succeeded {
+            self.events.clear();
+        }
+        (std::mem::take(&mut self.events), follow_up)
+    }
+
+    fn finish_initial_snapshot(&mut self) -> (Vec<Event>, bool) {
+        let follow_up = self.reconciliation_requested;
+        self.reconciliation_requested = false;
+        (std::mem::take(&mut self.events), follow_up)
+    }
+}
+
+/// 启动后台索引监听器（支持优雅关闭、快照缓冲和漏事件恢复）
 pub fn start_index_watcher(
     index: SharedIndex,
     root: String,
-    stop_rx: std::sync::mpsc::Receiver<()>,
+    stop_rx: mpsc::Receiver<()>,
+    recovery_rx: mpsc::Receiver<()>,
+    app: tauri::AppHandle,
 ) {
-    thread::spawn(move || {
-        let (tx, rx) = std::sync::mpsc::channel();
-
-        let mut watcher = match RecommendedWatcher::new(
-            move |res| {
-                let _ = tx.send(res);
-            },
-            Config::default(),
-        ) {
-            Ok(w) => w,
-            Err(e) => {
-                eprintln!("Failed to create index watcher: {:?}", e);
-                return;
-            }
-        };
-
-        if let Err(e) = watcher.watch(std::path::Path::new(&root), RecursiveMode::Recursive) {
-            eprintln!("Failed to watch root for index: {:?}", e);
-            return;
+    let (event_tx, event_rx) = mpsc::channel::<MemoryWatcherMessage>();
+    let send_gate = Arc::new(Mutex::new(()));
+    let mut watcher = match create_memory_event_watcher(&root, event_tx.clone(), send_gate.clone())
+    {
+        Ok(watcher) => Some(watcher),
+        Err(error) => {
+            eprintln!("Failed to start memory index watcher: {error}");
+            None
         }
+    };
+
+    if let Ok(mut idx) = index.write() {
+        idx.is_building = true;
+    }
+    let _ = app.emit("index-status", "building");
+
+    thread::spawn(move || {
+        let mut pending = PendingMemoryEvents::default();
+        let initial_scan = FileIndex::scan(&root, Some(&app));
+        send_memory_watcher_message(
+            &event_tx,
+            &send_gate,
+            MemoryWatcherMessage::InitialSnapshot(initial_scan),
+        );
+        let mut initial_snapshot_received = false;
+        let mut last_watcher_retry = std::time::Instant::now();
+        let mut next_scan_retry = None;
 
         loop {
-            // 检查停止信号（非阻塞）
             if stop_rx.try_recv().is_ok() {
                 println!("Index watcher received stop signal, shutting down");
                 break;
             }
 
-            // 非阻塞接收 fs 事件（超时 500ms）
-            match rx.recv_timeout(std::time::Duration::from_millis(500)) {
-                Ok(Ok(event)) => {
-                    handle_event(&index, event);
+            while recovery_rx.try_recv().is_ok() {
+                pending.request_reconciliation();
+            }
+            if next_scan_retry.is_some_and(|retry_at| retry_at <= std::time::Instant::now()) {
+                pending.request_reconciliation();
+                next_scan_retry = None;
+            }
+
+            if pending.reconciliation_requested && initial_snapshot_received {
+                pending.begin_reconciliation();
+                if let Ok(mut idx) = index.write() {
+                    idx.is_building = true;
                 }
-                Ok(Err(e)) => eprintln!("Index watcher error: {:?}", e),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    // 正常超时，继续循环检查 stop 信号
+                let _ = app.emit("index-status", "building");
+                let scan = FileIndex::scan(&root, Some(&app));
+                send_memory_watcher_message(
+                    &event_tx,
+                    &send_gate,
+                    MemoryWatcherMessage::RecoverySnapshot(scan),
+                );
+            }
+
+            if watcher.is_none()
+                && last_watcher_retry.elapsed() >= std::time::Duration::from_secs(5)
+            {
+                match create_memory_event_watcher(&root, event_tx.clone(), send_gate.clone()) {
+                    Ok(replacement) => {
+                        watcher = Some(replacement);
+                        println!("Memory index watcher reconnected");
+                    }
+                    Err(error) => eprintln!("Failed to reconnect memory index watcher: {error}"),
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    println!("Index watcher channel disconnected, exiting");
-                    break;
+                last_watcher_retry = std::time::Instant::now();
+            }
+
+            match event_rx.recv_timeout(std::time::Duration::from_millis(250)) {
+                Ok(MemoryWatcherMessage::Event(result)) => {
+                    let watcher_error = result.is_err();
+                    pending.push(result);
+                    if watcher_error {
+                        match create_memory_event_watcher(
+                            &root,
+                            event_tx.clone(),
+                            send_gate.clone(),
+                        ) {
+                            Ok(replacement) => watcher = Some(replacement),
+                            Err(error) => {
+                                eprintln!("Failed to restart memory index watcher: {error}");
+                                watcher = None;
+                            }
+                        }
+                        last_watcher_retry = std::time::Instant::now();
+                    }
+                    if initial_snapshot_received && !pending.reconciliation_requested {
+                        for event in std::mem::take(&mut pending.events) {
+                            handle_event(&index, event);
+                        }
+                    }
                 }
+                Ok(MemoryWatcherMessage::InitialSnapshot(scan)) => {
+                    initial_snapshot_received = true;
+                    let succeeded = publish_memory_snapshot(&index, scan);
+                    next_scan_retry = (!succeeded)
+                        .then(|| std::time::Instant::now() + std::time::Duration::from_secs(30));
+                    let (events, follow_up) = pending.finish_initial_snapshot();
+                    for event in events {
+                        handle_event(&index, event);
+                    }
+                    if follow_up {
+                        pending.request_reconciliation();
+                    }
+                    let _ = app.emit("index-status", "ready");
+                }
+                Ok(MemoryWatcherMessage::RecoverySnapshot(scan)) => {
+                    let succeeded = publish_memory_snapshot(&index, scan);
+                    next_scan_retry = (!succeeded)
+                        .then(|| std::time::Instant::now() + std::time::Duration::from_secs(30));
+                    let (events, follow_up) = pending.finish_snapshot(succeeded);
+                    for event in events {
+                        handle_event(&index, event);
+                    }
+                    if follow_up {
+                        pending.request_reconciliation();
+                    }
+                    let _ = app.emit("index-status", "ready");
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
     });
+}
+
+fn create_memory_event_watcher(
+    root: &str,
+    tx: mpsc::Sender<MemoryWatcherMessage>,
+    send_gate: Arc<Mutex<()>>,
+) -> Result<RecommendedWatcher, String> {
+    let mut watcher = RecommendedWatcher::new(
+        move |result| {
+            if let Ok(_gate) = send_gate.lock() {
+                let _ = tx.send(MemoryWatcherMessage::Event(result));
+            }
+        },
+        Config::default(),
+    )
+    .map_err(|error| format!("could not create watcher: {error}"))?;
+    watcher
+        .watch(std::path::Path::new(root), RecursiveMode::Recursive)
+        .map_err(|error| format!("could not watch {root}: {error}"))?;
+    Ok(watcher)
+}
+
+fn send_memory_watcher_message(
+    tx: &mpsc::Sender<MemoryWatcherMessage>,
+    send_gate: &Mutex<()>,
+    message: MemoryWatcherMessage,
+) {
+    if let Ok(_gate) = send_gate.lock() {
+        let _ = tx.send(message);
+    }
+}
+
+fn publish_memory_snapshot(index: &SharedIndex, scan: Result<FileIndexData, String>) -> bool {
+    match scan {
+        Ok((files, name_index)) => {
+            let count = files.len();
+            match index.write() {
+                Ok(mut idx) => idx.update_data(files, name_index),
+                Err(error) => {
+                    eprintln!("Failed to publish memory index snapshot: {error}");
+                    return false;
+                }
+            }
+            println!("Memory index snapshot published: {count} files");
+            true
+        }
+        Err(error) => {
+            eprintln!("Memory index scan failed; preserving the active index: {error}");
+            if let Ok(mut idx) = index.write() {
+                idx.is_building = false;
+            }
+            false
+        }
+    }
 }
 
 fn handle_event(index: &SharedIndex, event: Event) {
@@ -393,5 +580,94 @@ fn handle_event(index: &SharedIndex, event: Event) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_event(path: &str) -> Event {
+        let mut event = Event::new(EventKind::Create(notify::event::CreateKind::File));
+        event.paths.push(PathBuf::from(path));
+        event
+    }
+
+    fn indexed_file(path: &str) -> IndexedFile {
+        IndexedFile {
+            name: "existing.txt".to_string(),
+            name_lower: "existing.txt".to_string(),
+            path: path.to_string(),
+            is_dir: false,
+            size: 1,
+            modified: None,
+            extension: Some("txt".to_string()),
+            is_hidden: false,
+        }
+    }
+
+    #[test]
+    fn initial_snapshot_replays_events_buffered_during_scan() {
+        let mut pending = PendingMemoryEvents::default();
+        pending.push(Ok(create_event("/tmp/during-initial-scan.txt")));
+
+        let (events, follow_up) = pending.finish_initial_snapshot();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].paths[0],
+            PathBuf::from("/tmp/during-initial-scan.txt")
+        );
+        assert!(!follow_up);
+    }
+
+    #[test]
+    fn successful_reconciliation_discards_events_covered_by_snapshot() {
+        let mut pending = PendingMemoryEvents::default();
+        pending.push(Ok(create_event("/tmp/before-reconciliation.txt")));
+        pending.begin_reconciliation();
+        pending.push(Ok(create_event("/tmp/during-reconciliation.txt")));
+
+        let (events, follow_up) = pending.finish_snapshot(true);
+
+        assert!(events.is_empty());
+        assert!(!follow_up);
+    }
+
+    #[test]
+    fn failed_memory_snapshot_preserves_the_active_index() {
+        let index = create_shared_index();
+        let path = "/tmp/existing-index-entry.txt";
+        let mut files = HashMap::new();
+        files.insert(path.to_string(), indexed_file(path));
+        if let Ok(mut idx) = index.write() {
+            idx.update_data(files, vec![("existing.txt".to_string(), path.to_string())]);
+            idx.is_building = true;
+        }
+
+        assert!(!publish_memory_snapshot(
+            &index,
+            Err("simulated traversal failure".to_string())
+        ));
+
+        let idx = index.read().expect("index lock should remain available");
+        assert!(!idx.is_building);
+        assert_eq!(idx.file_count, 1);
+        assert!(idx.files.contains_key(path));
+    }
+
+    #[test]
+    fn scan_fails_when_the_root_is_missing() {
+        let missing_root = std::env::temp_dir().join(format!(
+            "imageexplorer-index-missing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after epoch")
+                .as_nanos()
+        ));
+
+        assert!(!missing_root.exists());
+        assert!(FileIndex::scan(&missing_root.to_string_lossy(), None).is_err());
     }
 }

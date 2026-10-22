@@ -260,8 +260,14 @@ fn build_index_background(
             if let Ok(mut senders) = stop_senders.lock() {
                 senders.push(stop_tx);
             }
-            fallback_to_memory_index(&app, &index, &home_str, stop_rx);
-            let _ = app.emit("index-status", "ready");
+            fallback_to_memory_index(
+                &app,
+                &index,
+                &home_str,
+                stop_rx,
+                recovery_senders,
+                recovery_generation,
+            );
         }
     });
 }
@@ -272,17 +278,25 @@ fn fallback_to_memory_index(
     index: &SharedIndex,
     home_str: &str,
     stop_rx: std::sync::mpsc::Receiver<()>,
+    recovery_senders: WatcherRecoverySenders,
+    recovery_generation: WatcherRecoveryGeneration,
 ) {
     println!("Starting background index watcher...");
-    index::start_index_watcher(index.clone(), home_str.to_string(), stop_rx);
-
-    let (files, name_index) = index::FileIndex::scan(home_str, Some(app));
-    let count = files.len();
-    println!("Memory index built: {} files", count);
-
-    if let Ok(mut idx) = index.write() {
-        idx.update_data(files, name_index);
+    let (recovery_tx, recovery_rx) = std::sync::mpsc::sync_channel(1);
+    if let Ok(mut senders) = recovery_senders.lock() {
+        senders.push(recovery_tx.clone());
     }
+    if recovery_generation.load(Ordering::Acquire) > 0 {
+        let _ = recovery_tx.try_send(());
+    }
+
+    index::start_index_watcher(
+        index.clone(),
+        home_str.to_string(),
+        stop_rx,
+        recovery_rx,
+        app.clone(),
+    );
 }
 
 /// 启动 SQLite 增量监听器（支持优雅关闭）
