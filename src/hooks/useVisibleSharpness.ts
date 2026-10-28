@@ -9,7 +9,9 @@ export type VisibleSharpness = "sharp" | "soft" | "unavailable";
 
 const IMAGE_TYPES = new Set(IMAGE_EXTENSIONS.filter((type) => type !== "svg" && type !== "psd"));
 const SOURCE_SIZE = 2048;
-const MAX_RESULTS = 200;
+// Verdicts are tiny scalars; keep a whole large folder so scrolling back does
+// not trigger another 2048px RAW decode for the same file.
+const MAX_RESULTS = 5_000;
 const results = new Map<string, VisibleSharpness>();
 
 function keyFor(entry: FileEntry) {
@@ -52,7 +54,12 @@ async function measure(entry: FileEntry, signal: AbortSignal): Promise<VisibleSh
   return result.highlightedPixels > 0 ? "sharp" : "soft";
 }
 
-export function useVisibleSharpness(entries: FileEntry[], enabled: boolean, selectedPath: string | null) {
+export function useVisibleSharpness(
+  entries: FileEntry[],
+  enabled: boolean,
+  selectedPath: string | null,
+  isScrolling = false
+) {
   const signature = useMemo(
     () => entries.filter(isAnalyzable).map(keyFor).join("\u001f"),
     [entries]
@@ -60,7 +67,7 @@ export function useVisibleSharpness(entries: FileEntry[], enabled: boolean, sele
   const [version, setVersion] = useState(0);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || isScrolling) return;
     const controller = new AbortController();
     const pending = entries.filter((entry) => isAnalyzable(entry) && !results.has(keyFor(entry)));
     pending.sort((a, b) => Number(b.path === selectedPath) - Number(a.path === selectedPath));
@@ -85,7 +92,7 @@ export function useVisibleSharpness(entries: FileEntry[], enabled: boolean, sele
     };
     void Promise.all([worker(), worker()]);
     return () => controller.abort();
-  }, [enabled, entries, selectedPath, signature]);
+  }, [enabled, entries, isScrolling, selectedPath, signature]);
 
   return useMemo(() => {
     void version;

@@ -24,7 +24,12 @@ interface PhotoAnalysisState {
   progress: PhotoAnalysisProgress;
 }
 
-export function usePhotoAnalysis(entries: FileEntry[], enabled: boolean, scopePath?: string) {
+export function usePhotoAnalysis(
+  entries: FileEntry[],
+  enabled: boolean,
+  scopePath?: string,
+  priorityPaths: string[] = []
+) {
   const [state, setState] = useState<PhotoAnalysisState>({
     signature: "",
     records: EMPTY_RECORDS,
@@ -52,9 +57,13 @@ export function usePhotoAnalysis(entries: FileEntry[], enabled: boolean, scopePa
     [analysisEntries]
   );
   const analysisEntriesRef = useRef(analysisEntries);
+  const priorityPathsRef = useRef(priorityPaths);
   useEffect(() => {
     analysisEntriesRef.current = analysisEntries;
   }, [analysisEntries]);
+  useEffect(() => {
+    priorityPathsRef.current = priorityPaths;
+  }, [priorityPaths]);
   const visibleState: PhotoAnalysisState =
     state.signature === analysisSignature
       ? state
@@ -176,7 +185,12 @@ export function usePhotoAnalysis(entries: FileEntry[], enabled: boolean, scopePa
     };
 
     const startTimer = window.setTimeout(() => {
-      void analyzePhotoEntries(entriesToProcess, controller.signal, publishProgress)
+      void analyzePhotoEntries(
+        entriesToProcess,
+        controller.signal,
+        publishProgress,
+        () => priorityPathsRef.current
+      )
         .then((nextRecords) => {
           if (generation !== generationRef.current || controller.signal.aborted) return;
           startTransition(() => {

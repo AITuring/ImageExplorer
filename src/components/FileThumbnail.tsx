@@ -39,7 +39,7 @@ export const FileThumbnail = memo(function FileThumbnail({
   const [, forceUpdate] = useState(0);
   const normalizedExtension = (entry.extension || "").toLowerCase();
   const shouldLoadPreview = !entry.is_dir && PREVIEWABLE_EXTENSIONS.has(normalizedExtension);
-  const shouldRequestPreview = shouldLoadPreview && (!isScrolling || isInViewport);
+  const shouldRequestPreview = shouldLoadPreview && isInViewport && !isScrolling;
   const requestSize = useMemo(
     () => getThumbnailRequestSize(size, requestSizeOverride),
     [requestSizeOverride, size]

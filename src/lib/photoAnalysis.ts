@@ -2,6 +2,7 @@ import { IMAGE_EXTENSIONS } from "@/constants/fileTypes";
 import type { FileEntry } from "@/types";
 import {
   getFileThumbnailCacheKey,
+  getLargestCachedFileThumbnail,
   getThumbnailRequestSize,
   loadFileThumbnail,
 } from "@/lib/iconCache";
@@ -580,6 +581,11 @@ async function analyzeEntry(entry: FileEntry, key: string, signal: AbortSignal) 
   if (cached) return cached;
 
   if (signal.aborted) return null;
+  const availableThumbnail = getLargestCachedFileThumbnail(
+    entry.path,
+    entry.modified,
+    entry.size
+  );
   // Share the visible 80px grid thumbnail whenever possible. The image is
   // still sampled into the smaller analysis canvas, but RAW decoding happens
   // only once per file/request size.
@@ -593,7 +599,7 @@ async function analyzeEntry(entry: FileEntry, key: string, signal: AbortSignal) 
   );
   // Do not accept the generic ARW document icon as an analysis image. It has
   // the same pixels for every failed RAW decode and would create false groups.
-  const base64 = await loadFileThumbnail(
+  const base64 = availableThumbnail?.base64 ?? await loadFileThumbnail(
     thumbnailKey,
     entry.path,
     thumbnailRequestSize,
@@ -614,9 +620,12 @@ async function analyzeEntry(entry: FileEntry, key: string, signal: AbortSignal) 
 export async function analyzePhotoEntries(
   entries: PhotoAnalysisEntry[],
   signal: AbortSignal,
-  onUpdate: (progress: PhotoAnalysisProgress, records: Map<string, PhotoAnalysisRecord>) => void
+  onUpdate: (progress: PhotoAnalysisProgress, records: Map<string, PhotoAnalysisRecord>) => void,
+  getPriorityPaths?: () => string[]
 ): Promise<Map<string, PhotoAnalysisRecord>> {
   const finalizedByPath = new Map<string, RawPhotoFeatures>();
+  const unpublishedFeatures = new Map<string, RawPhotoFeatures>();
+  const pendingByPath = new Map(entries.map((item) => [item.entry.path, item]));
   let nextIndex = 0;
   let extractedCompleted = 0;
   const extractionProgressBatch = getProgressBatchSize(entries.length, 12);
@@ -624,13 +633,24 @@ export async function analyzePhotoEntries(
   const worker = async () => {
     let lastBrowserYieldAt = performance.now();
     while (!signal.aborted) {
-      const index = nextIndex;
-      nextIndex += 1;
-      if (index >= entries.length) return;
-      const item = entries[index];
+      let item: PhotoAnalysisEntry | undefined;
+      for (const path of getPriorityPaths?.() ?? []) {
+        item = pendingByPath.get(path);
+        if (item) break;
+      }
+      while (!item && nextIndex < entries.length) {
+        const candidate = entries[nextIndex++];
+        item = pendingByPath.get(candidate.entry.path);
+      }
+      if (!item) return;
+      pendingByPath.delete(item.entry.path);
       try {
         const features = await analyzeEntry(item.entry, item.key, signal);
-        if (features) finalizedByPath.set(item.entry.path, finalizePhotoFeatures(features));
+        if (features) {
+          const finalized = finalizePhotoFeatures(features);
+          finalizedByPath.set(item.entry.path, finalized);
+          unpublishedFeatures.set(item.entry.path, finalized);
+        }
       } catch (error) {
         console.warn(`Failed to analyze photo: ${item.entry.path}`, error);
       } finally {
@@ -640,6 +660,11 @@ export async function analyzePhotoEntries(
           extractedCompleted % extractionProgressBatch === 0 ||
           extractedCompleted === entries.length
         ) {
+          const partialRecords = new Map<string, PhotoAnalysisRecord>();
+          for (const features of unpublishedFeatures.values()) {
+            partialRecords.set(features.path, { ...features, groupId: null });
+          }
+          unpublishedFeatures.clear();
           onUpdate(
             {
               completed: extractedCompleted,
@@ -649,7 +674,7 @@ export async function analyzePhotoEntries(
               stageCompleted: extractedCompleted,
               stageTotal: entries.length,
             },
-            createPhotoAnalysisRecords(entries, finalizedByPath, false)
+            partialRecords
           );
         }
         if (performance.now() - lastBrowserYieldAt >= 12) {
@@ -666,40 +691,19 @@ export async function analyzePhotoEntries(
 
   if (signal.aborted) return new Map();
 
-  let focusCompleted = 0;
-  const focusProgressBatch = getProgressBatchSize(entries.length, 16);
-  let focusBatchEntries: PhotoAnalysisEntry[] = [];
-  let focusLastBrowserYieldAt = performance.now();
-  for (const item of entries) {
-    if (signal.aborted) return new Map();
-    if (finalizedByPath.has(item.entry.path)) {
-      focusBatchEntries.push(item);
-    }
-    focusCompleted += 1;
-    if (
-      focusCompleted === 1 ||
-      focusCompleted % focusProgressBatch === 0 ||
-      focusCompleted === entries.length
-    ) {
-      const partialRecords = createPhotoAnalysisRecords(focusBatchEntries, finalizedByPath, false);
-      focusBatchEntries = [];
-      onUpdate(
-        {
-          completed: entries.length,
-          total: entries.length,
-          isAnalyzing: true,
-          stage: "estimating-focus",
-          stageCompleted: focusCompleted,
-          stageTotal: entries.length,
-        },
-        partialRecords
-      );
-    }
-    if (performance.now() - focusLastBrowserYieldAt >= 12) {
-      await yieldToBrowser();
-      focusLastBrowserYieldAt = performance.now();
-    }
-  }
+  // Focus regions were finalized as each thumbnail arrived. Publish the stage
+  // once instead of replaying every record and rerendering the grid repeatedly.
+  onUpdate(
+    {
+      completed: entries.length,
+      total: entries.length,
+      isAnalyzing: true,
+      stage: "estimating-focus",
+      stageCompleted: entries.length,
+      stageTotal: entries.length,
+    },
+    new Map()
+  );
 
   if (signal.aborted) return new Map();
   onUpdate(
@@ -711,7 +715,7 @@ export async function analyzePhotoEntries(
       stageCompleted: 0,
       stageTotal: 1,
     },
-    createPhotoAnalysisRecords(entries, finalizedByPath, false)
+    new Map()
   );
   await yieldToBrowser();
 

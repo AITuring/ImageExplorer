@@ -59,7 +59,10 @@ export const FileGridItem = memo(function FileGridItem({
   // thumbnail decoding.
   const canLoadViewportData = isInViewport && !isScrolling;
   const photoMetadata = usePhotoMetadata(entry, canLoadViewportData);
-  const cameraAfMetadata = useCameraAfMetadata(entry, photoAnalysisEnabled && canLoadViewportData);
+  const cameraAfMetadata = useCameraAfMetadata(
+    entry,
+    photoAnalysisEnabled && isSelected && canLoadViewportData
+  );
   const metadataSummary = getPhotoMetadataSummary(photoMetadata);
   const thumbnailSize = photoAnalysisEnabled ? 144 : 80;
   const cameraAfRegions = getCameraAfRegions(cameraAfMetadata);

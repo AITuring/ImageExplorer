@@ -37,7 +37,8 @@ import { isPermissionDeniedError, requestDirectoryAccess } from "@/lib/directory
 /** 列表视图固定行高 */
 const LIST_ITEM_HEIGHT = 40;
 /** 网格视图固定行高 */
-const GRID_ROW_HEIGHT = 220;
+const GRID_ROW_HEIGHT = 152;
+const PHOTO_GRID_ROW_HEIGHT = 248;
 /** 网格项最小宽度 */
 const GRID_ITEM_MIN_WIDTH = 132;
 /** 网格间距 */
@@ -355,7 +356,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   const gridVirtualizer = useVirtualizer({
     count: gridRowCount,
     getScrollElement: () => gridScrollRef.current,
-    estimateSize: () => GRID_ROW_HEIGHT,
+    estimateSize: () => (photoAnalysisEnabled ? PHOTO_GRID_ROW_HEIGHT : GRID_ROW_HEIGHT),
     overscan: 2,
     useAnimationFrameWithResizeObserver: true,
   });
@@ -378,14 +379,16 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   const visibleSharpness = useVisibleSharpness(
     gridViewportEntries,
     photoAnalysisEnabled && viewMode === "icon",
-    selectedPath
+    selectedPath,
+    gridIsScrolling
   );
 
   const photoAnalysisEnabledForFolder = photoAnalysisEnabled && viewMode === "icon";
   const { records: photoAnalysis } = usePhotoAnalysis(
     entries,
     photoAnalysisEnabledForFolder,
-    currentPath
+    currentPath,
+    gridViewportEntries.map((entry) => entry.path)
   );
 
   useEffect(() => {
@@ -773,12 +776,12 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                       <div
                         key={virtualRow.index}
                         data-index={virtualRow.index}
-                        ref={gridVirtualizer.measureElement}
                         style={{
                           position: "absolute",
                           top: 0,
                           left: 0,
                           width: "100%",
+                          height: `${virtualRow.size}px`,
                           transform: `translateY(${virtualRow.start}px)`,
                         }}
                       >
