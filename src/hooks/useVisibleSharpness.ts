@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { getFileThumbnailCacheKey, loadFileThumbnail } from "@/lib/iconCache";
-import { extractSharpnessRegionPixels } from "@/lib/sharpnessAnalysis";
+import { extractSharpnessRegionPixels, FULL_IMAGE_SHARPNESS_SOURCE_SIZE } from "@/lib/sharpnessAnalysis";
 import { computeSharpnessMaskOffThread } from "@/lib/sharpnessWorker";
 import { IMAGE_EXTENSIONS } from "@/constants/fileTypes";
 import type { FileEntry } from "@/types";
@@ -8,7 +8,7 @@ import type { FileEntry } from "@/types";
 export type VisibleSharpness = "sharp" | "soft" | "unavailable";
 
 const IMAGE_TYPES = new Set(IMAGE_EXTENSIONS.filter((type) => type !== "svg" && type !== "psd"));
-const SOURCE_SIZE = 2048;
+const SOURCE_SIZE = FULL_IMAGE_SHARPNESS_SOURCE_SIZE;
 // Verdicts are tiny scalars; keep a whole large folder so scrolling back does
 // not trigger another 2048px RAW decode for the same file.
 const MAX_RESULTS = 5_000;

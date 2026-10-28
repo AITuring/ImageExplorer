@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   extractSharpnessRegionPixels,
+  FULL_IMAGE_SHARPNESS_SOURCE_SIZE,
   getSharpnessSourceRequestSize,
   type NormalizedRect,
   type SharpnessMaskResult,
@@ -30,7 +31,7 @@ interface CachedSourceImage {
 }
 
 const FULL_IMAGE_SELECTION: NormalizedRect = { x: 0, y: 0, width: 1, height: 1 };
-const SHARPNESS_ANALYSIS_VERSION = 1;
+const SHARPNESS_ANALYSIS_VERSION = 2;
 const MAX_CACHED_FULL_IMAGE_RESULTS = 5;
 const fullImageResultCache = new Map<string, SharpnessMaskResult>();
 
@@ -175,9 +176,12 @@ export function useSharpnessInspector({
   }, [analysisKey, autoStart, cancelAnalysis]);
 
   const loadSourceImage = useCallback(
-    async (requestedSize: number, signal: AbortSignal) => {
+    async (requestedSize: number, signal: AbortSignal, exactSize = false) => {
       const cached = sourceImageRef.current;
-      if (cached && cached.requestSize >= requestedSize) {
+      if (
+        cached &&
+        (exactSize ? cached.requestSize === requestedSize : cached.requestSize >= requestedSize)
+      ) {
         return cached.image;
       }
 
@@ -232,16 +236,21 @@ export function useSharpnessInspector({
       setStatus("analyzing");
 
       try {
-        const requestSize = getSharpnessSourceRequestSize(nextSelection, displayedDimensions);
+        // The grid uses this exact RAW decode for its badge. A displayed
+        // progressive preview can be smaller and produce a different verdict.
+        const requestSize = isFullImage
+          ? FULL_IMAGE_SHARPNESS_SOURCE_SIZE
+          : getSharpnessSourceRequestSize(nextSelection, displayedDimensions);
         const displayedImage = preferredImage ?? displayedImageRef.current;
         const canUseDisplayedImage = Boolean(
+          !isFullImage &&
           displayedImage &&
           (preferredImage ||
             Math.max(displayedImage.naturalWidth, displayedImage.naturalHeight) >= requestSize)
         );
         let image = canUseDisplayedImage
           ? displayedImage!
-          : await loadSourceImage(requestSize, controller.signal);
+          : await loadSourceImage(requestSize, controller.signal, isFullImage);
 
         const analyzeImage = async (candidate: HTMLImageElement) => {
           if (displayedDimensions) {

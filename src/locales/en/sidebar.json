@@ -14,5 +14,7 @@
   "settings": "Settings",
   "access_denied": "Access denied",
   "resize": "Resize sidebar",
-  "show": "Show sidebar"
+  "show": "Show sidebar",
+  "restore_items": "Restore hidden items",
+  "remove_item": "Remove {{name}} from sidebar"
 }

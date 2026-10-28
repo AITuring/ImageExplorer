@@ -16,6 +16,7 @@ import {
   Trash2,
   Star,
   Clock3,
+  X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AppContextMenu } from "@/components/AppContextMenu";
@@ -48,6 +49,7 @@ function SidebarLocationRow({
   onToggleFavorite,
   isFavorite,
   onRemoveRecent,
+  onRemove,
 }: {
   path: string;
   icon: typeof Star;
@@ -55,7 +57,9 @@ function SidebarLocationRow({
   onToggleFavorite?: () => void;
   isFavorite?: boolean;
   onRemoveRecent?: () => void;
+  onRemove?: () => void;
 }) {
+  const { t } = useTranslation();
   const label = getLocationName(path);
   const sidebarItemActions: SidebarItemActions = {
     onOpen: () => onNavigate(path),
@@ -68,15 +72,27 @@ function SidebarLocationRow({
   };
 
   return (
-    <AppContextMenu type="sidebar-item" sidebarItemActions={sidebarItemActions}>
-      <button
-        className="hover:bg-accent flex min-h-8 w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
-        onClick={() => onNavigate(path)}
-        title={path}
-      >
-        <Icon className="text-muted-foreground h-4 w-4 shrink-0" aria-hidden="true" />
-        <span className="truncate">{label}</span>
-      </button>
+    <AppContextMenu type="sidebar-item" sidebarItemActions={sidebarItemActions} asChild>
+      <div className="group hover:bg-accent flex min-w-0 items-center rounded-md">
+        <button
+          className="flex min-h-8 min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm"
+          onClick={() => onNavigate(path)}
+          title={path}
+        >
+          <Icon className="text-muted-foreground h-4 w-4 shrink-0" aria-hidden="true" />
+          <span className="truncate">{label}</span>
+        </button>
+        {onRemove && (
+          <button
+            className="text-muted-foreground hover:text-foreground mr-1 rounded p-1 opacity-0 group-hover:opacity-100 focus:opacity-100"
+            onClick={onRemove}
+            aria-label={t("sidebar.remove_item", { name: label })}
+            title={t("sidebar.remove_item", { name: label })}
+          >
+            <X className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        )}
+      </div>
     </AppContextMenu>
   );
 }
@@ -121,11 +137,15 @@ function FolderTreeItem({
   level = 0,
   onNavigate,
   showHiddenFiles,
+  hiddenPaths,
+  onHide,
 }: {
   item: FolderItem;
   level?: number;
   onNavigate: (path: string) => void;
   showHiddenFiles: boolean;
+  hiddenPaths: string[];
+  onHide: (path: string) => void;
 }) {
   const { t } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(false);
@@ -224,6 +244,7 @@ function FolderTreeItem({
     onOpenInTerminal: () => invoke("open_in_terminal", { path: item.path }),
     path: item.path,
     name: item.name,
+    onRemoveFromSidebar: () => onHide(item.path),
   };
 
   return (
@@ -271,15 +292,19 @@ function FolderTreeItem({
       )}
       {isExpanded &&
         !loadError &&
-        children.map((child) => (
-          <FolderTreeItem
-            key={child.path}
-            item={child}
-            level={level + 1}
-            onNavigate={onNavigate}
-            showHiddenFiles={showHiddenFiles}
-          />
-        ))}
+        children
+          .filter((child) => !hiddenPaths.includes(child.path))
+          .map((child) => (
+            <FolderTreeItem
+              key={child.path}
+              item={child}
+              level={level + 1}
+              onNavigate={onNavigate}
+              showHiddenFiles={showHiddenFiles}
+              hiddenPaths={hiddenPaths}
+              onHide={onHide}
+            />
+          ))}
     </div>
   );
 }
@@ -289,8 +314,11 @@ export function Sidebar({ onNavigate }: SidebarProps) {
   const setTrashOpen = useTrashDialog((state) => state.setOpen);
   const favorites = useLocations((state) => state.favorites);
   const recentLocations = useLocations((state) => state.recentLocations);
+  const hiddenSidebarPaths = useLocations((state) => state.hiddenSidebarPaths);
   const toggleFavorite = useLocations((state) => state.toggleFavorite);
   const removeRecentLocation = useLocations((state) => state.removeRecentLocation);
+  const hideSidebarPath = useLocations((state) => state.hideSidebarPath);
+  const restoreSidebarPaths = useLocations((state) => state.restoreSidebarPaths);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [home, setHome] = useState<string>("");
   const [mountedVolumes, setMountedVolumes] = useState<MountedVolume[]>([]);
@@ -459,6 +487,10 @@ export function Sidebar({ onNavigate }: SidebarProps) {
   }, []);
 
   const quickAccess = useMemo(() => getQuickAccess(t, home), [t, home]);
+  const visibleFavorites = favorites.filter((path) => !hiddenSidebarPaths.includes(path));
+  const visibleRecentLocations = recentLocations.filter(
+    (path) => !favorites.includes(path) && !hiddenSidebarPaths.includes(path)
+  );
 
   const folderTree: FolderItem[] = [
     {
@@ -490,39 +522,42 @@ export function Sidebar({ onNavigate }: SidebarProps) {
             {t("sidebar.quick_access")}
           </h3>
           <div className="space-y-0.5">
-            {quickAccess.map((item) => {
-              const sidebarItemActions: SidebarItemActions = {
-                onOpen: () => onNavigate(item.path),
-                onOpenInTerminal: () => invoke("open_in_terminal", { path: item.path }),
-                path: item.path,
-                name: item.name,
-              };
-              return (
-                <AppContextMenu
-                  key={item.path}
-                  type="sidebar-item"
-                  sidebarItemActions={sidebarItemActions}
-                >
-                  <button
-                    className="hover:bg-accent flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
-                    onClick={() => onNavigate(item.path)}
+            {quickAccess
+              .filter((item) => !hiddenSidebarPaths.includes(item.path))
+              .map((item) => {
+                const sidebarItemActions: SidebarItemActions = {
+                  onOpen: () => onNavigate(item.path),
+                  onOpenInTerminal: () => invoke("open_in_terminal", { path: item.path }),
+                  path: item.path,
+                  name: item.name,
+                  onRemoveFromSidebar: () => void hideSidebarPath(item.path),
+                };
+                return (
+                  <AppContextMenu
+                    key={item.path}
+                    type="sidebar-item"
+                    sidebarItemActions={sidebarItemActions}
                   >
-                    <SmartIcon
-                      icon={item.icon}
-                      className="text-muted-foreground h-4 w-4"
-                      sysIcon={item.sysIcon}
-                    />
-                    <span>{item.name}</span>
-                  </button>
-                </AppContextMenu>
-              );
-            })}
+                    <button
+                      className="hover:bg-accent flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
+                      onClick={() => onNavigate(item.path)}
+                    >
+                      <SmartIcon
+                        icon={item.icon}
+                        className="text-muted-foreground h-4 w-4"
+                        sysIcon={item.sysIcon}
+                      />
+                      <span>{item.name}</span>
+                    </button>
+                  </AppContextMenu>
+                );
+              })}
           </div>
         </div>
 
-        {(favorites.length > 0 || recentLocations.length > 0) && (
+        {(visibleFavorites.length > 0 || visibleRecentLocations.length > 0) && (
           <div className="border-border/50 border-b p-3">
-            {favorites.length > 0 && (
+            {visibleFavorites.length > 0 && (
               <section aria-labelledby="sidebar-favorites-heading">
                 <h3
                   id="sidebar-favorites-heading"
@@ -531,7 +566,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
                   {t("sidebar.favorites")}
                 </h3>
                 <div className="space-y-0.5">
-                  {favorites.map((path) => (
+                  {visibleFavorites.map((path) => (
                     <SidebarLocationRow
                       key={`favorite:${path}`}
                       path={path}
@@ -539,16 +574,17 @@ export function Sidebar({ onNavigate }: SidebarProps) {
                       onNavigate={onNavigate}
                       isFavorite
                       onToggleFavorite={() => void toggleFavorite(path)}
+                      onRemove={() => void toggleFavorite(path)}
                     />
                   ))}
                 </div>
               </section>
             )}
 
-            {recentLocations.length > 0 && (
+            {visibleRecentLocations.length > 0 && (
               <section
                 aria-labelledby="sidebar-recent-heading"
-                className={favorites.length > 0 ? "mt-4 border-t pt-3" : ""}
+                className={visibleFavorites.length > 0 ? "mt-4 border-t pt-3" : ""}
               >
                 <h3
                   id="sidebar-recent-heading"
@@ -557,13 +593,14 @@ export function Sidebar({ onNavigate }: SidebarProps) {
                   {t("sidebar.recent")}
                 </h3>
                 <div className="space-y-0.5">
-                  {recentLocations.map((path) => (
+                  {visibleRecentLocations.map((path) => (
                     <SidebarLocationRow
                       key={`recent:${path}`}
                       path={path}
                       icon={Clock3}
                       onNavigate={onNavigate}
                       onRemoveRecent={() => void removeRecentLocation(path)}
+                      onRemove={() => void removeRecentLocation(path)}
                     />
                   ))}
                 </div>
@@ -578,14 +615,18 @@ export function Sidebar({ onNavigate }: SidebarProps) {
             {t("sidebar.folders")}
           </h3>
           <div className="w-max min-w-full space-y-0.5">
-            {folderTree.map((item) => (
-              <FolderTreeItem
-                key={item.path}
-                item={item}
-                onNavigate={onNavigate}
-                showHiddenFiles={showHiddenFiles}
-              />
-            ))}
+            {folderTree
+              .filter((item) => !hiddenSidebarPaths.includes(item.path))
+              .map((item) => (
+                <FolderTreeItem
+                  key={item.path}
+                  item={item}
+                  onNavigate={onNavigate}
+                  showHiddenFiles={showHiddenFiles}
+                  hiddenPaths={hiddenSidebarPaths}
+                  onHide={(path) => void hideSidebarPath(path)}
+                />
+              ))}
 
             {mountedVolumes.length > 0 && (
               <div className="border-border/50 mt-4 border-t pt-3">
@@ -593,40 +634,55 @@ export function Sidebar({ onNavigate }: SidebarProps) {
                   {t("sidebar.locations")}
                 </h3>
                 <div className="space-y-0.5">
-                  {mountedVolumes.map((volume) => {
-                    const sidebarItemActions: SidebarItemActions = {
-                      onOpen: () => onNavigate(volume.path),
-                      onOpenInTerminal: () => invoke("open_in_terminal", { path: volume.path }),
-                      path: volume.path,
-                      name: volume.name,
-                    };
+                  {mountedVolumes
+                    .filter((volume) => !hiddenSidebarPaths.includes(volume.path))
+                    .map((volume) => {
+                      const sidebarItemActions: SidebarItemActions = {
+                        onOpen: () => onNavigate(volume.path),
+                        onOpenInTerminal: () => invoke("open_in_terminal", { path: volume.path }),
+                        path: volume.path,
+                        name: volume.name,
+                        onRemoveFromSidebar: () => void hideSidebarPath(volume.path),
+                      };
 
-                    return (
-                      <AppContextMenu
-                        key={volume.path}
-                        type="sidebar-item"
-                        sidebarItemActions={sidebarItemActions}
-                      >
-                        <button
-                          className="hover:bg-accent flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
-                          onClick={() => onNavigate(volume.path)}
-                          title={volume.path}
+                      return (
+                        <AppContextMenu
+                          key={volume.path}
+                          type="sidebar-item"
+                          sidebarItemActions={sidebarItemActions}
                         >
-                          <SmartIcon
-                            icon={HardDrive}
-                            className="text-muted-foreground h-4 w-4 shrink-0"
-                            sysIcon={{ type: "path", value: volume.path }}
-                          />
-                          <span className="truncate">{volume.name}</span>
-                        </button>
-                      </AppContextMenu>
-                    );
-                  })}
+                          <button
+                            className="hover:bg-accent flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
+                            onClick={() => onNavigate(volume.path)}
+                            title={volume.path}
+                          >
+                            <SmartIcon
+                              icon={HardDrive}
+                              className="text-muted-foreground h-4 w-4 shrink-0"
+                              sysIcon={{ type: "path", value: volume.path }}
+                            />
+                            <span className="truncate">{volume.name}</span>
+                          </button>
+                        </AppContextMenu>
+                      );
+                    })}
                 </div>
               </div>
             )}
           </div>
         </div>
+
+        {hiddenSidebarPaths.length > 0 && (
+          <div className="border-border/50 border-t p-3">
+            <button
+              className="text-muted-foreground hover:bg-accent hover:text-foreground flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs"
+              onClick={() => void restoreSidebarPaths()}
+            >
+              <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+              {t("sidebar.restore_items")}
+            </button>
+          </div>
+        )}
 
         {/* 设置按钮 */}
         <div className="border-border/50 mt-auto border-t p-3">

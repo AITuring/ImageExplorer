@@ -1,4 +1,4 @@
-import { Scan } from "lucide-react";
+import { CircleCheck, Scan } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { PhotoAnalysisProgress } from "@/lib/photoAnalysis";
 
@@ -12,29 +12,41 @@ export function PhotoAnalysisProgressIndicator({ progress }: PhotoAnalysisProgre
   const { t } = useTranslation();
   if (progress.total <= 0) return null;
 
-  const stageIndex = progress.isAnalyzing
-    ? Math.max(0, STAGE_ORDER.indexOf(progress.stage as (typeof STAGE_ORDER)[number]))
-    : STAGE_ORDER.length;
+  if (!progress.isAnalyzing) {
+    const doneLabel = t("common.photo_analysis_progress_done", { total: progress.total });
+    return (
+      <div
+        className="text-muted-foreground hidden max-w-57.5 shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-xs sm:flex"
+        role="status"
+        aria-live="polite"
+        aria-label={doneLabel}
+        title={doneLabel}
+      >
+        <CircleCheck className="h-4 w-4 shrink-0 text-emerald-500" aria-hidden="true" />
+        <span className="truncate">{doneLabel}</span>
+      </div>
+    );
+  }
+
+  const stageIndex = Math.max(
+    0,
+    STAGE_ORDER.indexOf(progress.stage as (typeof STAGE_ORDER)[number])
+  );
   const stageFraction =
-    progress.isAnalyzing && progress.stageTotal > 0
-      ? Math.min(1, progress.stageCompleted / progress.stageTotal)
-      : 1;
+    progress.stageTotal > 0 ? Math.min(1, progress.stageCompleted / progress.stageTotal) : 1;
   const percentage = Math.round(
     ((Math.min(stageIndex, STAGE_ORDER.length - 1) + stageFraction) / STAGE_ORDER.length) * 100
   );
-  const stageLabel = progress.isAnalyzing
-    ? t(`common.photo_analysis_stage_${progress.stage}`)
-    : t("common.photo_analysis_progress_done", { total: progress.total });
-  const stageDetail = progress.isAnalyzing
-    ? t(`common.photo_analysis_stage_${progress.stage}_detail`, {
-        completed: progress.stageCompleted,
-        total: progress.stageTotal,
-      })
-    : t("common.photo_analysis_progress_done", { total: progress.total });
-  const label = t(
-    progress.isAnalyzing ? "common.photo_analysis_progress" : "common.photo_analysis_progress_done",
-    { stage: stageLabel, completed: progress.stageCompleted, total: progress.stageTotal }
-  );
+  const stageLabel = t(`common.photo_analysis_stage_${progress.stage}`);
+  const stageDetail = t(`common.photo_analysis_stage_${progress.stage}_detail`, {
+    completed: progress.stageCompleted,
+    total: progress.stageTotal,
+  });
+  const label = t("common.photo_analysis_progress", {
+    stage: stageLabel,
+    completed: progress.stageCompleted,
+    total: progress.stageTotal,
+  });
 
   return (
     <div

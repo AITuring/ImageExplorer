@@ -8,6 +8,7 @@ import {
   useCallback,
   type CSSProperties,
   type ReactNode,
+  type PointerEvent,
   type WheelEvent,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -60,9 +61,9 @@ interface ImageDimensions {
 
 const MAX_IMAGE_ZOOM = 6;
 const MIN_IMAGE_ZOOM = 1;
-const THUMBNAIL_SIZE_STEPS = [384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144];
+const THUMBNAIL_SIZE_STEPS = [384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192];
 const MIN_SCROLL_ADJUST_DELTA = 0.5;
-const MAX_RAW_PREVIEW_SIZE = 6144;
+const MAX_RAW_PREVIEW_SIZE = 8192;
 const RAW_EXTENSIONS = new Set(RAW_IMAGE_EXTENSIONS);
 const DIALOG_FOCUSABLE_SELECTOR = [
   "button:not([disabled])",
@@ -85,16 +86,13 @@ function snapThumbnailSize(value: number) {
 }
 
 function getPreviewZoomFactor(value: number) {
-  if (value <= 1.5) return 1;
-  if (value <= 2.3) return 1.5;
-  if (value <= 3.5) return 2;
-  return 3;
+  return Math.min(4, Math.max(1, value));
 }
 
 function shouldUpgradeNativePreview(currentSize: number, requestedSize: number) {
   if (currentSize <= 0) return true;
   if (requestedSize <= currentSize) return false;
-  return requestedSize / currentSize >= 1.45;
+  return requestedSize / currentSize >= 1.2;
 }
 
 interface ZoomGestureAnchor {
@@ -240,6 +238,7 @@ interface ZoomableImagePreviewProps {
   viewportSize: { width: number; height: number };
   imageDimensions: ImageDimensions | null;
   nativePreviewSrc: string | null;
+  minimapSrc: string | null;
   fallbackSrc: string | null;
   fileSrc: string | null;
   useNativeImagePreview: boolean;
@@ -328,6 +327,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
   viewportSize,
   imageDimensions,
   nativePreviewSrc,
+  minimapSrc,
   fallbackSrc,
   fileSrc,
   useNativeImagePreview,
@@ -339,16 +339,25 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
   focusAnalysis,
   cameraAfMetadata,
 }: ZoomableImagePreviewProps) {
+  const { t } = useTranslation();
   const cameraAfRegions = getCameraAfRegions(cameraAfMetadata);
   const [previewViewport, setPreviewViewport] = useState({ width: 0, height: 0 });
   const [settledImageZoom, setSettledImageZoom] = useState(1);
   const imageViewportRef = useRef<HTMLDivElement | null>(null);
   const imageFrameRef = useRef<HTMLDivElement | null>(null);
+  const minimapWindowRef = useRef<HTMLDivElement | null>(null);
+  const scrollAnimationFrameRef = useRef<number | null>(null);
+  const panStartRef = useRef<{
+    pointerId: number;
+    x: number;
+    y: number;
+    left: number;
+    top: number;
+  } | null>(null);
   const imageZoomRef = useRef(1);
   const settledImageZoomRef = useRef(1);
   const pendingZoomRef = useRef<number | null>(null);
   const zoomAnimationFrameRef = useRef<number | null>(null);
-  const commitZoomTimeoutRef = useRef<number | null>(null);
   const zoomInteractionTimeoutRef = useRef<number | null>(null);
   const gestureAnchorRef = useRef<ZoomGestureAnchor | null>(null);
   const settleAnchorRef = useRef<ZoomGestureAnchor | null>(null);
@@ -422,6 +431,90 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
       height: Math.max(imageViewportSize.height, renderedImageSize.height),
     };
   }, [renderedImageSize, imageViewportSize.height, imageViewportSize.width]);
+
+  const canPan = Boolean(
+    renderedImageSize &&
+    (renderedImageSize.width > imageViewportSize.width ||
+      renderedImageSize.height > imageViewportSize.height) &&
+    !sharpnessInspector.selectionMode
+  );
+  // The preview opens at 100% fitted size. Show navigation once the user has
+  // enlarged it by at least 70% and the image extends beyond the viewport.
+  const showMinimap = canPan && settledImageZoom >= 1.7;
+  const minimapSize = useMemo(() => {
+    if (!renderedImageSize) return null;
+    const scale = Math.min(160 / renderedImageSize.width, 120 / renderedImageSize.height);
+    return {
+      width: Math.max(1, Math.round(renderedImageSize.width * scale)),
+      height: Math.max(1, Math.round(renderedImageSize.height * scale)),
+    };
+  }, [renderedImageSize]);
+
+  const syncMinimapWindow = useCallback(() => {
+    const viewport = imageViewportRef.current;
+    const windowBox = minimapWindowRef.current;
+    if (!viewport || !windowBox || !renderedImageSize || !minimapSize) return;
+    windowBox.style.left = `${(viewport.scrollLeft / renderedImageSize.width) * minimapSize.width}px`;
+    windowBox.style.top = `${(viewport.scrollTop / renderedImageSize.height) * minimapSize.height}px`;
+  }, [minimapSize, renderedImageSize]);
+
+  useLayoutEffect(() => {
+    syncMinimapWindow();
+  }, [settledImageZoom, syncMinimapWindow]);
+
+  const handleViewportScroll = useCallback(() => {
+    if (scrollAnimationFrameRef.current !== null) return;
+    scrollAnimationFrameRef.current = window.requestAnimationFrame(() => {
+      scrollAnimationFrameRef.current = null;
+      syncMinimapWindow();
+    });
+  }, [syncMinimapWindow]);
+
+  const handlePanStart = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      if (!canPan || event.button !== 0) return;
+      const viewport = imageViewportRef.current;
+      if (!viewport) return;
+      panStartRef.current = {
+        pointerId: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        left: viewport.scrollLeft,
+        top: viewport.scrollTop,
+      };
+      viewport.setPointerCapture(event.pointerId);
+    },
+    [canPan]
+  );
+
+  const handlePanMove = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    const start = panStartRef.current;
+    const viewport = imageViewportRef.current;
+    if (!start || !viewport || start.pointerId !== event.pointerId) return;
+    viewport.scrollLeft = start.left - (event.clientX - start.x);
+    viewport.scrollTop = start.top - (event.clientY - start.y);
+  }, []);
+
+  const handlePanEnd = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    const viewport = imageViewportRef.current;
+    if (panStartRef.current?.pointerId !== event.pointerId) return;
+    panStartRef.current = null;
+    if (viewport?.hasPointerCapture(event.pointerId))
+      viewport.releasePointerCapture(event.pointerId);
+  }, []);
+
+  const moveMinimapViewport = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      const viewport = imageViewportRef.current;
+      if (!viewport || !renderedImageSize || !minimapSize) return;
+      const rect = event.currentTarget.getBoundingClientRect();
+      const ratioX = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+      const ratioY = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
+      viewport.scrollLeft = ratioX * renderedImageSize.width - viewport.clientWidth / 2;
+      viewport.scrollTop = ratioY * renderedImageSize.height - viewport.clientHeight / 2;
+    },
+    [minimapSize, renderedImageSize]
+  );
 
   const registerZoomFrame = useCallback((node: HTMLDivElement | null) => {
     imageFrameRef.current = node;
@@ -509,11 +602,6 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
       const currentZoom = pendingZoomRef.current ?? imageZoomRef.current;
       if (clampedZoom === currentZoom) return;
 
-      if (commitZoomTimeoutRef.current !== null) {
-        window.clearTimeout(commitZoomTimeoutRef.current);
-        commitZoomTimeoutRef.current = null;
-      }
-
       if (!isZoomGestureActiveRef.current) {
         const viewport = imageViewportRef.current;
         const frame = imageFrameRef.current;
@@ -562,11 +650,8 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
           setSettledImageZoom(finalZoom);
         }
 
-        commitZoomTimeoutRef.current = window.setTimeout(() => {
-          commitZoomTimeoutRef.current = null;
-          onCommittedZoomChange(finalZoom);
-        }, 200);
-      }, 120);
+        onCommittedZoomChange(finalZoom);
+      }, 72);
 
       if (zoomAnimationFrameRef.current !== null) {
         return;
@@ -599,7 +684,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
       }
 
       event.preventDefault();
-      const sensitivity = event.ctrlKey ? 0.02 : 0.01;
+      const sensitivity = event.ctrlKey ? 0.008 : 0.005;
       const zoomFactor = Math.exp(-event.deltaY * sensitivity);
       updateImageZoom((pendingZoomRef.current ?? imageZoomRef.current) * zoomFactor, {
         clientX: event.clientX,
@@ -614,8 +699,8 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
       if (zoomAnimationFrameRef.current !== null) {
         window.cancelAnimationFrame(zoomAnimationFrameRef.current);
       }
-      if (commitZoomTimeoutRef.current !== null) {
-        window.clearTimeout(commitZoomTimeoutRef.current);
+      if (scrollAnimationFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollAnimationFrameRef.current);
       }
       if (zoomInteractionTimeoutRef.current !== null) {
         window.clearTimeout(zoomInteractionTimeoutRef.current);
@@ -652,13 +737,19 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
       ) : null}
       <div
         ref={imageViewportRef}
-        className="flex h-full w-full overflow-auto"
+        className={`flex h-full w-full overflow-auto ${canPan ? "cursor-grab active:cursor-grabbing" : ""}`}
         style={{
           contain: "layout paint size",
           isolation: "isolate",
           overscrollBehavior: "contain",
+          touchAction: canPan ? "none" : "auto",
         }}
         onWheel={handleImageWheel}
+        onScroll={handleViewportScroll}
+        onPointerDown={handlePanStart}
+        onPointerMove={handlePanMove}
+        onPointerUp={handlePanEnd}
+        onPointerCancel={handlePanEnd}
       >
         <div
           className="flex min-h-full min-w-full items-center justify-center"
@@ -738,6 +829,52 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
           )}
         </div>
       </div>
+      {showMinimap && minimapSize && renderedImageSize && (
+        <div className="bg-background/85 absolute right-3 bottom-3 z-20 rounded-lg border border-white/20 p-1.5 shadow-xl backdrop-blur-md">
+          <div
+            className="relative cursor-crosshair overflow-hidden rounded-sm"
+            style={{ width: minimapSize.width, height: minimapSize.height, touchAction: "none" }}
+            role="button"
+            tabIndex={0}
+            aria-label={t("common.quick_look.minimap")}
+            onPointerDown={(event) => {
+              event.currentTarget.setPointerCapture(event.pointerId);
+              moveMinimapViewport(event);
+            }}
+            onPointerMove={(event) => {
+              if (event.currentTarget.hasPointerCapture(event.pointerId))
+                moveMinimapViewport(event);
+            }}
+            onKeyDown={(event) => {
+              const viewport = imageViewportRef.current;
+              if (!viewport) return;
+              const step = 80;
+              if (event.key === "ArrowLeft") viewport.scrollLeft -= step;
+              else if (event.key === "ArrowRight") viewport.scrollLeft += step;
+              else if (event.key === "ArrowUp") viewport.scrollTop -= step;
+              else if (event.key === "ArrowDown") viewport.scrollTop += step;
+              else return;
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+          >
+            <img
+              src={minimapSrc || nativePreviewSrc || fallbackSrc || fileSrc || ""}
+              alt=""
+              className="h-full w-full object-fill select-none"
+              draggable={false}
+            />
+            <div
+              ref={minimapWindowRef}
+              className="pointer-events-none absolute rounded-sm border-2 border-white bg-white/10 shadow-sm"
+              style={{
+                width: `${Math.min(minimapSize.width, (imageViewportSize.width / renderedImageSize.width) * minimapSize.width)}px`,
+                height: `${Math.min(minimapSize.height, (imageViewportSize.height / renderedImageSize.height) * minimapSize.height)}px`,
+              }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 });
@@ -1397,6 +1534,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
                 viewportSize={viewportSize}
                 imageDimensions={imageDimensions}
                 nativePreviewSrc={nativePreviewSrc}
+                minimapSrc={cachedNativePreview?.src ?? null}
                 fallbackSrc={fallbackSrc}
                 fileSrc={fileSrc}
                 useNativeImagePreview={useNativeImagePreview}

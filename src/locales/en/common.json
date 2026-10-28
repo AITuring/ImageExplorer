@@ -31,6 +31,7 @@
     "photo_analysis_stage_grouping-views": "Group similar views",
     "photo_analysis_stage_grouping-views_detail": "Grouping similar views",
     "quick_look": {
+      "minimap": "Minimap, drag to move the preview area",
       "preview": "Quick Look",
       "close": "Close preview",
       "previous": "Previous item",

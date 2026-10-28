@@ -216,4 +216,5 @@ export interface SidebarItemActions {
   onToggleFavorite?: () => void;
   isFavorite?: boolean;
   onRemoveRecent?: () => void;
+  onRemoveFromSidebar?: () => void;
 }

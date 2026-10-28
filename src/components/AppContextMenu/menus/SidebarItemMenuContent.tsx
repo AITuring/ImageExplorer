@@ -50,6 +50,13 @@ export function SidebarItemMenuContent({ actions }: SidebarItemMenuContentProps)
           onClick={actions.onRemoveRecent}
         />
       )}
+      {actions.onRemoveFromSidebar && (
+        <MenuItem
+          fallbackIcon={X}
+          label={t("context_menu.remove_from_sidebar")}
+          onClick={actions.onRemoveFromSidebar}
+        />
+      )}
     </ContextMenuContent>
   );
 }

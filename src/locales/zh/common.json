@@ -31,6 +31,7 @@
     "photo_analysis_stage_grouping-views": "归并相似视角",
     "photo_analysis_stage_grouping-views_detail": "正在归并相似视角",
     "quick_look": {
+      "minimap": "缩略导航图，拖动以移动预览区域",
       "preview": "快速预览",
       "close": "关闭预览",
       "previous": "上一项",

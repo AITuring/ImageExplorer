@@ -14,5 +14,7 @@
   "settings": "设置",
   "access_denied": "无访问权限",
   "resize": "调整侧边栏宽度",
-  "show": "显示侧边栏"
+  "show": "显示侧边栏",
+  "restore_items": "恢复隐藏的项目",
+  "remove_item": "从侧边栏移除 {{name}}"
 }

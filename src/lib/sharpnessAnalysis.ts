@@ -20,6 +20,7 @@ export interface SharpnessRegionPixels {
 }
 
 const MAX_ANALYSIS_EDGE = 1024;
+export const FULL_IMAGE_SHARPNESS_SOURCE_SIZE = 2048;
 const MIN_SOURCE_REQUEST_SIZE = 2048;
 const MAX_SOURCE_REQUEST_SIZE = 6144;
 const SOURCE_SIZE_STEPS = [2048, 3072, 4096, 6144];
