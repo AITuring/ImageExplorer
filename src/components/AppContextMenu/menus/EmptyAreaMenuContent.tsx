@@ -7,6 +7,7 @@ import {
   ContextMenuSubTrigger,
 } from "@/components/ui/context-menu";
 import { useClipboard } from "@/stores/clipboard";
+import { isCommandEnabled, runCommand } from "@/lib/commands";
 import { EmptyAreaActions } from "@/types";
 import { SYSTEM_PATHS, SF_SYMBOLS } from "@/constants/paths";
 import { MenuItem } from "../MenuItem";
@@ -44,20 +45,49 @@ export function EmptyAreaMenuContent({ actions }: EmptyAreaMenuContentProps) {
         sysIcon={{ type: "ext", value: "txt" }}
         fallbackIcon={FileText}
         label={t("context_menu.new_file")}
-        onClick={actions.onNewFile}
+        shortcut={actions.commands?.newFile?.shortcut}
+        disabled={
+          actions.commands?.newFile
+            ? !isCommandEnabled(actions.commands.newFile)
+            : false
+        }
+        onClick={() =>
+          actions.commands?.newFile
+            ? runCommand(actions.commands.newFile)
+            : actions.onNewFile()
+        }
       />
       <MenuItem
         sysIcon={{ type: "folder" }}
         fallbackIcon={Folder}
         label={t("context_menu.new_folder")}
-        onClick={actions.onNewFolder}
+        shortcut={actions.commands?.newFolder?.shortcut}
+        disabled={
+          actions.commands?.newFolder
+            ? !isCommandEnabled(actions.commands.newFolder)
+            : false
+        }
+        onClick={() =>
+          actions.commands?.newFolder
+            ? runCommand(actions.commands.newFolder)
+            : actions.onNewFolder()
+        }
       />
       {clipboard.hasPending() && (
         <MenuItem
           sysIcon={{ type: "sfsymbol", value: SF_SYMBOLS.PASTE }}
           label={t("context_menu.paste")}
-          shortcut="⌘V"
-          onClick={actions.onPaste}
+          shortcut={actions.commands?.paste?.shortcut ?? "⌘V"}
+          disabled={
+            actions.commands?.paste
+              ? !isCommandEnabled(actions.commands.paste)
+              : false
+          }
+          onClick={() =>
+            actions.commands?.paste
+              ? runCommand(actions.commands.paste)
+              : actions.onPaste()
+          }
         />
       )}
       <MenuItem

@@ -4,30 +4,33 @@ import { ContextMenuItem } from "@/components/ui/context-menu";
 import { MenuItemProps } from "@/types";
 
 export function MenuItem(props: MenuItemProps) {
-  const { icon, fallbackIcon, sysIcon, label, shortcut, onClick, destructive } = props;
+  const { icon, fallbackIcon, sysIcon, label, shortcut, onClick, destructive, disabled = false } = props;
   const activatedByPointerRef = useRef(false);
   const activateFromPointer = useCallback(
     (event: React.PointerEvent) => {
+      if (disabled) return;
       if (event.button !== 0) return;
       if (activatedByPointerRef.current) return;
 
       activatedByPointerRef.current = true;
       onClick();
     },
-    [onClick]
+    [disabled, onClick]
   );
   const activateFromSelection = useCallback(() => {
+    if (disabled) return;
     if (activatedByPointerRef.current) {
       activatedByPointerRef.current = false;
       return;
     }
 
     onClick();
-  }, [onClick]);
+  }, [disabled, onClick]);
 
   return (
     <ContextMenuItem
       className={destructive ? "text-destructive focus:text-destructive" : ""}
+      disabled={disabled}
       onPointerDown={activateFromPointer}
       onPointerCancel={() => {
         activatedByPointerRef.current = false;

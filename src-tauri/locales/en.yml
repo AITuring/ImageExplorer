@@ -2,6 +2,8 @@
 menu:
   file: File
   new_window: New HyperExplorer Window
+  new_file: New File
+  new_folder: New Folder
   close_window: Close Window
   edit: Edit
   undo: Undo

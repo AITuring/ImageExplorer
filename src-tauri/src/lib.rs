@@ -36,6 +36,7 @@ use serde::Serialize;
 use std::process::Child;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use tauri::menu::{MenuItem, MenuItemKind};
 use tauri::{AppHandle, Emitter, Manager};
 use trash_commands::{empty_trash, list_trash, restore_trash_entry};
 #[cfg(target_os = "macos")]
@@ -48,6 +49,67 @@ pub type SharedDatabase = Arc<Database>;
 #[derive(Serialize)]
 struct SearchResponse {
     results: Vec<IndexedFile>,
+}
+
+#[tauri::command]
+fn set_native_menu_command_enabled(
+    app: AppHandle,
+    command_id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    if command_id != "window.new"
+        && command_id != "file.new-file"
+        && command_id != "file.new-folder"
+        && command_id != "edit.cut"
+        && command_id != "edit.copy"
+        && command_id != "edit.paste"
+        && command_id != "edit.select-all"
+    {
+        return Err(format!(
+            "Native menu command '{command_id}' cannot be updated here"
+        ));
+    }
+
+    fn find_item(
+        items: Vec<MenuItemKind<tauri::Wry>>,
+        id: &str,
+    ) -> Result<Option<MenuItem<tauri::Wry>>, String> {
+        for item in items {
+            if item.id() == id {
+                return match item {
+                    MenuItemKind::MenuItem(menu_item) => Ok(Some(menu_item)),
+                    _ => Err(format!(
+                        "Native menu command '{id}' is not a normal menu item"
+                    )),
+                };
+            }
+
+            if let MenuItemKind::Submenu(submenu) = item {
+                if let Some(menu_item) = find_item(
+                    submenu
+                        .items()
+                        .map_err(|error| format!("Failed to read native menu items: {error}"))?,
+                    id,
+                )? {
+                    return Ok(Some(menu_item));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    let menu = app
+        .menu()
+        .ok_or_else(|| "The native application menu is unavailable".to_string())?;
+    let item = find_item(
+        menu.items()
+            .map_err(|error| format!("Failed to read native menu items: {error}"))?,
+        &command_id,
+    )?
+    .ok_or_else(|| format!("Native menu command '{command_id}' was not found"))?;
+    item.set_enabled(enabled)
+        .map_err(|error| format!("Failed to update native menu command '{command_id}': {error}"))
 }
 
 /// 搜索已索引的文件
@@ -692,14 +754,32 @@ pub fn run() {
             Ok(())
         })
         .on_menu_event(|app, event| {
-            if event.id() == "new-window" {
+            let command_id = if event.id() == "window.new" {
+                Some("window.new")
+            } else if event.id() == "file.new-file" {
+                Some("file.new-file")
+            } else if event.id() == "file.new-folder" {
+                Some("file.new-folder")
+            } else if event.id() == "edit.cut" {
+                Some("edit.cut")
+            } else if event.id() == "edit.copy" {
+                Some("edit.copy")
+            } else if event.id() == "edit.paste" {
+                Some("edit.paste")
+            } else if event.id() == "edit.select-all" {
+                Some("edit.select-all")
+            } else {
+                None
+            };
+
+            if let Some(command_id) = command_id {
                 if let Some(window) = app
                     .webview_windows()
                     .values()
                     .find(|window| window.is_focused().unwrap_or(false))
                 {
-                    if let Err(error) = window.emit("menu-new-window-request", ()) {
-                        eprintln!("Failed to route the new-window command: {error}");
+                    if let Err(error) = window.emit("app-command", command_id) {
+                        eprintln!("Failed to route command '{:?}': {error}", event.id());
                     }
                 }
             }
@@ -769,6 +849,7 @@ pub fn run() {
             start_extract_operation,
             get_file_operation_conflicts,
             get_file_operations,
+            set_native_menu_command_enabled,
             cancel_file_operation,
             retry_file_operation,
             undo_file_operation,

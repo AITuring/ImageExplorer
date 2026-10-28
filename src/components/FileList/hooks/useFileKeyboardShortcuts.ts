@@ -1,18 +1,21 @@
-import { useEffect, useRef } from "react";
-import { FileEntry } from "@/types";
+import { useEffect, useMemo, useRef } from "react";
+import { FileEntry, FileCommandActions } from "@/types";
 import type { ViewMode } from "@/stores/viewMode";
 import { useClipboard } from "@/stores/clipboard";
 import { registerKeyboardCommands } from "@/lib/keyboardShortcuts";
+import { isCommandEnabled, registerAppCommands, runCommand } from "@/lib/commands";
+import { viewModeCommands } from "@/lib/viewModeCommands";
 
 interface UseFileKeyboardShortcutsOptions {
   selectedPath: string | null;
   selectedPaths: string[];
+  editingPath: string | null;
   sortedEntries: FileEntry[];
   entries: FileEntry[];
   viewMode: ViewMode;
   gridColumns: number;
+  canMutate: boolean;
   legacyTabNumberShortcuts: boolean;
-  setViewMode: (mode: ViewMode) => void;
   openEntry: (entry: FileEntry) => void;
   // 选择操作
   selectAll: (entries: FileEntry[]) => void;
@@ -27,6 +30,7 @@ interface UseFileKeyboardShortcutsOptions {
   handleDelete: (entries: FileEntry[]) => Promise<void>;
   handleNewFile: () => Promise<void>;
   handleNewFolder: () => Promise<void>;
+  handleRename: (entry: FileEntry) => void;
 }
 
 function isModifierPressed(event: KeyboardEvent): boolean {
@@ -42,11 +46,10 @@ function matchesModifiedKey(event: KeyboardEvent, key: string): boolean {
   );
 }
 
-export function useFileKeyboardShortcuts(options: UseFileKeyboardShortcutsOptions) {
+export function useFileKeyboardShortcuts(options: UseFileKeyboardShortcutsOptions): FileCommandActions {
   const clipboard = useClipboard();
 
-  // Store current values so registered commands stay in sync without rebinding
-  // the shared keyboard dispatcher on every selection or directory change.
+  // Keep registered commands stable while their handlers read current selection and operations.
   const optionsRef = useRef(options);
   const clipboardRef = useRef(clipboard);
 
@@ -55,6 +58,105 @@ export function useFileKeyboardShortcuts(options: UseFileKeyboardShortcutsOption
     clipboardRef.current = clipboard;
   });
 
+  const commands = useMemo<FileCommandActions>(() => {
+    const getSelectedEntries = () => {
+      const current = optionsRef.current;
+      return current.entries.filter((entry) => current.selectedPaths.includes(entry.path));
+    };
+
+    const getSelectedEntry = () => {
+      const current = optionsRef.current;
+      return current.entries.find((entry) => entry.path === current.selectedPath);
+    };
+
+    return {
+      selectAll: {
+        id: "file.select-all",
+        shortcut: "⌘A",
+        enabled: () => optionsRef.current.sortedEntries.length > 0,
+        run: () => optionsRef.current.selectAll(optionsRef.current.sortedEntries),
+      },
+      clearSelection: {
+        id: "file.clear-selection",
+        enabled: () => optionsRef.current.selectedPaths.length > 0,
+        run: () => optionsRef.current.clearSelection(),
+      },
+      open: {
+        id: "file.open",
+        shortcut: "⌘O",
+        enabled: (entry) => Boolean(entry ?? getSelectedEntry()),
+        run: (entry) => {
+          const target = entry ?? getSelectedEntry();
+          if (target) optionsRef.current.openEntry(target);
+        },
+      },
+      copy: {
+        id: "file.copy",
+        shortcut: "⌘C",
+        enabled: (entries) => (entries ?? getSelectedEntries()).length > 0,
+        run: (entries) => optionsRef.current.handleCopy(entries ?? getSelectedEntries()),
+      },
+      cut: {
+        id: "file.cut",
+        shortcut: "⌘X",
+        enabled: (entries) => {
+          const targets = entries ?? getSelectedEntries();
+          return targets.length > 0 && targets.every((entry) => !entry.readonly);
+        },
+        run: (entries) => optionsRef.current.handleCut(entries ?? getSelectedEntries()),
+      },
+      paste: {
+        id: "file.paste",
+        shortcut: "⌘V",
+        enabled: () => clipboardRef.current.hasPending(),
+        run: () => optionsRef.current.handlePaste(),
+      },
+      pasteAsMove: {
+        id: "file.paste-as-move",
+        shortcut: "⌘⌥V",
+        enabled: () => clipboardRef.current.hasPending(),
+        run: () => optionsRef.current.handlePasteAsMove(),
+      },
+      delete: {
+        id: "file.delete",
+        shortcut: "⌘⌫",
+        enabled: (entries) => {
+          const targets = entries ?? getSelectedEntries();
+          return targets.length > 0 && targets.every((entry) => !entry.readonly);
+        },
+        run: (entries) => optionsRef.current.handleDelete(entries ?? getSelectedEntries()),
+      },
+      rename: {
+        id: "file.rename",
+        shortcut: "Return",
+        enabled: (entry) => {
+          const target = entry ?? getSelectedEntry();
+          return Boolean(target && !target.readonly && !optionsRef.current.editingPath);
+        },
+        run: (entry) => {
+          const target = entry ?? getSelectedEntry();
+          if (target) optionsRef.current.handleRename(target);
+        },
+      },
+      newFile: {
+        id: "file.new-file",
+        shortcut: "⌘⌥N",
+        enabled: () => optionsRef.current.canMutate,
+        run: () => optionsRef.current.handleNewFile(),
+      },
+      newFolder: {
+        id: "file.new-folder",
+        shortcut: "⌘⇧N",
+        enabled: () => optionsRef.current.canMutate,
+        run: () => optionsRef.current.handleNewFolder(),
+      },
+    };
+  }, []);
+
+  useEffect(() => {
+    return registerAppCommands(Object.values(commands));
+  }, [commands]);
+
   useEffect(
     () =>
       registerKeyboardCommands([
@@ -62,68 +164,36 @@ export function useFileKeyboardShortcuts(options: UseFileKeyboardShortcutsOption
           id: "file.select-all",
           scope: "file-view",
           matches: (event) => matchesModifiedKey(event, "a"),
-          enabled: () => optionsRef.current.sortedEntries.length > 0,
-          run: () => optionsRef.current.selectAll(optionsRef.current.sortedEntries),
+          enabled: () => isCommandEnabled(commands.selectAll),
+          run: () => { runCommand(commands.selectAll); },
         },
         {
           id: "file.clear-selection",
           scope: "file-view",
           matches: (event) => event.key === "Escape",
-          enabled: () => optionsRef.current.selectedPaths.length > 0,
-          run: () => optionsRef.current.clearSelection(),
-        },
-        {
-          id: "file.new-file",
-          scope: "file-view",
-          matches: (event) =>
-            isModifierPressed(event) &&
-            event.code === "KeyN" &&
-            event.altKey &&
-            !event.shiftKey,
-          run: () => optionsRef.current.handleNewFile(),
-        },
-        {
-          id: "file.new-folder",
-          scope: "file-view",
-          matches: (event) =>
-            isModifierPressed(event) &&
-            event.key.toLowerCase() === "n" &&
-            event.shiftKey &&
-            !event.altKey,
-          run: () => optionsRef.current.handleNewFolder(),
+          enabled: () => isCommandEnabled(commands.clearSelection),
+          run: () => { runCommand(commands.clearSelection); },
         },
         {
           id: "file.copy",
           scope: "file-view",
           matches: (event) => matchesModifiedKey(event, "c"),
-          enabled: () => optionsRef.current.selectedPaths.length > 0,
-          run: () => {
-            const current = optionsRef.current;
-            const selectedEntries = current.entries.filter((entry) =>
-              current.selectedPaths.includes(entry.path)
-            );
-            if (selectedEntries.length > 0) current.handleCopy(selectedEntries);
-          },
+          enabled: () => isCommandEnabled(commands.copy),
+          run: () => { runCommand(commands.copy); },
         },
         {
           id: "file.cut",
           scope: "file-view",
           matches: (event) => matchesModifiedKey(event, "x"),
-          enabled: () => optionsRef.current.selectedPaths.length > 0,
-          run: () => {
-            const current = optionsRef.current;
-            const selectedEntries = current.entries.filter((entry) =>
-              current.selectedPaths.includes(entry.path)
-            );
-            if (selectedEntries.length > 0) current.handleCut(selectedEntries);
-          },
+          enabled: () => isCommandEnabled(commands.cut),
+          run: () => { runCommand(commands.cut); },
         },
         {
           id: "file.paste",
           scope: "file-view",
           matches: (event) => matchesModifiedKey(event, "v"),
-          enabled: () => clipboardRef.current.hasPending(),
-          run: () => optionsRef.current.handlePaste(),
+          enabled: () => isCommandEnabled(commands.paste),
+          run: () => { runCommand(commands.paste); },
         },
         {
           id: "file.paste-as-move",
@@ -134,33 +204,31 @@ export function useFileKeyboardShortcuts(options: UseFileKeyboardShortcutsOption
             event.code === "KeyV" &&
             event.altKey &&
             !event.shiftKey,
-          enabled: () => clipboardRef.current.hasPending(),
-          run: () => optionsRef.current.handlePasteAsMove(),
+          enabled: () => isCommandEnabled(commands.pasteAsMove),
+          run: () => { runCommand(commands.pasteAsMove); },
         },
         {
           id: "file.delete",
           scope: "file-view",
           matches: (event) =>
             isModifierPressed(event) && event.key === "Backspace" && !event.altKey,
-          enabled: () => optionsRef.current.selectedPaths.length > 0,
-          run: () => {
-            const current = optionsRef.current;
-            const selectedEntries = current.entries.filter((entry) =>
-              current.selectedPaths.includes(entry.path)
-            );
-            if (selectedEntries.length > 0) void current.handleDelete(selectedEntries);
-          },
+          enabled: () => isCommandEnabled(commands.delete),
+          run: () => { runCommand(commands.delete); },
         },
         {
           id: "file.open",
           scope: "file-view",
           matches: (event) => matchesModifiedKey(event, "o"),
-          enabled: () => Boolean(optionsRef.current.selectedPath),
-          run: () => {
-            const current = optionsRef.current;
-            const entry = current.entries.find((item) => item.path === current.selectedPath);
-            if (entry) current.openEntry(entry);
-          },
+          enabled: () => isCommandEnabled(commands.open),
+          run: () => { runCommand(commands.open); },
+        },
+        {
+          id: "file.rename",
+          scope: "file-view",
+          priority: 5,
+          matches: (event) => event.key === "Enter",
+          enabled: () => isCommandEnabled(commands.rename),
+          run: () => { runCommand(commands.rename); },
         },
         {
           id: "file.view-mode",
@@ -179,7 +247,7 @@ export function useFileKeyboardShortcuts(options: UseFileKeyboardShortcutsOption
               "4": "gallery",
             };
             const mode = modes[event.key];
-            if (mode) optionsRef.current.setViewMode(mode);
+            if (mode) runCommand(viewModeCommands[mode]);
           },
         },
         {
@@ -223,6 +291,8 @@ export function useFileKeyboardShortcuts(options: UseFileKeyboardShortcutsOption
           },
         },
       ]),
-    []
+    [commands]
   );
+
+  return commands;
 }

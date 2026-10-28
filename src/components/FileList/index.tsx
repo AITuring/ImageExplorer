@@ -11,6 +11,9 @@ import { useSetting } from "@/hooks/useSetting";
 import { QuickLook } from "@/components/QuickLook";
 import { SMART_FOLDER_PREFIX } from "@/constants/config";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentKeyboardCommandScope } from "@/lib/keyboardShortcuts";
+import { isRegisteredCommandEnabled } from "@/lib/commands";
 import { useFileSort } from "./hooks/useFileSort";
 import { useFileSelection } from "./hooks/useFileSelection";
 import { useFileOperations } from "./hooks/useFileOperations";
@@ -99,9 +102,9 @@ function makeDragHandlers(
 
 export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProps) {
   const { t } = useTranslation();
-  const { viewMode, setViewMode } = useViewMode();
+  const { viewMode } = useViewMode();
   const { enabled: photoAnalysisEnabled } = usePhotoAnalysisMode();
-  const { addTab } = useTabs();
+  const { addTab, activeTab } = useTabs();
   const [legacyTabNumberShortcuts] = useSetting<boolean>("legacy_cmd_number_tabs", false);
   const [gridColumns, setGridColumns] = useState(6);
   const [columnSelectionContext, setColumnSelectionContext] =
@@ -121,6 +124,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   const selectionEntries = activeColumnContext?.visibleEntries ?? sortedEntries;
   const keyboardEntries = activeColumnContext?.activeEntries ?? sortedEntries;
   const operationPath = activeColumnContext?.locationPath ?? currentPath;
+  const canMutate = !loading && !error && !operationPath.startsWith(SMART_FOLDER_PREFIX);
 
   // 3. 选择状态
   const {
@@ -141,7 +145,6 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   // 4. 重命名
   const { handleStartRename, handleSubmitRename, handleCancelRename } = useFileRename({
     entries: selectionEntries,
-    selectedPath,
     editingPath,
     editValue,
     setEditingPath,
@@ -193,15 +196,16 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   });
 
   // 7. 键盘快捷键
-  useFileKeyboardShortcuts({
+  const fileCommands = useFileKeyboardShortcuts({
     selectedPath,
     selectedPaths,
+    editingPath,
     sortedEntries: keyboardEntries,
     entries: selectionEntries,
     viewMode,
     gridColumns,
+    canMutate,
     legacyTabNumberShortcuts,
-    setViewMode,
     openEntry: handleOpen,
     selectAll,
     selectSingle,
@@ -214,7 +218,96 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     handleDelete,
     handleNewFile,
     handleNewFolder,
+    handleRename: handleStartRename,
   });
+
+  const editCutEnabled = isRegisteredCommandEnabled("edit.cut");
+  const editCopyEnabled = isRegisteredCommandEnabled("edit.copy");
+  const editPasteEnabled = isRegisteredCommandEnabled("edit.paste");
+  const editSelectAllEnabled = isRegisteredCommandEnabled("edit.select-all");
+
+  useEffect(() => {
+    if (activeTab?.path !== currentPath) return;
+
+    const currentWindow = getCurrentWindow();
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    const syncNativeMenu = async () => {
+      try {
+        if (cancelled || !(await currentWindow.isFocused())) return;
+        const scope = getCurrentKeyboardCommandScope();
+        const fileViewEnabled = scope === "file-view";
+        const commandStates: Array<[string, boolean]> = [
+          ["window.new", scope === "file-view"],
+          [
+            "file.new-file",
+            fileViewEnabled && isRegisteredCommandEnabled("file.new-file"),
+          ],
+          [
+            "file.new-folder",
+            fileViewEnabled && isRegisteredCommandEnabled("file.new-folder"),
+          ],
+          ["edit.cut", isRegisteredCommandEnabled("edit.cut")],
+          ["edit.copy", isRegisteredCommandEnabled("edit.copy")],
+          ["edit.paste", isRegisteredCommandEnabled("edit.paste")],
+          ["edit.select-all", isRegisteredCommandEnabled("edit.select-all")],
+        ];
+        await Promise.all(
+          commandStates.map(([commandId, enabled]) =>
+            invoke("set_native_menu_command_enabled", { commandId, enabled })
+          )
+        );
+      } catch (syncError) {
+        console.error("Failed to sync native file menu state:", syncError);
+      }
+    };
+    const queueMenuSync = () => queueMicrotask(() => void syncNativeMenu());
+
+    void syncNativeMenu();
+    document.addEventListener("focusin", queueMenuSync);
+    document.addEventListener("focusout", queueMenuSync);
+    document.addEventListener("selectionchange", queueMenuSync);
+    document.addEventListener("keyup", queueMenuSync);
+    document.addEventListener("mouseup", queueMenuSync);
+    document.addEventListener("input", queueMenuSync);
+    window.addEventListener("app-command-registry-changed", queueMenuSync);
+    void currentWindow
+      .onFocusChanged(({ payload: focused }) => {
+        if (focused) void syncNativeMenu();
+      })
+      .then((dispose) => {
+        if (cancelled) {
+          dispose();
+        } else {
+          unlisten = dispose;
+        }
+      })
+      .catch((syncError) => console.error("Failed to watch window focus:", syncError));
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      document.removeEventListener("focusin", queueMenuSync);
+      document.removeEventListener("focusout", queueMenuSync);
+      document.removeEventListener("selectionchange", queueMenuSync);
+      document.removeEventListener("keyup", queueMenuSync);
+      document.removeEventListener("mouseup", queueMenuSync);
+      document.removeEventListener("input", queueMenuSync);
+      window.removeEventListener("app-command-registry-changed", queueMenuSync);
+    };
+  }, [
+    activeTab?.path,
+    canMutate,
+    currentPath,
+    editingPath,
+    keyboardEntries.length,
+    editCopyEnabled,
+    editCutEnabled,
+    editPasteEnabled,
+    editSelectAllEnabled,
+    selectedPath,
+    selectedPaths,
+  ]);
 
   // === 虚拟滚动 ===
   const listScrollRef = useRef<HTMLDivElement>(null);
@@ -461,6 +554,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       setBatchRenameFiles(entries);
       setShowBatchRename(true);
     },
+    commands: fileCommands,
     currentPath: operationPath,
   };
 
@@ -543,6 +637,11 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
           onArrangeBy: handleArrange,
           sortField,
           sortDirection,
+          commands: {
+            paste: fileCommands.paste,
+            newFile: fileCommands.newFile,
+            newFolder: fileCommands.newFolder,
+          },
           currentPath,
         }}
       >

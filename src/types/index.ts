@@ -1,3 +1,5 @@
+import type { AppCommand } from "@/lib/commands";
+
 export interface FileEntry {
   name: string;
   path: string;
@@ -133,6 +135,7 @@ export interface MenuItemProps {
   sysIcon?: SysIcon;
   label: string;
   shortcut?: string;
+  disabled?: boolean;
   onClick: () => void;
   destructive?: boolean;
 }
@@ -144,6 +147,27 @@ export interface TextInputActions {
   onCopy: () => void;
   onPaste: () => void;
   onSelectAll: () => void;
+}
+
+export interface FileCommandActions {
+  open: AppCommand<FileEntry | undefined>;
+  copy: AppCommand<FileEntry[] | undefined>;
+  cut: AppCommand<FileEntry[] | undefined>;
+  paste: AppCommand<void>;
+  pasteAsMove: AppCommand<void>;
+  delete: AppCommand<FileEntry[] | undefined>;
+  rename: AppCommand<FileEntry | undefined>;
+  newFile: AppCommand<void>;
+  newFolder: AppCommand<void>;
+  selectAll: AppCommand<void>;
+  clearSelection: AppCommand<void>;
+}
+
+export interface EmptyAreaCommandActions {
+  paste?: AppCommand<void>;
+  refresh?: AppCommand<void>;
+  newFile?: AppCommand<void>;
+  newFolder?: AppCommand<void>;
 }
 
 export interface FileActions {
@@ -162,6 +186,7 @@ export interface FileActions {
   onRename?: (entry: FileEntry) => void;
   onGoToLocation?: (entry: FileEntry) => void;
   onBatchRename?: (entries: FileEntry[]) => void;
+  commands?: Partial<FileCommandActions>;
   currentPath: string;
 }
 
@@ -176,6 +201,7 @@ export interface EmptyAreaActions {
   onArrangeBy: (field: SortField) => void;
   sortField: SortField;
   sortDirection: SortDirection;
+  commands?: EmptyAreaCommandActions;
   currentPath: string;
 }
 

@@ -27,6 +27,8 @@ import { useFileInfoDialog } from "@/stores/fileInfoDialog";
 import { useLocations } from "@/stores/locations";
 import { usePhotoAnalysisMode } from "@/stores/photoAnalysisMode";
 import { usePhotoAnalysisProgress } from "@/stores/photoAnalysisProgress";
+import { isCommandEnabled, runCommand } from "@/lib/commands";
+import { viewModeCommands } from "@/lib/viewModeCommands";
 import { PhotoAnalysisProgressIndicator } from "@/components/PhotoAnalysisProgressIndicator";
 import {
   enqueueCompressOperation,
@@ -70,7 +72,7 @@ export function TopBar({ onNavigate }: TopBarProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(currentPath);
 
-  const { viewMode, setViewMode } = useViewMode();
+  const { viewMode } = useViewMode();
   const { enabled: photoAnalysisEnabled, toggle: togglePhotoAnalysis } = usePhotoAnalysisMode();
   const { scopePath: photoAnalysisScope, progress: photoAnalysisProgress } =
     usePhotoAnalysisProgress();
@@ -546,7 +548,9 @@ export function TopBar({ onNavigate }: TopBarProps) {
               ? "bg-accent text-accent-foreground"
               : "text-muted-foreground hover:text-foreground"
           }`}
-          onClick={() => setViewMode("icon")}
+          onClick={() => runCommand(viewModeCommands.icon)}
+          disabled={!isCommandEnabled(viewModeCommands.icon)}
+          aria-pressed={viewMode === "icon"}
           title={t("common.view_icon")}
         >
           <LayoutGrid className="h-4 w-4" />
@@ -557,7 +561,9 @@ export function TopBar({ onNavigate }: TopBarProps) {
               ? "bg-accent text-accent-foreground"
               : "text-muted-foreground hover:text-foreground"
           }`}
-          onClick={() => setViewMode("list")}
+          onClick={() => runCommand(viewModeCommands.list)}
+          disabled={!isCommandEnabled(viewModeCommands.list)}
+          aria-pressed={viewMode === "list"}
           title={t("common.view_list")}
         >
           <ListIcon className="h-4 w-4" />
@@ -568,7 +574,9 @@ export function TopBar({ onNavigate }: TopBarProps) {
               ? "bg-accent text-accent-foreground"
               : "text-muted-foreground hover:text-foreground"
           }`}
-          onClick={() => setViewMode("column")}
+          onClick={() => runCommand(viewModeCommands.column)}
+          disabled={!isCommandEnabled(viewModeCommands.column)}
+          aria-pressed={viewMode === "column"}
           title={t("common.view_column")}
         >
           <Columns className="h-4 w-4" />
@@ -579,7 +587,9 @@ export function TopBar({ onNavigate }: TopBarProps) {
               ? "bg-accent text-accent-foreground"
               : "text-muted-foreground hover:text-foreground"
           }`}
-          onClick={() => setViewMode("gallery")}
+          onClick={() => runCommand(viewModeCommands.gallery)}
+          disabled={!isCommandEnabled(viewModeCommands.gallery)}
+          aria-pressed={viewMode === "gallery"}
           title={t("common.view_gallery")}
         >
           <GalleryHorizontalEnd className="h-4 w-4" />

@@ -82,7 +82,7 @@ Press **Space** to open Quick Look, use the arrow buttons or Left/Right keys to 
 
 ## Development Roadmap
 
-See the [Finder gap analysis and detailed development plan (Chinese)](./docs/finder-gap-analysis-and-development-plan.zh-CN.md) for code evidence, priorities, 22 work packages, dependencies, estimates, and macOS acceptance criteria. M1–M8 below describe implementation milestones, not complete Finder compatibility validation.
+See the [Finder gap analysis and detailed development plan (Chinese)](./docs/finder-gap-analysis-and-development-plan.zh-CN.md): section 6 tracks the original 22 work packages plus the optional N06 sharing prototype, and section 7.4 lists the next actions with code evidence, dependencies, and macOS acceptance criteria. Estimates are historical; remaining scope needs re-estimation. M1–M8 below describe implementation milestones, not complete Finder compatibility validation.
 
 The current implementation status is tracked by milestones:
 

@@ -6,6 +6,7 @@ import {
   ContextMenuSeparator,
 } from "@/components/ui/context-menu";
 import { useClipboard } from "@/stores/clipboard";
+import { isCommandEnabled, runCommand } from "@/lib/commands";
 import { FileEntry, FileActions } from "@/types";
 import { SYSTEM_PATHS, SF_SYMBOLS } from "@/constants/paths";
 import { MenuItem } from "../MenuItem";
@@ -52,7 +53,16 @@ export function FileMenuContent({ entry, selectedEntries, actions }: FileMenuCon
       <MenuItem
         icon={<img src="/logo.svg" className="mr-2 h-4 w-4" alt="HyperExplorer" />}
         label={t("context_menu.open")}
-        onClick={() => actions.onOpen(entry)}
+        disabled={
+          actions.commands?.open
+            ? !isCommandEnabled(actions.commands.open, entry)
+            : false
+        }
+        onClick={() =>
+          actions.commands?.open
+            ? runCommand(actions.commands.open, entry)
+            : actions.onOpen(entry)
+        }
       />
 
       {entry.is_dir && actions.onOpenInNewTab && (
@@ -91,16 +101,34 @@ export function FileMenuContent({ entry, selectedEntries, actions }: FileMenuCon
         sysIcon={{ type: "sfsymbol", value: SF_SYMBOLS.COPY }}
         fallbackIcon={Copy}
         label={t("context_menu.copy")}
-        shortcut="⌘C"
-        onClick={() => actions.onCopy(targets)}
+        shortcut={actions.commands?.copy?.shortcut ?? "⌘C"}
+        disabled={
+          actions.commands?.copy
+            ? !isCommandEnabled(actions.commands.copy, targets)
+            : false
+        }
+        onClick={() =>
+          actions.commands?.copy
+            ? runCommand(actions.commands.copy, targets)
+            : actions.onCopy(targets)
+        }
       />
 
       <MenuItem
         sysIcon={{ type: "sfsymbol", value: SF_SYMBOLS.CUT }}
         fallbackIcon={Scissors}
         label={t("context_menu.cut")}
-        shortcut="⌘X"
-        onClick={() => actions.onCut(targets)}
+        shortcut={actions.commands?.cut?.shortcut ?? "⌘X"}
+        disabled={
+          actions.commands?.cut
+            ? !isCommandEnabled(actions.commands.cut, targets)
+            : false
+        }
+        onClick={() =>
+          actions.commands?.cut
+            ? runCommand(actions.commands.cut, targets)
+            : actions.onCut(targets)
+        }
       />
 
       {clipboard.hasPending() && (
@@ -108,8 +136,17 @@ export function FileMenuContent({ entry, selectedEntries, actions }: FileMenuCon
           sysIcon={{ type: "sfsymbol", value: SF_SYMBOLS.PASTE }}
           fallbackIcon={Clipboard}
           label={t("context_menu.paste")}
-          shortcut="⌘V"
-          onClick={actions.onPaste}
+          shortcut={actions.commands?.paste?.shortcut ?? "⌘V"}
+          disabled={
+            actions.commands?.paste
+              ? !isCommandEnabled(actions.commands.paste)
+              : false
+          }
+          onClick={() =>
+            actions.commands?.paste
+              ? runCommand(actions.commands.paste)
+              : actions.onPaste()
+          }
         />
       )}
 
@@ -120,8 +157,17 @@ export function FileMenuContent({ entry, selectedEntries, actions }: FileMenuCon
           sysIcon={{ type: "sfsymbol", value: SF_SYMBOLS.RENAME }}
           fallbackIcon={Pencil}
           label={t("context_menu.rename")}
-          shortcut="Enter"
-          onClick={() => actions.onRename?.(entry)}
+          shortcut={actions.commands?.rename?.shortcut ?? "Enter"}
+          disabled={
+            actions.commands?.rename
+              ? !isCommandEnabled(actions.commands.rename, entry)
+              : false
+          }
+          onClick={() =>
+            actions.commands?.rename
+              ? runCommand(actions.commands.rename, entry)
+              : actions.onRename?.(entry)
+          }
         />
       )}
 
@@ -185,7 +231,16 @@ export function FileMenuContent({ entry, selectedEntries, actions }: FileMenuCon
             sysIcon={{ type: "path", value: SYSTEM_PATHS.TRASH_ICON }}
             fallbackIcon={Trash2}
             label={t("context_menu.move_to_trash")}
-            onClick={() => actions.onDelete(targets)}
+            disabled={
+              actions.commands?.delete
+                ? !isCommandEnabled(actions.commands.delete, targets)
+                : false
+            }
+            onClick={() =>
+              actions.commands?.delete
+                ? runCommand(actions.commands.delete, targets)
+                : actions.onDelete(targets)
+            }
             destructive
           />
         </>

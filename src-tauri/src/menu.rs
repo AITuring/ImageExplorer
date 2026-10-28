@@ -75,10 +75,24 @@ pub fn create_menu(handle: &AppHandle) -> Result<Menu<tauri::Wry>, tauri::Error>
     // 文件菜单
     let new_window = MenuItem::with_id(
         handle,
-        "new-window",
+        "window.new",
         t!("menu.new_window").as_ref(),
-        true,
+        false,
         Some("CmdOrCtrl+N"),
+    )?;
+    let new_file = MenuItem::with_id(
+        handle,
+        "file.new-file",
+        t!("menu.new_file").as_ref(),
+        false,
+        Some("CmdOrCtrl+Alt+N"),
+    )?;
+    let new_folder = MenuItem::with_id(
+        handle,
+        "file.new-folder",
+        t!("menu.new_folder").as_ref(),
+        false,
+        Some("CmdOrCtrl+Shift+N"),
     )?;
 
     let file_menu = Submenu::with_items(
@@ -87,6 +101,9 @@ pub fn create_menu(handle: &AppHandle) -> Result<Menu<tauri::Wry>, tauri::Error>
         true,
         &[
             &new_window,
+            &PredefinedMenuItem::separator(handle)?,
+            &new_file,
+            &new_folder,
             &PredefinedMenuItem::separator(handle)?,
             &PredefinedMenuItem::close_window(handle, Some(t!("menu.close_window").as_ref()))?,
         ],
@@ -101,10 +118,34 @@ pub fn create_menu(handle: &AppHandle) -> Result<Menu<tauri::Wry>, tauri::Error>
             &PredefinedMenuItem::undo(handle, Some(t!("menu.undo").as_ref()))?,
             &PredefinedMenuItem::redo(handle, Some(t!("menu.redo").as_ref()))?,
             &PredefinedMenuItem::separator(handle)?,
-            &PredefinedMenuItem::cut(handle, Some(t!("menu.cut").as_ref()))?,
-            &PredefinedMenuItem::copy(handle, Some(t!("menu.copy").as_ref()))?,
-            &PredefinedMenuItem::paste(handle, Some(t!("menu.paste").as_ref()))?,
-            &PredefinedMenuItem::select_all(handle, Some(t!("menu.select_all").as_ref()))?,
+            &MenuItem::with_id(
+                handle,
+                "edit.cut",
+                t!("menu.cut").as_ref(),
+                false,
+                Some("CmdOrCtrl+X"),
+            )?,
+            &MenuItem::with_id(
+                handle,
+                "edit.copy",
+                t!("menu.copy").as_ref(),
+                false,
+                Some("CmdOrCtrl+C"),
+            )?,
+            &MenuItem::with_id(
+                handle,
+                "edit.paste",
+                t!("menu.paste").as_ref(),
+                false,
+                Some("CmdOrCtrl+V"),
+            )?,
+            &MenuItem::with_id(
+                handle,
+                "edit.select-all",
+                t!("menu.select_all").as_ref(),
+                false,
+                Some("CmdOrCtrl+A"),
+            )?,
         ],
     )?;
 
