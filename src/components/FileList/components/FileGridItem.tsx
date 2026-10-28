@@ -9,6 +9,7 @@ import { getCameraAfRegions } from "@/lib/cameraAfMetadata";
 import { getPhotoMetadataSummary } from "@/lib/photoMetadata";
 import { usePhotoMetadata } from "@/hooks/usePhotoMetadata";
 import { useCameraAfMetadata } from "@/hooks/useCameraAfMetadata";
+import type { VisibleSharpness } from "@/hooks/useVisibleSharpness";
 import { Input } from "@/components/ui/input";
 
 interface FileGridItemProps {
@@ -25,6 +26,7 @@ interface FileGridItemProps {
   onDoubleClick: () => void;
   onMove?: (source: string, target: string) => void;
   photoAnalysis?: PhotoAnalysisRecord;
+  visibleSharpness?: VisibleSharpness;
   photoGroupColor?: string;
   photoAnalysisEnabled?: boolean;
   isScrolling?: boolean;
@@ -44,6 +46,7 @@ export const FileGridItem = memo(function FileGridItem({
   onNameClick,
   onDoubleClick,
   photoAnalysis,
+  visibleSharpness,
   photoGroupColor,
   photoAnalysisEnabled = false,
   isScrolling = false,
@@ -58,7 +61,7 @@ export const FileGridItem = memo(function FileGridItem({
   const photoMetadata = usePhotoMetadata(entry, canLoadViewportData);
   const cameraAfMetadata = useCameraAfMetadata(entry, photoAnalysisEnabled && canLoadViewportData);
   const metadataSummary = getPhotoMetadataSummary(photoMetadata);
-  const thumbnailSize = 80;
+  const thumbnailSize = photoAnalysisEnabled ? 144 : 80;
   const cameraAfRegions = getCameraAfRegions(cameraAfMetadata);
   const focusRegions =
     cameraAfRegions ??
@@ -81,7 +84,7 @@ export const FileGridItem = memo(function FileGridItem({
 
   return (
     <div
-      className={`group flex cursor-default flex-col items-center rounded-md p-3 transition-colors ${
+      className={`group flex cursor-default flex-col items-center rounded-md p-2 transition-colors ${
         isSelected
           ? "bg-accent/80 ring-primary/20 ring-1"
           : "hover:bg-accent/60 hover:ring-border/60 ring-1 ring-transparent"
@@ -90,13 +93,16 @@ export const FileGridItem = memo(function FileGridItem({
       onClick={onClick}
       onDoubleClick={onDoubleClick}
     >
-      <div className="relative mb-2 flex h-20 w-20 items-center justify-center overflow-hidden">
+      <div
+        className="relative mb-1 flex max-w-full items-center justify-center overflow-hidden"
+        style={{ width: thumbnailSize, height: thumbnailSize }}
+      >
         <FileThumbnail
           entry={entry}
           size={thumbnailSize}
           isScrolling={isScrolling}
           isInViewport={isInViewport}
-          className="h-20 w-20 rounded-md object-contain"
+          className="h-full w-full rounded-md object-contain"
           fallbackClassName={
             entry.is_dir ? "h-16 w-16 text-blue-500" : "text-muted-foreground h-16 w-16"
           }
@@ -150,14 +156,36 @@ export const FileGridItem = memo(function FileGridItem({
             }
           }}
         >
-          <span
-            className={`line-clamp-2 rounded px-1 text-xs font-medium break-all ${
-              isSelected ? "bg-primary/10" : ""
-            }`}
-            title={entry.name}
-          >
-            {entry.name}
-          </span>
+          <div className="flex w-full min-w-0 items-center justify-center gap-1">
+            <span
+              className={`min-w-0 truncate rounded px-0.5 text-xs font-medium ${
+                isSelected ? "bg-primary/10" : ""
+              }`}
+              title={entry.name}
+            >
+              {entry.name}
+            </span>
+            {photoAnalysisEnabled && !entry.is_dir && (
+              <span
+                className={`shrink-0 rounded px-1 py-0.5 text-[9px] font-medium ${
+                  visibleSharpness === "sharp"
+                    ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                    : visibleSharpness === "soft"
+                      ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+                      : "bg-muted text-muted-foreground"
+                }`}
+                title={t("common.photo_visible_note")}
+              >
+                {visibleSharpness === "sharp"
+                  ? t("common.photo_visible_sharp_short")
+                  : visibleSharpness === "soft"
+                    ? t("common.photo_visible_soft_short")
+                    : visibleSharpness === "unavailable"
+                      ? t("common.photo_visible_unavailable_short")
+                      : t("common.photo_visible_pending_short")}
+              </span>
+            )}
+          </div>
           {cameraAfRegions === null && photoAnalysis?.focusAnalysis.kind === "full-frame" && (
             <div
               className="mt-1 max-w-full truncate px-1 text-[9px] leading-3 text-cyan-700/80 dark:text-cyan-200/80"
@@ -179,7 +207,7 @@ export const FileGridItem = memo(function FileGridItem({
             )}
           {metadataSummary && (
             <div
-              className="text-foreground/70 mt-1 flex w-full flex-col items-center gap-0.5 px-1 text-[10px] leading-3.5"
+              className="text-foreground/70 mt-0.5 flex w-full flex-col items-center gap-0.5 px-1 text-[10px] leading-3.5"
               title={[
                 metadataSummary.dimensions,
                 metadataSummary.exposure.join(" · "),
@@ -207,15 +235,6 @@ export const FileGridItem = memo(function FileGridItem({
                   ))}
                 </div>
               )}
-              {metadataSummary.camera.map((value) => (
-                <div
-                  key={value}
-                  className="w-full max-w-full truncate text-center leading-4 whitespace-nowrap"
-                  title={value}
-                >
-                  {value}
-                </div>
-              ))}
             </div>
           )}
         </div>

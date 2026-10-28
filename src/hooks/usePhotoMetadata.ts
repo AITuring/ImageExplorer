@@ -13,14 +13,14 @@ interface PhotoMetadataState {
   data: PhotoMetadata | null;
 }
 
-export function usePhotoMetadata(entry: FileEntry, enabled = true) {
-  const metadataKey = isAnalyzablePhoto(entry) ? getPhotoMetadataKey(entry) : null;
+export function usePhotoMetadata(entry: FileEntry | null, enabled = true) {
+  const metadataKey = entry && isAnalyzablePhoto(entry) ? getPhotoMetadataKey(entry) : null;
   const [state, setState] = useState<PhotoMetadataState>({ key: null, data: null });
   const entryRef = useRef(entry);
   useEffect(() => {
     entryRef.current = entry;
   }, [entry]);
-  const cached = metadataKey ? getCachedPhotoMetadata(entry) : undefined;
+  const cached = metadataKey && entry ? getCachedPhotoMetadata(entry) : undefined;
 
   useEffect(() => {
     const currentEntry = entryRef.current;

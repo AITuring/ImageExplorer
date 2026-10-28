@@ -22,6 +22,8 @@ import { SharpnessSelectionOverlay } from "@/components/SharpnessSelectionOverla
 import { getLargestCachedFileThumbnail, loadFileThumbnail } from "@/lib/iconCache";
 import { useCameraAfMetadata } from "@/hooks/useCameraAfMetadata";
 import { useSharpnessInspector } from "@/hooks/useSharpnessInspector";
+import { usePhotoMetadata } from "@/hooks/usePhotoMetadata";
+import { getPhotoMetadataSummary } from "@/lib/photoMetadata";
 import type { FileEntry } from "@/types/index";
 import {
   isAnalyzablePhoto,
@@ -39,10 +41,7 @@ import {
 } from "@/utils/file";
 import { formatFileSize, formatDate } from "@/utils/format";
 import { RAW_IMAGE_EXTENSIONS } from "@/constants/fileTypes";
-import {
-  isInteractiveKeyboardTarget,
-  shouldIgnoreKeyboardCommand,
-} from "@/lib/keyboardShortcuts";
+import { isInteractiveKeyboardTarget, shouldIgnoreKeyboardCommand } from "@/lib/keyboardShortcuts";
 
 interface QuickLookProps {
   entry: FileEntry | null;
@@ -802,6 +801,8 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     return "icon";
   }, [entry]);
   const cameraAfMetadata = useCameraAfMetadata(entry, previewType === "image", "interactive");
+  const photoMetadata = usePhotoMetadata(entry, previewType === "image");
+  const photoMetadataSummary = getPhotoMetadataSummary(photoMetadata);
 
   const dialogSizeClass = useMemo(() => {
     if (!entry) {
@@ -1081,13 +1082,16 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
 
     const handleKeyDown = (e: KeyboardEvent) => {
       const eventTarget = e.target instanceof Element ? e.target : null;
-      const activeElement = document.activeElement instanceof Element ? document.activeElement : null;
+      const activeElement =
+        document.activeElement instanceof Element ? document.activeElement : null;
       const quickLookIsActive = [eventTarget, activeElement].some((element) =>
         element?.closest('[data-keyboard-scope="quick-look"]')
       );
       if (
         e.defaultPrevented ||
-        shouldIgnoreKeyboardCommand(e, { allowOverlaySelector: '[data-keyboard-scope="quick-look"]' }) ||
+        shouldIgnoreKeyboardCommand(e, {
+          allowOverlaySelector: '[data-keyboard-scope="quick-look"]',
+        }) ||
         !quickLookIsActive ||
         isInteractiveKeyboardTarget(eventTarget) ||
         isInteractiveKeyboardTarget(activeElement)
@@ -1533,7 +1537,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
         onClick={(e) => e.stopPropagation()}
       >
         {/* Title Bar */}
-        <div className="bg-muted/25 flex items-center justify-between border-b border-black/6 px-3 py-2">
+        <div className="bg-muted/25 relative flex items-center justify-between border-b border-black/6 px-3 py-2">
           <div className="flex gap-2">
             <button
               type="button"
@@ -1566,9 +1570,22 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
               </>
             ) : null}
           </div>
-          <div className="text-sm font-medium opacity-80">
-            {t("common.quick_look.preview")}
-            <span ref={zoomIndicatorRef}>{previewType === "image" ? " 100%" : ""}</span>
+          <div className="pointer-events-none absolute left-1/2 max-w-[50%] min-w-0 -translate-x-1/2 text-center text-sm font-medium">
+            <div className="truncate" title={entry.name}>
+              {entry.name}
+            </div>
+            <div className="text-muted-foreground text-xs">
+              {t("common.quick_look.preview")}
+              <span ref={zoomIndicatorRef}>{previewType === "image" ? " 100%" : ""}</span>
+            </div>
+            {photoMetadataSummary?.camera.length ? (
+              <div
+                className="text-muted-foreground truncate text-[10px]"
+                title={photoMetadataSummary.camera.join(" · ")}
+              >
+                {photoMetadataSummary.camera.join(" · ")}
+              </div>
+            ) : null}
           </div>
           <button
             type="button"

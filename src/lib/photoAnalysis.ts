@@ -616,7 +616,6 @@ export async function analyzePhotoEntries(
   signal: AbortSignal,
   onUpdate: (progress: PhotoAnalysisProgress, records: Map<string, PhotoAnalysisRecord>) => void
 ): Promise<Map<string, PhotoAnalysisRecord>> {
-  const extractedByPath = new Map<string, ExtractedPhotoFeatures>();
   const finalizedByPath = new Map<string, RawPhotoFeatures>();
   let nextIndex = 0;
   let extractedCompleted = 0;
@@ -631,7 +630,7 @@ export async function analyzePhotoEntries(
       const item = entries[index];
       try {
         const features = await analyzeEntry(item.entry, item.key, signal);
-        if (features) extractedByPath.set(item.entry.path, features);
+        if (features) finalizedByPath.set(item.entry.path, finalizePhotoFeatures(features));
       } catch (error) {
         console.warn(`Failed to analyze photo: ${item.entry.path}`, error);
       } finally {
@@ -650,7 +649,7 @@ export async function analyzePhotoEntries(
               stageCompleted: extractedCompleted,
               stageTotal: entries.length,
             },
-            new Map()
+            createPhotoAnalysisRecords(entries, finalizedByPath, false)
           );
         }
         if (performance.now() - lastBrowserYieldAt >= 12) {
@@ -673,9 +672,7 @@ export async function analyzePhotoEntries(
   let focusLastBrowserYieldAt = performance.now();
   for (const item of entries) {
     if (signal.aborted) return new Map();
-    const extracted = extractedByPath.get(item.entry.path);
-    if (extracted) {
-      finalizedByPath.set(item.entry.path, finalizePhotoFeatures(extracted));
+    if (finalizedByPath.has(item.entry.path)) {
       focusBatchEntries.push(item);
     }
     focusCompleted += 1;

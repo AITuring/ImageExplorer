@@ -1,5 +1,26 @@
 @import "tailwindcss";
 
+/* Keep the large icon grid's scrollbar visible and draggable on macOS. */
+.file-grid-scrollbar {
+  scrollbar-gutter: stable;
+  scrollbar-width: auto;
+  scrollbar-color: hsl(var(--muted-foreground) / 0.65) hsl(var(--muted) / 0.55);
+}
+
+.file-grid-scrollbar::-webkit-scrollbar {
+  width: 12px;
+}
+
+.file-grid-scrollbar::-webkit-scrollbar-track {
+  background: hsl(var(--muted) / 0.55);
+}
+
+.file-grid-scrollbar::-webkit-scrollbar-thumb {
+  border: 2px solid hsl(var(--muted) / 0.55);
+  border-radius: 999px;
+  background: hsl(var(--muted-foreground) / 0.65);
+}
+
 @plugin "tailwindcss-animate";
 
 @custom-variant dark (&:where(.dark, .dark *));

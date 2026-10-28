@@ -477,13 +477,13 @@ export function Sidebar({ onNavigate }: SidebarProps) {
 
   return (
     <aside
-      className={`border-border/50 bg-background/40 relative z-30 flex shrink-0 flex-col border-r backdrop-blur-xl ${
+      className={`border-border/50 bg-background/40 relative z-30 flex min-h-0 shrink-0 flex-col border-r backdrop-blur-xl ${
         isResizing ? "" : "transition-[width] duration-150 ease-out"
       }`}
       style={{ width: `${sidebarWidth}px` }}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <div className="flex h-full min-w-0 flex-col overflow-hidden">
+      <div className="flex h-full min-h-0 min-w-0 flex-col overflow-x-hidden overflow-y-auto">
         {/* 快速访问 */}
         <div className="border-border/50 border-b p-3">
           <h3 className="text-muted-foreground mb-2 px-2 text-xs font-medium">
@@ -573,7 +573,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
         )}
 
         {/* 文件夹树 */}
-        <div className="flex-1 overflow-auto p-3">
+        <div className="p-3">
           <h3 className="text-muted-foreground mb-2 px-2 text-xs font-medium">
             {t("sidebar.folders")}
           </h3>
