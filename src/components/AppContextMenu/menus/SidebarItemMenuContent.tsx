@@ -22,7 +22,7 @@ export function SidebarItemMenuContent({ actions }: SidebarItemMenuContentProps)
       <ContextMenuLabel className="max-w-[12rem] truncate">{actions.name}</ContextMenuLabel>
       <ContextMenuSeparator />
       <MenuItem
-        icon={<img src="/logo.svg" className="mr-2 h-4 w-4" alt="HyperExplorer" />}
+        icon={<img src="/logo-menu.png" className="mr-2 h-4 w-4" alt="ImageExplorer" />}
         label={t("context_menu.open")}
         onClick={actions.onOpen}
       />
