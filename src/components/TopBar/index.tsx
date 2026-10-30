@@ -10,7 +10,6 @@ import {
   LayoutGrid,
   List as ListIcon,
   Columns,
-  Scan,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AppContextMenu } from "@/components/AppContextMenu";
@@ -24,7 +23,6 @@ import { useSetting } from "@/hooks/useSetting";
 import { useClipboard } from "@/stores/clipboard";
 import { useFileInfoDialog } from "@/stores/fileInfoDialog";
 import { useLocations } from "@/stores/locations";
-import { usePhotoAnalysisMode } from "@/stores/photoAnalysisMode";
 import { usePhotoAnalysisProgress } from "@/stores/photoAnalysisProgress";
 import { isCommandEnabled, runCommand } from "@/lib/commands";
 import { viewModeCommands } from "@/lib/viewModeCommands";
@@ -69,7 +67,6 @@ export function TopBar({ onNavigate }: TopBarProps) {
   const [editValue, setEditValue] = useState(currentPath);
 
   const { viewMode } = useViewMode();
-  const { enabled: photoAnalysisEnabled, toggle: togglePhotoAnalysis } = usePhotoAnalysisMode();
   const { scopePath: photoAnalysisScope, progress: photoAnalysisProgress } =
     usePhotoAnalysisProgress();
   const [showHiddenFiles] = useSetting<boolean>("show_hidden_files", false);
@@ -548,31 +545,6 @@ export function TopBar({ onNavigate }: TopBarProps) {
           >
             <Columns className="h-4 w-4" />
           </button>
-          {viewMode === "icon" && (
-            <button
-              type="button"
-              className={`finder-analysis-toggle border-border/50 focus-visible:ring-ring ml-1 rounded-sm border-l p-1 pl-1 transition-colors focus-visible:ring-2 focus-visible:outline-none ${
-                photoAnalysisEnabled
-                  ? "bg-primary/15 text-primary"
-                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
-              }`}
-              onClick={togglePhotoAnalysis}
-              title={t(
-                photoAnalysisEnabled
-                  ? "common.photo_analysis_disable"
-                  : "common.photo_analysis_enable"
-              )}
-              aria-label={t(
-                photoAnalysisEnabled
-                  ? "common.photo_analysis_disable"
-                  : "common.photo_analysis_enable"
-              )}
-              aria-pressed={photoAnalysisEnabled}
-            >
-              <Scan className="h-4 w-4" aria-hidden="true" />
-              <span>{t("common.photo_sharpness_toggle")}</span>
-            </button>
-          )}
         </div>
 
         {/* 搜索框 */}
@@ -714,7 +686,7 @@ export function TopBar({ onNavigate }: TopBarProps) {
           )}
         </div>
       </header>
-      {viewMode === "icon" && photoAnalysisEnabled && photoAnalysisScope === currentPath && (
+      {photoAnalysisScope === currentPath && (
         <PhotoAnalysisProgressIndicator progress={photoAnalysisProgress} />
       )}
     </>

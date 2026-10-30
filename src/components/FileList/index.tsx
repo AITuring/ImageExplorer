@@ -5,7 +5,6 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { AppContextMenu } from "@/components/AppContextMenu";
 import { FileEntry, FileActions } from "@/types";
 import { useViewMode } from "@/stores/viewMode";
-import { usePhotoAnalysisMode } from "@/stores/photoAnalysisMode";
 import { useTabs } from "@/hooks/useTabs";
 import { useSetting } from "@/hooks/useSetting";
 import { QuickLook } from "@/components/QuickLook";
@@ -104,7 +103,8 @@ function makeDragHandlers(
 export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProps) {
   const { t } = useTranslation();
   const { viewMode } = useViewMode();
-  const { enabled: photoAnalysisEnabled } = usePhotoAnalysisMode();
+  // Photo details and analysis are available automatically in every view.
+  const photoAnalysisEnabled = true;
   const { addTab, activeTab } = useTabs();
   const [legacyTabNumberShortcuts] = useSetting<boolean>("legacy_cmd_number_tabs", false);
   const [gridColumns, setGridColumns] = useState(6);
@@ -122,7 +122,20 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     viewMode === "column" && columnSelectionContext?.rootPath === currentPath
       ? columnSelectionContext
       : null;
-  const selectionEntries = activeColumnContext?.visibleEntries ?? sortedEntries;
+  const selectionEntries = useMemo(
+    () =>
+      activeColumnContext
+        ? Array.from(
+            new Map(
+              [...sortedEntries, ...activeColumnContext.visibleEntries].map((entry) => [
+                entry.path,
+                entry,
+              ])
+            ).values()
+          )
+        : sortedEntries,
+    [activeColumnContext, sortedEntries]
+  );
   const keyboardEntries = activeColumnContext?.activeEntries ?? sortedEntries;
   const operationPath = activeColumnContext?.locationPath ?? currentPath;
   const canMutate = !loading && !error && !operationPath.startsWith(SMART_FOLDER_PREFIX);
@@ -142,6 +155,18 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     editValue,
     setEditValue,
   } = useFileSelection(selectionEntries);
+
+  useEffect(() => {
+    if (
+      viewMode === "column" &&
+      !loading &&
+      !selectedPath &&
+      !fileToSelect &&
+      sortedEntries.length
+    ) {
+      setSelectedPath(sortedEntries[0].path);
+    }
+  }, [viewMode, loading, selectedPath, fileToSelect, sortedEntries, setSelectedPath]);
 
   // 4. 重命名
   const { handleStartRename, handleSubmitRename, handleCancelRename } = useFileRename({
@@ -386,7 +411,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     viewMode === "list" ? listVirtualizer.isScrolling : gridIsScrolling
   );
 
-  const photoAnalysisEnabledForFolder = photoAnalysisEnabled && viewMode === "icon";
+  const photoAnalysisEnabledForFolder = photoAnalysisEnabled;
   const { records: photoAnalysis } = usePhotoAnalysis(
     entries,
     photoAnalysisEnabledForFolder,
@@ -397,40 +422,67 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   useEffect(() => {
     const locationKey = `${viewMode}:${currentPath}`;
     const scrollPositions = scrollPositionsRef.current;
+    const scrollContainer = getScrollContainer(viewMode);
     return () => {
-      const scrollContainer = getScrollContainer(viewMode);
       if (scrollContainer) {
         scrollPositions[locationKey] = scrollContainer.scrollTop;
       }
     };
   }, [currentPath, getScrollContainer, viewMode]);
 
+  const restoredViewRef = useRef<string | null>(null);
   useEffect(() => {
-    if (loading || fileToSelect) {
+    const locationKey = `${viewMode}:${currentPath}`;
+    if (loading || restoredViewRef.current === locationKey) return;
+    if (viewMode === "column") {
+      restoredViewRef.current = locationKey;
       return;
     }
-
-    const savedScrollTop = scrollPositionsRef.current[`${viewMode}:${currentPath}`];
-    if (savedScrollTop === undefined) {
-      return;
-    }
-
-    const restoreScroll = () => {
-      const scrollContainer = getScrollContainer(viewMode);
-      if (scrollContainer) {
-        scrollContainer.scrollTop = savedScrollTop;
-      }
+    // Wait until the new scroll element and grid width have been measured.
+    // A saved offset belongs to the old view; the shared selection takes priority.
+    let secondFrame = 0;
+    const frame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        const container = getScrollContainer(viewMode);
+        if (!container) return;
+        const index = sortedEntries.findIndex((entry) => entry.path === selectedPath);
+        if (index >= 0) {
+          if (viewMode === "list") {
+            listVirtualizer.scrollToIndex(index, { align: "center" });
+          } else {
+            gridVirtualizer.scrollToIndex(Math.floor(index / gridColumns), { align: "center" });
+          }
+        } else {
+          container.scrollTop = scrollPositionsRef.current[locationKey] ?? 0;
+        }
+        restoredViewRef.current = locationKey;
+      });
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      cancelAnimationFrame(secondFrame);
     };
-
-    const animationId = window.requestAnimationFrame(restoreScroll);
-    return () => window.cancelAnimationFrame(animationId);
-  }, [currentPath, fileToSelect, getScrollContainer, loading, viewMode]);
+  }, [
+    currentPath,
+    getScrollContainer,
+    loading,
+    viewMode,
+    selectedPath,
+    sortedEntries,
+    gridColumns,
+    listVirtualizer,
+    gridVirtualizer,
+  ]);
 
   // 8. 自动选中和滚动
+  const appliedFileSelection = useRef<string | null>(null);
   useEffect(() => {
-    if (fileToSelect && entries.length > 0) {
+    const requestKey = fileToSelect ? `${currentPath}:${fileToSelect}` : null;
+    if (!requestKey) appliedFileSelection.current = null;
+    if (fileToSelect && entries.length > 0 && appliedFileSelection.current !== requestKey) {
       const entry = entries.find((e) => e.path === fileToSelect);
       if (entry) {
+        appliedFileSelection.current = requestKey;
         setSelectedPath(entry.path);
         const idx = sortedEntries.findIndex((e) => e.path === fileToSelect);
         if (idx >= 0) {
@@ -444,6 +496,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       }
     }
   }, [
+    currentPath,
     entries,
     fileToSelect,
     gridColumns,

@@ -85,6 +85,16 @@ export function FileColumnView({
   const hasCurrentRoot = columns[0]?.path === currentPath;
 
   useEffect(() => {
+    if (!hasCurrentRoot || !focusedPath) return;
+    const frame = requestAnimationFrame(() => {
+      const rows = scrollContainerRef.current?.querySelectorAll<HTMLElement>("[data-file-path]");
+      const focusedRow = Array.from(rows ?? []).find((row) => row.dataset.filePath === focusedPath);
+      focusedRow?.scrollIntoView({ block: "center", inline: "nearest" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focusedPath, columns, hasCurrentRoot]);
+
+  useEffect(() => {
     const activeColumn = columns[activeColumnIndex];
     if (!activeColumn) {
       onContextChange(null);
@@ -321,6 +331,7 @@ export function FileColumnView({
                   <div
                     {...nativeDragHandlers}
                     data-selected={isSelected}
+                    data-file-path={entry.path}
                     className={`finder-column-row flex cursor-default items-center gap-2 px-2 py-1.5 text-sm transition-colors ${
                       isSelected || isColumnSelected ? "bg-accent" : "hover:bg-accent/50"
                     } ${focusedPath === entry.path ? "outline-primary outline outline-1 outline-offset-[-1px]" : ""}`}

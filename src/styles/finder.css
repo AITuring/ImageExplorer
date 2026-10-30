@@ -470,14 +470,6 @@ button:focus-visible,
   }
 }
 
-.finder-control-group > .finder-analysis-toggle {
-  width: auto;
-  display: flex;
-  gap: 5px;
-  padding-inline: 9px;
-  font-size: 11px;
-}
-
 /* Native-style menus must disappear immediately when Radix closes them.
    Avoid retaining an exit-animation layer in WebKit's backdrop compositor. */
 .finder-menu {
@@ -489,13 +481,6 @@ button:focus-visible,
 }
 
 @container (max-width: 570px) {
-  .finder-analysis-toggle span {
-    display: none;
-  }
-  .finder-control-group > .finder-analysis-toggle {
-    width: 25px;
-    padding-inline: 5px;
-  }
   .finder-location {
     min-width: 0;
   }
