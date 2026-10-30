@@ -12,6 +12,8 @@ export interface PhotoMetadata {
   aperture: string | null;
   focalLength: string | null;
   capturedAt: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
 }
 
 export interface PhotoMetadataSummary {
@@ -176,17 +178,17 @@ function firstNumber(value: string | null) {
   return match ? Number(match[0]) : null;
 }
 
-function formatAperture(value: string | null) {
+export function formatAperture(value: string | null) {
   const number = firstNumber(value);
   return number !== null && Number.isFinite(number) ? `f/${Number(number.toFixed(1))}` : null;
 }
 
-function formatFocalLength(value: string | null) {
+export function formatFocalLength(value: string | null) {
   const number = firstNumber(value);
   return number !== null && Number.isFinite(number) ? `${Number(number.toFixed(1))}mm` : null;
 }
 
-function formatShutterSpeed(value: string | null) {
+export function formatShutterSpeed(value: string | null) {
   if (!value) return null;
   if (value.includes("/")) return value;
   const number = firstNumber(value);

@@ -1,3 +1,4 @@
+import { SharpnessBadge, PhotoParameters } from "./PhotoDetails";
 import { memo, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { FileEntry } from "@/types/index";
@@ -169,26 +170,7 @@ export const FileGridItem = memo(function FileGridItem({
             >
               {entry.name}
             </span>
-            {photoAnalysisEnabled && !entry.is_dir && (
-              <span
-                className={`shrink-0 rounded px-1 py-0.5 text-[9px] font-medium ${
-                  visibleSharpness === "sharp"
-                    ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
-                    : visibleSharpness === "soft"
-                      ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
-                      : "bg-muted text-muted-foreground"
-                }`}
-                title={t("common.photo_visible_note")}
-              >
-                {visibleSharpness === "sharp"
-                  ? t("common.photo_visible_sharp_short")
-                  : visibleSharpness === "soft"
-                    ? t("common.photo_visible_soft_short")
-                    : visibleSharpness === "unavailable"
-                      ? t("common.photo_visible_unavailable_short")
-                      : t("common.photo_visible_pending_short")}
-              </span>
-            )}
+            {photoAnalysisEnabled && !entry.is_dir && <SharpnessBadge verdict={visibleSharpness} />}
           </div>
           {cameraAfRegions === null && photoAnalysis?.focusAnalysis.kind === "full-frame" && (
             <div
@@ -210,35 +192,8 @@ export const FileGridItem = memo(function FileGridItem({
               </div>
             )}
           {metadataSummary && (
-            <div
-              className="text-foreground/70 mt-0.5 flex w-full flex-col items-center gap-0.5 px-1 text-[10px] leading-3.5"
-              title={[
-                metadataSummary.dimensions,
-                metadataSummary.exposure.join(" · "),
-                ...metadataSummary.camera,
-              ]
-                .filter(Boolean)
-                .join("\n")}
-              aria-label={[
-                metadataSummary.dimensions,
-                metadataSummary.exposure.join(", "),
-                ...metadataSummary.camera,
-              ]
-                .filter(Boolean)
-                .join(", ")}
-            >
-              {metadataSummary.dimensions && (
-                <div className="font-mono leading-4 tabular-nums">{metadataSummary.dimensions}</div>
-              )}
-              {metadataSummary.exposure.length > 0 && (
-                <div className="flex max-w-full flex-wrap justify-center gap-x-1.5 gap-y-0.5 text-center font-medium tabular-nums">
-                  {metadataSummary.exposure.map((value) => (
-                    <span key={value} className="whitespace-nowrap">
-                      {value}
-                    </span>
-                  ))}
-                </div>
-              )}
+            <div className="mt-0.5 w-full px-1 text-center">
+              <PhotoParameters summary={metadataSummary} />
             </div>
           )}
         </div>

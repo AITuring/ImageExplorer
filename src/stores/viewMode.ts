@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-export type ViewMode = "icon" | "list" | "column" | "gallery";
+export type ViewMode = "icon" | "list" | "column";
 
 interface ViewModeState {
   viewMode: ViewMode;
@@ -16,6 +16,18 @@ export const useViewMode = create<ViewModeState>()(
     }),
     {
       name: "view-mode-storage",
+      merge: (persisted, current) => {
+        const saved = (persisted as { viewMode?: unknown } | undefined)?.viewMode;
+        return {
+          ...current,
+          viewMode:
+            saved === "gallery" || saved === "icon"
+              ? "icon"
+              : saved === "column"
+                ? "column"
+                : "list",
+        };
+      },
     }
   )
 );

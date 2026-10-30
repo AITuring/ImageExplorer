@@ -10,7 +10,6 @@ import {
   LayoutGrid,
   List as ListIcon,
   Columns,
-  GalleryHorizontalEnd,
   Scan,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -548,19 +547,6 @@ export function TopBar({ onNavigate }: TopBarProps) {
             title={t("common.view_column")}
           >
             <Columns className="h-4 w-4" />
-          </button>
-          <button
-            className={`rounded-sm p-1 transition-colors ${
-              viewMode === "gallery"
-                ? "bg-accent text-accent-foreground"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
-            onClick={() => runCommand(viewModeCommands.gallery)}
-            disabled={!isCommandEnabled(viewModeCommands.gallery)}
-            aria-pressed={viewMode === "gallery"}
-            title={t("common.view_gallery")}
-          >
-            <GalleryHorizontalEnd className="h-4 w-4" />
           </button>
           {viewMode === "icon" && (
             <button

@@ -39,14 +39,13 @@ function isModifierPressed(event: KeyboardEvent): boolean {
 
 function matchesModifiedKey(event: KeyboardEvent, key: string): boolean {
   return (
-    isModifierPressed(event) &&
-    !event.shiftKey &&
-    !event.altKey &&
-    event.key.toLowerCase() === key
+    isModifierPressed(event) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === key
   );
 }
 
-export function useFileKeyboardShortcuts(options: UseFileKeyboardShortcutsOptions): FileCommandActions {
+export function useFileKeyboardShortcuts(
+  options: UseFileKeyboardShortcutsOptions
+): FileCommandActions {
   const clipboard = useClipboard();
 
   // Keep registered commands stable while their handlers read current selection and operations.
@@ -165,47 +164,56 @@ export function useFileKeyboardShortcuts(options: UseFileKeyboardShortcutsOption
           scope: "file-view",
           matches: (event) => matchesModifiedKey(event, "a"),
           enabled: () => isCommandEnabled(commands.selectAll),
-          run: () => { runCommand(commands.selectAll); },
+          run: () => {
+            runCommand(commands.selectAll);
+          },
         },
         {
           id: "file.clear-selection",
           scope: "file-view",
           matches: (event) => event.key === "Escape",
           enabled: () => isCommandEnabled(commands.clearSelection),
-          run: () => { runCommand(commands.clearSelection); },
+          run: () => {
+            runCommand(commands.clearSelection);
+          },
         },
         {
           id: "file.copy",
           scope: "file-view",
           matches: (event) => matchesModifiedKey(event, "c"),
           enabled: () => isCommandEnabled(commands.copy),
-          run: () => { runCommand(commands.copy); },
+          run: () => {
+            runCommand(commands.copy);
+          },
         },
         {
           id: "file.cut",
           scope: "file-view",
           matches: (event) => matchesModifiedKey(event, "x"),
           enabled: () => isCommandEnabled(commands.cut),
-          run: () => { runCommand(commands.cut); },
+          run: () => {
+            runCommand(commands.cut);
+          },
         },
         {
           id: "file.paste",
           scope: "file-view",
           matches: (event) => matchesModifiedKey(event, "v"),
           enabled: () => isCommandEnabled(commands.paste),
-          run: () => { runCommand(commands.paste); },
+          run: () => {
+            runCommand(commands.paste);
+          },
         },
         {
           id: "file.paste-as-move",
           scope: "file-view",
           priority: 1,
           matches: (event) =>
-            isModifierPressed(event) &&
-            event.code === "KeyV" &&
-            event.altKey &&
-            !event.shiftKey,
+            isModifierPressed(event) && event.code === "KeyV" && event.altKey && !event.shiftKey,
           enabled: () => isCommandEnabled(commands.pasteAsMove),
-          run: () => { runCommand(commands.pasteAsMove); },
+          run: () => {
+            runCommand(commands.pasteAsMove);
+          },
         },
         {
           id: "file.delete",
@@ -213,14 +221,18 @@ export function useFileKeyboardShortcuts(options: UseFileKeyboardShortcutsOption
           matches: (event) =>
             isModifierPressed(event) && event.key === "Backspace" && !event.altKey,
           enabled: () => isCommandEnabled(commands.delete),
-          run: () => { runCommand(commands.delete); },
+          run: () => {
+            runCommand(commands.delete);
+          },
         },
         {
           id: "file.open",
           scope: "file-view",
           matches: (event) => matchesModifiedKey(event, "o"),
           enabled: () => isCommandEnabled(commands.open),
-          run: () => { runCommand(commands.open); },
+          run: () => {
+            runCommand(commands.open);
+          },
         },
         {
           id: "file.rename",
@@ -228,7 +240,9 @@ export function useFileKeyboardShortcuts(options: UseFileKeyboardShortcutsOption
           priority: 5,
           matches: (event) => event.key === "Enter",
           enabled: () => isCommandEnabled(commands.rename),
-          run: () => { runCommand(commands.rename); },
+          run: () => {
+            runCommand(commands.rename);
+          },
         },
         {
           id: "file.view-mode",
@@ -237,14 +251,13 @@ export function useFileKeyboardShortcuts(options: UseFileKeyboardShortcutsOption
             isModifierPressed(event) &&
             !event.shiftKey &&
             !event.altKey &&
-            ["1", "2", "3", "4"].includes(event.key),
+            ["1", "2", "3"].includes(event.key),
           enabled: () => !optionsRef.current.legacyTabNumberShortcuts,
           run: (event) => {
             const modes: Record<string, ViewMode> = {
               "1": "icon",
               "2": "list",
               "3": "column",
-              "4": "gallery",
             };
             const mode = modes[event.key];
             if (mode) runCommand(viewModeCommands[mode]);
@@ -279,10 +292,7 @@ export function useFileKeyboardShortcuts(options: UseFileKeyboardShortcutsOption
             const newIndex =
               currentIndex < 0
                 ? 0
-                : Math.max(
-                    0,
-                    Math.min(current.sortedEntries.length - 1, currentIndex + step)
-                  );
+                : Math.max(0, Math.min(current.sortedEntries.length - 1, currentIndex + step));
             if (event.shiftKey) {
               current.selectRange(current.sortedEntries, newIndex);
             } else {

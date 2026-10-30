@@ -2,13 +2,15 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { DIR_CHANGE_DEBOUNCE_MS } from "@/constants/config";
-import { Folder, File, ChevronRight } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import { FileEntry } from "@/types";
-import { SmartIcon } from "@/components/SmartIcon";
+import { CompactFileThumbnail } from "./CompactFileThumbnail";
 import { filterHiddenEntries } from "@/utils/file";
 import { readFileDragData } from "@/lib/dragData";
 import { makeNativeFileDragGestureHandlers } from "@/lib/nativeFileDragGesture";
 import { AppContextMenu } from "@/components/AppContextMenu";
+import { ColumnFilePreview } from "./ColumnFilePreview";
+import { RequestGeneration } from "@/lib/requestGeneration";
 import { Input } from "@/components/ui/input";
 import type { FileActions } from "@/types";
 
@@ -67,6 +69,12 @@ export function FileColumnView({
   handleMove,
   showHiddenFiles,
 }: FileColumnViewProps) {
+  const selectionRequests = useRef(new RequestGeneration());
+  useEffect(() => {
+    const requests = selectionRequests.current;
+    requests.invalidate();
+    return () => requests.invalidate();
+  }, [currentPath, showHiddenFiles]);
   const [columns, setColumns] = useState<ColumnData[]>([]);
   const [activeColumnIndex, setActiveColumnIndex] = useState(0);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -236,9 +244,17 @@ export function FileColumnView({
     };
   }, [columnPathsKey, currentPath, loadColumn, showHiddenFiles]);
 
+  const previewEntry =
+    hasCurrentRoot && focusedPath && selectedPaths.includes(focusedPath)
+      ? columns
+          .flatMap((column) => column.entries)
+          .find((entry) => entry.path === focusedPath && !entry.is_dir)
+      : undefined;
+
   // 选中文件夹时展开新列（使用函数式更新避免 columns 依赖）
   const handleSelect = useCallback(
     async (columnIndex: number, entry: FileEntry, entryIndex: number, e: React.MouseEvent) => {
+      const requestId = selectionRequests.current.begin();
       setActiveColumnIndex(columnIndex);
       onClick(entry, entryIndex, columns[columnIndex]?.entries ?? [], e);
 
@@ -247,7 +263,9 @@ export function FileColumnView({
         newEntries = filterHiddenEntries(await loadColumn(entry.path), showHiddenFiles);
       }
 
+      if (!selectionRequests.current.isCurrent(requestId)) return;
       setColumns((prev) => {
+        if (!prev[columnIndex]) return prev;
         const newColumns = prev.slice(0, columnIndex + 1);
         newColumns[columnIndex] = { ...newColumns[columnIndex], selectedPath: entry.path };
         if (entry.is_dir) {
@@ -334,19 +352,7 @@ export function FileColumnView({
                         .forEach((path) => handleMove(path, entry.path));
                     }}
                   >
-                    <SmartIcon
-                      icon={entry.is_dir ? Folder : File}
-                      className={
-                        entry.is_dir
-                          ? "h-4 w-4 shrink-0 text-blue-500"
-                          : "text-muted-foreground h-4 w-4 shrink-0"
-                      }
-                      sysIcon={
-                        entry.is_dir
-                          ? { type: "folder" }
-                          : { type: "ext", value: entry.extension || "" }
-                      }
-                    />
+                    <CompactFileThumbnail entry={entry} />
                     {editingPath === entry.path ? (
                       <Input
                         ref={renameInputRef}
@@ -385,6 +391,7 @@ export function FileColumnView({
           </div>
         </div>
       ))}
+      {previewEntry && <ColumnFilePreview key={previewEntry.path} entry={previewEntry} />}
     </div>
   );
 }

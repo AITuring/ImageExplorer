@@ -20,10 +20,4 @@ export const viewModeCommands: Record<ViewMode, AppCommand<void>> = {
     enabled: () => useViewMode.getState().viewMode !== "column",
     run: () => useViewMode.getState().setViewMode("column"),
   },
-  gallery: {
-    id: "view.gallery",
-    shortcut: "⌘4",
-    enabled: () => useViewMode.getState().viewMode !== "gallery",
-    run: () => useViewMode.getState().setViewMode("gallery"),
-  },
 };

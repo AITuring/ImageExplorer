@@ -1,4 +1,7 @@
 {
+  "preview": "File preview",
+  "col_sharpness": "Sharpness",
+  "col_exposure": "Exposure",
   "col_name": "Name",
   "col_size": "Size",
   "col_date": "Date Modified",
@@ -26,5 +29,27 @@
   "rename_mode_counter": "Counter",
   "rename_find_placeholder": "Find text...",
   "rename_pattern_placeholder": "Replace with / Add text...",
-  "rename_counter_placeholder": "{name}_{counter}"
+  "rename_counter_placeholder": "{name}_{counter}",
+  "details": {
+    "shooting": "Shooting settings",
+    "equipment": "Camera & lens",
+    "file": "File information",
+    "iso": "Sensitivity",
+    "aperture": "Aperture",
+    "shutter": "Shutter speed",
+    "focal": "Focal length",
+    "captured": "Captured at",
+    "make": "Manufacturer",
+    "model": "Camera model",
+    "lens": "Lens",
+    "dimensions": "Dimensions",
+    "size": "File size",
+    "modified": "Modified",
+    "type": "Format",
+    "location": "Photo location",
+    "latitude": "Latitude",
+    "longitude": "Longitude",
+    "map_notice": "Loading the map shares this photo location with OpenStreetMap.",
+    "load_map": "Show map"
+  }
 }

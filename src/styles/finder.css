@@ -290,8 +290,7 @@ button:focus-visible,
   background: hsl(var(--background));
   padding: 10px;
 }
-.finder-files[data-view="column"],
-.finder-files[data-view="gallery"] {
+.finder-files[data-view="column"] {
   padding: 0;
 }
 .finder-files[data-view="list"] {
@@ -516,4 +515,19 @@ button:focus-visible,
 .finder-dialog-overlay[data-state="closed"] {
   display: none;
   pointer-events: none;
+}
+
+.finder-list-sharpness {
+  width: 68px;
+}
+.finder-list-exposure {
+  width: clamp(120px, 29cqw, 280px);
+}
+
+.finder-files[data-view="list"] {
+  overflow-x: auto;
+}
+.finder-list-header,
+.finder-list-scroll {
+  min-width: 640px;
 }

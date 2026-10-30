@@ -29,6 +29,8 @@ pub struct ImageMetadata {
     pub aperture: Option<String>,
     pub focal_length: Option<String>,
     pub captured_at: Option<String>,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
 }
 
 /// A focus rectangle written by the camera. Coordinates are normalized to the
@@ -1602,6 +1604,7 @@ pub fn read_image_metadata(path: String) -> Result<Option<ImageMetadata>, String
             aperture: parse_mdls_value(&stdout, "kMDItemFNumber"),
             focal_length: parse_mdls_value(&stdout, "kMDItemFocalLength"),
             captured_at: parse_mdls_value(&stdout, "kMDItemContentCreationDate"),
+            ..Default::default()
         };
 
         if metadata.width.is_none()

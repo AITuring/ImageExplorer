@@ -1,11 +1,19 @@
+import { SharpnessBadge, PhotoParameters } from "./PhotoDetails";
+import { usePhotoMetadata } from "@/hooks/usePhotoMetadata";
+import { getPhotoMetadataSummary } from "@/lib/photoMetadata";
+import { isAnalyzablePhoto } from "@/lib/photoAnalysis";
+import type { VisibleSharpness } from "@/hooks/useVisibleSharpness";
 import { memo, useEffect, useRef } from "react";
 import type { FileEntry } from "@/types/index";
-import { FileThumbnail } from "@/components/FileThumbnail";
+import { CompactFileThumbnail } from "./CompactFileThumbnail";
 import { Input } from "@/components/ui/input";
 import { formatFileSize, formatDate } from "@/utils/format";
 
 interface FileListItemProps {
   entry: FileEntry;
+  visibleSharpness?: VisibleSharpness;
+  isInViewport?: boolean;
+  isScrolling?: boolean;
   isSelected: boolean;
   isFocused?: boolean;
   isEditing: boolean;
@@ -21,6 +29,9 @@ interface FileListItemProps {
 
 export const FileListItem = memo(function FileListItem({
   entry,
+  visibleSharpness,
+  isInViewport = true,
+  isScrolling = false,
   isSelected,
   isFocused = false,
   isEditing,
@@ -32,6 +43,9 @@ export const FileListItem = memo(function FileListItem({
   onNameClick,
   onDoubleClick,
 }: FileListItemProps) {
+  const metadata = usePhotoMetadata(entry, isInViewport && !isScrolling);
+  const summary = getPhotoMetadataSummary(metadata);
+  const isPhoto = isAnalyzablePhoto(entry);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -53,14 +67,7 @@ export const FileListItem = memo(function FileListItem({
       onDoubleClick={onDoubleClick}
     >
       <div className="flex min-w-0 flex-1 items-center gap-3">
-        <FileThumbnail
-          entry={entry}
-          size={24}
-          className="h-6 w-6 shrink-0 rounded object-contain"
-          fallbackClassName={
-            entry.is_dir ? "h-5 w-5 text-blue-500" : "text-muted-foreground h-5 w-5"
-          }
-        />
+        <CompactFileThumbnail entry={entry} isInViewport={isInViewport} isScrolling={isScrolling} />
         {isEditing ? (
           <Input
             ref={inputRef}
@@ -97,6 +104,12 @@ export const FileListItem = memo(function FileListItem({
             {entry.name}
           </span>
         )}
+      </div>
+      <div className="finder-list-sharpness shrink-0 px-2">
+        {isPhoto && <SharpnessBadge verdict={visibleSharpness} />}
+      </div>
+      <div className="finder-list-exposure shrink-0 px-2">
+        {isPhoto && <PhotoParameters summary={summary} compact />}
       </div>
       <div className="text-muted-foreground w-24 shrink-0 px-2 text-right">
         {entry.is_dir ? "--" : formatFileSize(entry.size)}

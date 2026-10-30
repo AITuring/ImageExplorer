@@ -1,4 +1,7 @@
 {
+  "preview": "文件预览",
+  "col_sharpness": "清晰度",
+  "col_exposure": "拍摄参数",
   "col_name": "名称",
   "col_size": "大小",
   "col_date": "修改日期",
@@ -26,5 +29,27 @@
   "rename_mode_counter": "计数器",
   "rename_find_placeholder": "查找文本...",
   "rename_pattern_placeholder": "替换为 / 添加文本...",
-  "rename_counter_placeholder": "{name}_{counter}"
+  "rename_counter_placeholder": "{name}_{counter}",
+  "details": {
+    "shooting": "拍摄参数",
+    "equipment": "相机与镜头",
+    "file": "文件信息",
+    "iso": "感光度",
+    "aperture": "光圈",
+    "shutter": "快门速度",
+    "focal": "焦距",
+    "captured": "拍摄时间",
+    "make": "制造商",
+    "model": "相机型号",
+    "lens": "镜头",
+    "dimensions": "图像尺寸",
+    "size": "文件大小",
+    "modified": "修改时间",
+    "type": "文件格式",
+    "location": "拍摄位置",
+    "latitude": "纬度",
+    "longitude": "经度",
+    "map_notice": "加载地图会将此拍摄位置发送给 OpenStreetMap。",
+    "load_map": "显示地图"
+  }
 }

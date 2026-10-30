@@ -28,7 +28,6 @@ import { FileListHeader } from "./components/FileListHeader";
 import { FileListItem } from "./components/FileListItem";
 import { FileGridItem } from "./components/FileGridItem";
 import { FileColumnView, type ColumnSelectionContext } from "./components/FileColumnView";
-import { FileGalleryView } from "./components/FileGalleryView";
 import { BatchRenameDialog } from "@/components/BatchRenameDialog";
 import { readFileDragData } from "@/lib/dragData";
 import { makeNativeFileDragGestureHandlers } from "@/lib/nativeFileDragGesture";
@@ -308,12 +307,10 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   // === 虚拟滚动 ===
   const listScrollRef = useRef<HTMLDivElement>(null);
   const gridScrollRef = useRef<HTMLDivElement>(null);
-  const galleryScrollRef = useRef<HTMLDivElement>(null);
   const scrollPositionsRef = useRef<Record<string, number>>({});
 
   const getScrollContainer = useCallback((mode: typeof viewMode) => {
     if (mode === "list") return listScrollRef.current;
-    if (mode === "gallery") return galleryScrollRef.current;
     if (mode === "icon") return gridScrollRef.current;
     return null;
   }, []);
@@ -376,11 +373,17 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     () => new Set(gridViewportEntries.map((entry) => entry.path)),
     [gridViewportEntries]
   );
+  const listStart = listVirtualizer.range?.startIndex ?? 0;
+  const listEnd = listVirtualizer.range?.endIndex ?? -1;
+  const listViewportEntries = useMemo(
+    () => (viewMode === "list" ? sortedEntries.slice(listStart, listEnd + 1) : []),
+    [viewMode, sortedEntries, listStart, listEnd]
+  );
   const visibleSharpness = useVisibleSharpness(
-    gridViewportEntries,
-    photoAnalysisEnabled && viewMode === "icon",
+    viewMode === "list" ? listViewportEntries : gridViewportEntries,
+    viewMode === "list" || (photoAnalysisEnabled && viewMode === "icon"),
     selectedPath,
-    gridIsScrolling
+    viewMode === "list" ? listVirtualizer.isScrolling : gridIsScrolling
   );
 
   const photoAnalysisEnabledForFolder = photoAnalysisEnabled && viewMode === "icon";
@@ -680,24 +683,6 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
               handleMove={handleMove}
               showHiddenFiles={showHiddenFiles}
             />
-          ) : viewMode === "gallery" ? (
-            <FileGalleryView
-              sortedEntries={sortedEntries}
-              selectedPaths={selectedPaths}
-              focusedPath={selectedPath}
-              selectedFileEntries={selectedFileEntries}
-              editingPath={editingPath}
-              editValue={editValue}
-              fileActions={fileActions}
-              onEditValueChange={setEditValue}
-              onSubmitRename={handleSubmitRename}
-              onCancelRename={handleCancelRename}
-              onClick={(entry, index, e) => handleClick(entry, index, e)}
-              onNameClick={(entry, index, e) => handleNameClick(entry, index, e)}
-              onDoubleClick={handleOpen}
-              handleMove={handleMove}
-              scrollContainerRef={galleryScrollRef}
-            />
           ) : viewMode === "list" ? (
             <>
               <FileListHeader
@@ -706,7 +691,10 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                 onSort={handleSort}
               />
               {emptyMessage}
-              <div ref={listScrollRef} className="h-[calc(100%-2.5rem)] overflow-y-auto">
+              <div
+                ref={listScrollRef}
+                className="finder-list-scroll h-[calc(100%-2.5rem)] overflow-y-auto"
+              >
                 <div
                   style={{
                     height: `${listVirtualizer.getTotalSize()}px`,
@@ -740,6 +728,11 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                         >
                           <FileListItem
                             entry={entry}
+                            visibleSharpness={visibleSharpness.get(entry.path)}
+                            isInViewport={
+                              virtualItem.index >= listStart && virtualItem.index <= listEnd
+                            }
+                            isScrolling={listVirtualizer.isScrolling}
                             isSelected={selectedPathSet.has(entry.path)}
                             isFocused={selectedPath === entry.path}
                             isEditing={editingPath === entry.path}

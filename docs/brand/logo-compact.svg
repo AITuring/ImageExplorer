@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none" role="img" aria-labelledby="title">
+  <title id="title">ImageExplorer</title>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#1755A5"/>
+  <path d="M13 23V18C13 15.8 14.8 14 17 14H43" stroke="#8BC8F1" stroke-width="4" stroke-linecap="round"/>
+  <rect x="17" y="21" width="36" height="29" rx="5" fill="#153865" stroke="#F1F9FF" stroke-width="4"/>
+  <circle cx="26" cy="30" r="2.5" fill="#DFF9EF"/>
+  <path d="M19 43L29 33L36 40L44 30L51 40V45C51 46.7 49.7 48 48 48H22C20.3 48 19 46.7 19 45V43Z" fill="#7CE0CB"/>
+  <path d="M19 43L29 33L43 48H22C20.3 48 19 46.7 19 45V43Z" fill="#2998BB"/>
+</svg>

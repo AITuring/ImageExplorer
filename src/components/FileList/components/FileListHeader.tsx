@@ -23,7 +23,8 @@ export function FileListHeader({ sortField, sortDirection, onSort }: FileListHea
         {sortField === "name" && <SortIcon className="h-3 w-3" />}
       </div>
 
-      <div className="bg-border/40 mx-1 h-3 w-[1px]" />
+      <div className="finder-list-sharpness shrink-0 px-2">{t("file_list.col_sharpness")}</div>
+      <div className="finder-list-exposure shrink-0 px-2">{t("file_list.col_exposure")}</div>
 
       <div
         className="hover:text-foreground flex w-24 shrink-0 cursor-pointer items-center justify-end gap-1 px-2 text-right transition-colors"

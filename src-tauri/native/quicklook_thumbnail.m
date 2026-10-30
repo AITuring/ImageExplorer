@@ -350,6 +350,20 @@ uint8_t *imageexplorer_image_metadata(const char *path, size_t *length) {
             imageexplorer_first_value(exif, @[(NSString *)kCGImagePropertyExifDateTimeOriginal])
         );
 
+        NSDictionary *gps = properties[(NSString *)kCGImagePropertyGPSDictionary];
+        NSNumber *latitude = gps[(NSString *)kCGImagePropertyGPSLatitude];
+        NSNumber *longitude = gps[(NSString *)kCGImagePropertyGPSLongitude];
+        if ([latitude isKindOfClass:[NSNumber class]] && [longitude isKindOfClass:[NSNumber class]]) {
+            double lat = latitude.doubleValue;
+            double lon = longitude.doubleValue;
+            if ([gps[(NSString *)kCGImagePropertyGPSLatitudeRef] isEqual:@"S"]) lat = -lat;
+            if ([gps[(NSString *)kCGImagePropertyGPSLongitudeRef] isEqual:@"W"]) lon = -lon;
+            if (lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180) {
+                metadata[@"latitude"] = @(lat);
+                metadata[@"longitude"] = @(lon);
+            }
+        }
+
         if (metadata.count == 0) {
             return NULL;
         }

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none" role="img" aria-labelledby="title">
+  <title id="title">ImageExplorer monochrome symbol</title>
+  <path d="M8 23V16C8 12.7 10.7 10 14 10H43" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
+  <rect x="15" y="19" width="42" height="35" rx="6" stroke="currentColor" stroke-width="4"/>
+  <circle cx="26" cy="30" r="3" fill="currentColor"/>
+  <path d="M17 45L29 33L36 41L46 29L55 42V48C55 50.2 53.2 52 51 52H21C18.8 52 17 50.2 17 48V45Z" fill="currentColor"/>
+</svg>
