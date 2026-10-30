@@ -282,7 +282,7 @@ export function TabBar() {
 
   return (
     <div
-      className="bg-muted/40 flex items-center gap-1 overflow-x-auto px-2 py-1.5"
+      className="finder-tabs flex shrink-0 items-center gap-1 overflow-x-auto px-2 py-1"
       onDragLeave={handleDragLeave}
       onDragOver={(e) => {
         e.preventDefault();

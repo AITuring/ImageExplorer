@@ -16,7 +16,7 @@ export function PhotoAnalysisProgressIndicator({ progress }: PhotoAnalysisProgre
     const doneLabel = t("common.photo_analysis_progress_done", { total: progress.total });
     return (
       <div
-        className="text-muted-foreground hidden max-w-57.5 shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-xs sm:flex"
+        className="text-muted-foreground border-border/40 flex shrink-0 items-center gap-1.5 border-b px-3 py-1 text-xs"
         role="status"
         aria-live="polite"
         aria-label={doneLabel}
@@ -50,24 +50,24 @@ export function PhotoAnalysisProgressIndicator({ progress }: PhotoAnalysisProgre
 
   return (
     <div
-      className="text-muted-foreground hidden max-w-57.5 min-w-44 shrink-0 items-center gap-2 rounded-md border border-transparent px-1.5 py-1 sm:flex"
+      className="text-muted-foreground border-border/40 flex shrink-0 items-center gap-2 border-b px-3 py-1"
       role="status"
       aria-live="polite"
       aria-label={label}
       title={label}
     >
       <Scan className="text-primary h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center justify-between gap-2 text-[10px] leading-3">
+      <div className="flex min-w-0 flex-1 items-center gap-3">
+        <div className="flex shrink-0 items-center gap-2 text-[10px] leading-3">
           <span className="truncate">{t("common.photo_analysis_label")}</span>
           <span className="shrink-0 font-mono tabular-nums">{percentage}%</span>
         </div>
-        <div className="mt-1 truncate text-[10px] leading-3">
+        <div className="min-w-0 truncate text-[10px] leading-3">
           <span className="text-foreground">{stageLabel}</span>
           <span className="ml-1">{stageDetail}</span>
         </div>
         <div
-          className="bg-muted mt-1 h-1.5 overflow-hidden rounded-full"
+          className="bg-muted ml-auto h-1.5 w-20 shrink-0 overflow-hidden rounded-full"
           role="progressbar"
           aria-valuemin={0}
           aria-valuemax={100}
@@ -78,9 +78,6 @@ export function PhotoAnalysisProgressIndicator({ progress }: PhotoAnalysisProgre
             className="bg-primary h-full rounded-full transition-[width] duration-200 ease-out"
             style={{ width: `${percentage}%` }}
           />
-        </div>
-        <div className="mt-1 truncate text-[9px] leading-3 opacity-70">
-          {t("common.photo_analysis_flow")}
         </div>
       </div>
     </div>

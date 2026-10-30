@@ -31,7 +31,12 @@ interface FileColumnViewProps {
   onSubmitRename: () => void;
   onCancelRename: () => void;
   onContextChange: (context: ColumnSelectionContext | null) => void;
-  onClick: (entry: FileEntry, index: number, columnEntries: FileEntry[], e: React.MouseEvent) => void;
+  onClick: (
+    entry: FileEntry,
+    index: number,
+    columnEntries: FileEntry[],
+    e: React.MouseEvent
+  ) => void;
   onDoubleClick: (entry: FileEntry) => void;
   onNavigate: (path: string) => void;
   handleMove: (src: string, dest: string) => void;
@@ -297,7 +302,8 @@ export function FileColumnView({
                 >
                   <div
                     {...nativeDragHandlers}
-                    className={`flex cursor-default items-center gap-2 px-2 py-1.5 text-sm transition-colors ${
+                    data-selected={isSelected}
+                    className={`finder-column-row flex cursor-default items-center gap-2 px-2 py-1.5 text-sm transition-colors ${
                       isSelected || isColumnSelected ? "bg-accent" : "hover:bg-accent/50"
                     } ${focusedPath === entry.path ? "outline-primary outline outline-1 outline-offset-[-1px]" : ""}`}
                     onClick={(e) => handleSelect(colIdx, entry, entryIdx, e)}

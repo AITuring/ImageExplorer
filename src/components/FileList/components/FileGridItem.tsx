@@ -87,7 +87,8 @@ export const FileGridItem = memo(function FileGridItem({
 
   return (
     <div
-      className={`group flex cursor-default flex-col items-center rounded-md p-2 transition-colors ${
+      data-selected={isSelected}
+      className={`finder-grid-item group flex cursor-default flex-col items-center rounded-md p-2 transition-colors ${
         isSelected
           ? "bg-accent/80 ring-primary/20 ring-1"
           : "hover:bg-accent/60 hover:ring-border/60 ring-1 ring-transparent"

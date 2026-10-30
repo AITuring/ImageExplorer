@@ -36,9 +36,6 @@ import {
   enqueueFileOperation,
 } from "@/lib/fileOperations";
 
-// 省略号模式: "start" = 前面省略, "end" = 后面省略
-type EllipsisMode = "start" | "end";
-
 interface TopBarProps {
   onNavigate?: (path: string, selectFile?: string) => void;
 }
@@ -89,7 +86,6 @@ export function TopBar({ onNavigate }: TopBarProps) {
     () => filterHiddenEntries(searchResults, showHiddenFiles),
     [searchResults, showHiddenFiles]
   );
-  const [ellipsisMode] = useState<EllipsisMode>("end");
 
   const inputRef = useRef<HTMLInputElement>(null);
   const [isSearching, setIsSearching] = useState(false);
@@ -446,321 +442,295 @@ export function TopBar({ onNavigate }: TopBarProps) {
   };
 
   return (
-    <header
-      className="border-border/50 bg-background/60 relative z-40 flex h-12 shrink-0 items-center gap-3 border-b px-4 backdrop-blur-xl"
-      onContextMenu={(e) => e.preventDefault()}
-    >
-      {/* 导航按钮 */}
-      <div className="flex items-center gap-1">
-        <button
-          className={`rounded-md p-1.5 transition-colors ${
-            canGoBack
-              ? "text-muted-foreground hover:bg-accent hover:text-foreground"
-              : "text-muted-foreground/30 cursor-not-allowed"
-          }`}
-          onClick={goBack}
-          disabled={!canGoBack}
-          aria-label={t("nav.back")}
-          title={t("nav.back")}
-        >
-          <ChevronLeft className="h-4 w-4" />
-        </button>
-        <button
-          className={`rounded-md p-1.5 transition-colors ${
-            canGoForward
-              ? "text-muted-foreground hover:bg-accent hover:text-foreground"
-              : "text-muted-foreground/30 cursor-not-allowed"
-          }`}
-          onClick={goForward}
-          disabled={!canGoForward}
-          aria-label={t("nav.forward")}
-          title={t("nav.forward")}
-        >
-          <ChevronRight className="h-4 w-4" />
-        </button>
-      </div>
-      {/* 地址栏 */}
-      <div className="flex min-w-0 flex-1 items-center">
-        {isEditing ? (
-          <AppContextMenu type="text-input" textInputActions={textInputActions} asChild>
+    <>
+      <header
+        className="finder-toolbar relative z-40 flex shrink-0 items-center"
+        data-tauri-drag-region
+        onContextMenu={(e) => e.preventDefault()}
+      >
+        {/* 导航按钮 */}
+        <div className="finder-control-group flex items-center">
+          <button
+            className={`rounded-md p-1.5 transition-colors ${
+              canGoBack
+                ? "text-muted-foreground hover:bg-accent hover:text-foreground"
+                : "text-muted-foreground/30 cursor-not-allowed"
+            }`}
+            onClick={goBack}
+            disabled={!canGoBack}
+            aria-label={t("nav.back")}
+            title={t("nav.back")}
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+          <button
+            className={`rounded-md p-1.5 transition-colors ${
+              canGoForward
+                ? "text-muted-foreground hover:bg-accent hover:text-foreground"
+                : "text-muted-foreground/30 cursor-not-allowed"
+            }`}
+            onClick={goForward}
+            disabled={!canGoForward}
+            aria-label={t("nav.forward")}
+            title={t("nav.forward")}
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
+        {/* 地址栏 */}
+        <div className="finder-location flex min-w-0 flex-1 items-center">
+          {isEditing ? (
+            <AppContextMenu type="text-input" textInputActions={textInputActions} asChild>
+              <input
+                ref={inputRef}
+                type="text"
+                value={editValue}
+                onChange={(e) => setEditValue(e.target.value)}
+                onBlur={handleSubmit}
+                onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
+                className="bg-accent/50 h-8 w-full rounded-md border-none px-3 text-sm shadow-[0_0_0_2px_rgba(0,0,0,0.08)] outline-none"
+                autoFocus
+              />
+            </AppContextMenu>
+          ) : (
+            <AppContextMenu type="text-input" textInputActions={addressBarActions} asChild>
+              <button
+                type="button"
+                className="finder-location-button flex min-w-0 items-center gap-2"
+                onClick={() => setIsEditing(true)}
+                title={currentPath}
+                aria-label={t("nav.edit_path")}
+              >
+                <Folder className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span className="truncate">{pathSegments[pathSegments.length - 1] || "/"}</span>
+              </button>
+            </AppContextMenu>
+          )}
+        </div>
+
+        {/* 视图切换 */}
+        <div className="finder-control-group finder-view-modes flex shrink-0 items-center">
+          <button
+            className={`rounded-sm p-1 transition-colors ${
+              viewMode === "icon"
+                ? "bg-accent text-accent-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => runCommand(viewModeCommands.icon)}
+            disabled={!isCommandEnabled(viewModeCommands.icon)}
+            aria-pressed={viewMode === "icon"}
+            title={t("common.view_icon")}
+          >
+            <LayoutGrid className="h-4 w-4" />
+          </button>
+          <button
+            className={`rounded-sm p-1 transition-colors ${
+              viewMode === "list"
+                ? "bg-accent text-accent-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => runCommand(viewModeCommands.list)}
+            disabled={!isCommandEnabled(viewModeCommands.list)}
+            aria-pressed={viewMode === "list"}
+            title={t("common.view_list")}
+          >
+            <ListIcon className="h-4 w-4" />
+          </button>
+          <button
+            className={`rounded-sm p-1 transition-colors ${
+              viewMode === "column"
+                ? "bg-accent text-accent-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => runCommand(viewModeCommands.column)}
+            disabled={!isCommandEnabled(viewModeCommands.column)}
+            aria-pressed={viewMode === "column"}
+            title={t("common.view_column")}
+          >
+            <Columns className="h-4 w-4" />
+          </button>
+          <button
+            className={`rounded-sm p-1 transition-colors ${
+              viewMode === "gallery"
+                ? "bg-accent text-accent-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => runCommand(viewModeCommands.gallery)}
+            disabled={!isCommandEnabled(viewModeCommands.gallery)}
+            aria-pressed={viewMode === "gallery"}
+            title={t("common.view_gallery")}
+          >
+            <GalleryHorizontalEnd className="h-4 w-4" />
+          </button>
+          {viewMode === "icon" && (
+            <button
+              type="button"
+              className={`finder-analysis-toggle border-border/50 focus-visible:ring-ring ml-1 rounded-sm border-l p-1 pl-1 transition-colors focus-visible:ring-2 focus-visible:outline-none ${
+                photoAnalysisEnabled
+                  ? "bg-primary/15 text-primary"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
+              }`}
+              onClick={togglePhotoAnalysis}
+              title={t(
+                photoAnalysisEnabled
+                  ? "common.photo_analysis_disable"
+                  : "common.photo_analysis_enable"
+              )}
+              aria-label={t(
+                photoAnalysisEnabled
+                  ? "common.photo_analysis_disable"
+                  : "common.photo_analysis_enable"
+              )}
+              aria-pressed={photoAnalysisEnabled}
+            >
+              <Scan className="h-4 w-4" aria-hidden="true" />
+              <span>{t("common.photo_sharpness_toggle")}</span>
+            </button>
+          )}
+        </div>
+
+        {/* 搜索框 */}
+        <div className="finder-search relative shrink-0" ref={searchInputRef}>
+          <Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
+          <AppContextMenu type="text-input" textInputActions={searchInputActions} asChild>
             <input
-              ref={inputRef}
               type="text"
-              value={editValue}
-              onChange={(e) => setEditValue(e.target.value)}
-              onBlur={handleSubmit}
-              onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
-              className="bg-accent/50 h-8 w-full rounded-md border-none px-3 text-sm shadow-[0_0_0_2px_rgba(0,0,0,0.08)] outline-none"
-              autoFocus
+              value={searchQuery}
+              onChange={(e) => handleSearchInputChange(e.target.value)}
+              onFocus={() => searchQuery && visibleSearchResults.length > 0 && setShowResults(true)}
+              onCompositionStart={() => (isComposingRef.current = true)}
+              onCompositionEnd={(e) => {
+                isComposingRef.current = false;
+                // 组合结束后立即触发搜索
+                handleSearchInputChange(e.currentTarget.value);
+              }}
+              placeholder={t("nav.search_placeholder")}
+              aria-label={t("nav.search_placeholder")}
+              className="finder-search-input placeholder:text-muted-foreground h-8 w-full pr-8 pl-9 outline-none"
             />
           </AppContextMenu>
-        ) : (
-          <AppContextMenu type="text-input" textInputActions={addressBarActions} asChild>
-            <div
-              className={`hover:border-border hover:bg-accent/50 flex h-8 min-w-0 flex-1 cursor-text items-center rounded-md border border-transparent px-2 text-sm transition-colors ${
-                ellipsisMode === "start" ? "flex-row-reverse justify-end" : ""
-              }`}
+
+          {/* 清空按钮 */}
+          {searchQuery && (
+            <button
+              className="text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2 rounded-full p-0.5 transition-colors"
               onClick={() => {
-                // 防止拖拽时误触编辑
-                setIsEditing(true);
+                handleSearchInputChange("");
+                searchInputRef.current?.querySelector("input")?.focus();
               }}
-              title={currentPath}
             >
-              <div
-                className={`flex min-w-0 items-center gap-1 overflow-hidden ${
-                  ellipsisMode === "start" ? "flex-row-reverse" : ""
-                }`}
-              >
-                {/* 面包屑渲染逻辑 */}
-                {/* 面包屑渲染逻辑 */}
-                <div className="no-scrollbar mask-gradient-right flex items-center overflow-x-auto">
-                  {pathSegments.map((segment, index) => {
-                    // 构建当前段的完整路径
-                    const path = "/" + pathSegments.slice(0, index + 1).join("/");
+              <X className="h-3 w-3" />
+            </button>
+          )}
 
-                    return (
-                      <span key={index} className="flex shrink-0 items-center">
-                        {index > 0 && <span className="text-muted-foreground mx-1">/</span>}
-                        <button
-                          className="hover:bg-accent shrink-0 rounded px-1 py-0.5 whitespace-nowrap transition-colors"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            navigateTo(path);
-                          }}
-                        >
-                          {segment}
-                        </button>
-                      </span>
-                    );
-                  })}
+          {/* 搜索结果下拉框 */}
+          {showResults && (
+            <div className="finder-popover text-popover-foreground absolute top-full right-0 z-[100] mt-2 w-[min(500px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border shadow-xl">
+              {isSearching ? (
+                <div className="text-muted-foreground flex items-center justify-center p-4 text-sm">
+                  {t("search.searching")}
                 </div>
-              </div>
-            </div>
-          </AppContextMenu>
-        )}
-      </div>
+              ) : visibleSearchResults.length > 0 ? (
+                <>
+                  <div className="bg-muted/50 text-muted-foreground flex justify-between px-3 py-1.5 text-xs font-medium">
+                    <span>{t("search.results_label")}</span>
+                  </div>
+                  <ul className="max-h-[60vh] overflow-y-auto py-1">
+                    {visibleSearchResults.map((result) => {
+                      const entry = toSearchFileEntry(result);
+                      const isSelected = selectedSearchPaths.includes(result.path);
+                      const isEditing = editingSearchPath === result.path;
 
-      {/* 视图切换 */}
-      <div className="border-border/50 bg-background/50 mx-2 flex items-center gap-1 rounded-md border p-0.5">
-        <button
-          className={`rounded-sm p-1 transition-colors ${
-            viewMode === "icon"
-              ? "bg-accent text-accent-foreground"
-              : "text-muted-foreground hover:text-foreground"
-          }`}
-          onClick={() => runCommand(viewModeCommands.icon)}
-          disabled={!isCommandEnabled(viewModeCommands.icon)}
-          aria-pressed={viewMode === "icon"}
-          title={t("common.view_icon")}
-        >
-          <LayoutGrid className="h-4 w-4" />
-        </button>
-        <button
-          className={`rounded-sm p-1 transition-colors ${
-            viewMode === "list"
-              ? "bg-accent text-accent-foreground"
-              : "text-muted-foreground hover:text-foreground"
-          }`}
-          onClick={() => runCommand(viewModeCommands.list)}
-          disabled={!isCommandEnabled(viewModeCommands.list)}
-          aria-pressed={viewMode === "list"}
-          title={t("common.view_list")}
-        >
-          <ListIcon className="h-4 w-4" />
-        </button>
-        <button
-          className={`rounded-sm p-1 transition-colors ${
-            viewMode === "column"
-              ? "bg-accent text-accent-foreground"
-              : "text-muted-foreground hover:text-foreground"
-          }`}
-          onClick={() => runCommand(viewModeCommands.column)}
-          disabled={!isCommandEnabled(viewModeCommands.column)}
-          aria-pressed={viewMode === "column"}
-          title={t("common.view_column")}
-        >
-          <Columns className="h-4 w-4" />
-        </button>
-        <button
-          className={`rounded-sm p-1 transition-colors ${
-            viewMode === "gallery"
-              ? "bg-accent text-accent-foreground"
-              : "text-muted-foreground hover:text-foreground"
-          }`}
-          onClick={() => runCommand(viewModeCommands.gallery)}
-          disabled={!isCommandEnabled(viewModeCommands.gallery)}
-          aria-pressed={viewMode === "gallery"}
-          title={t("common.view_gallery")}
-        >
-          <GalleryHorizontalEnd className="h-4 w-4" />
-        </button>
-        {viewMode === "icon" && (
-          <button
-            type="button"
-            className={`border-border/50 focus-visible:ring-ring ml-1 rounded-sm border-l p-1 pl-1 transition-colors focus-visible:ring-2 focus-visible:outline-none ${
-              photoAnalysisEnabled
-                ? "bg-primary/15 text-primary"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground"
-            }`}
-            onClick={togglePhotoAnalysis}
-            title={t(
-              photoAnalysisEnabled
-                ? "common.photo_analysis_disable"
-                : "common.photo_analysis_enable"
-            )}
-            aria-label={t(
-              photoAnalysisEnabled
-                ? "common.photo_analysis_disable"
-                : "common.photo_analysis_enable"
-            )}
-            aria-pressed={photoAnalysisEnabled}
-          >
-            <Scan className="h-4 w-4" aria-hidden="true" />
-          </button>
-        )}
-      </div>
-
-      {/* 搜索框 */}
-      <div className="relative w-64 shrink-0" ref={searchInputRef}>
-        <Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
-        <AppContextMenu type="text-input" textInputActions={searchInputActions} asChild>
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => handleSearchInputChange(e.target.value)}
-            onFocus={() => searchQuery && visibleSearchResults.length > 0 && setShowResults(true)}
-            onCompositionStart={() => (isComposingRef.current = true)}
-            onCompositionEnd={(e) => {
-              isComposingRef.current = false;
-              // 组合结束后立即触发搜索
-              handleSearchInputChange(e.currentTarget.value);
-            }}
-            placeholder={t("nav.search_placeholder")}
-            className="bg-accent/50 placeholder:text-muted-foreground h-8 w-full rounded-md border-none pr-8 pl-9 text-sm transition-shadow outline-none focus:shadow-[0_0_0_2px_rgba(0,0,0,0.08)]"
-          />
-        </AppContextMenu>
-
-        {/* 清空按钮 */}
-        {searchQuery && (
-          <button
-            className="text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2 rounded-full p-0.5 transition-colors"
-            onClick={() => {
-              handleSearchInputChange("");
-              searchInputRef.current?.querySelector("input")?.focus();
-            }}
-          >
-            <X className="h-3 w-3" />
-          </button>
-        )}
-
-        {/* 搜索结果下拉框 */}
-        {showResults && (
-          <div className="bg-popover text-popover-foreground absolute top-full right-0 z-[100] mt-2 w-[min(500px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border shadow-xl">
-            {isSearching ? (
-              <div className="text-muted-foreground flex items-center justify-center p-4 text-sm">
-                {t("search.searching")}
-              </div>
-            ) : visibleSearchResults.length > 0 ? (
-              <>
-                <div className="bg-muted/50 text-muted-foreground flex justify-between px-3 py-1.5 text-xs font-medium">
-                  <span>{t("search.results_label")}</span>
-                </div>
-                <ul className="max-h-[60vh] overflow-y-auto py-1">
-                  {visibleSearchResults.map((result) => {
-                    const entry = toSearchFileEntry(result);
-                    const isSelected = selectedSearchPaths.includes(result.path);
-                    const isEditing = editingSearchPath === result.path;
-
-                    return (
-                      <li key={result.path}>
-                        <AppContextMenu
-                          type={result.is_dir ? "folder" : "file"}
-                          entry={entry}
-                          selectedEntries={selectedSearchEntries}
-                          fileActions={searchFileActions}
-                          asChild
-                        >
-                          <div
-                            className={`flex min-w-0 items-center gap-2 px-3 py-2 text-sm ${
-                              isSelected ? "bg-accent" : "hover:bg-accent"
-                            }`}
-                            onContextMenu={() => handleSearchRowContextMenu(result)}
+                      return (
+                        <li key={result.path}>
+                          <AppContextMenu
+                            type={result.is_dir ? "folder" : "file"}
+                            entry={entry}
+                            selectedEntries={selectedSearchEntries}
+                            fileActions={searchFileActions}
+                            asChild
                           >
-                            {isEditing ? (
-                              <>
-                                <SmartIcon
-                                  icon={result.is_dir ? Folder : File}
-                                  className="text-muted-foreground h-4 w-4 shrink-0"
-                                  sysIcon={
-                                    result.is_dir
-                                      ? { type: "folder" }
-                                      : { type: "ext", value: result.extension || "" }
-                                  }
-                                />
-                                <input
-                                  value={editingSearchValue}
-                                  onChange={(event) => setEditingSearchValue(event.target.value)}
-                                  onBlur={() => void submitSearchRename()}
-                                  onKeyDown={(event) => {
-                                    event.stopPropagation();
-                                    if (event.key === "Enter") {
-                                      event.preventDefault();
-                                      void submitSearchRename();
-                                    } else if (event.key === "Escape") {
-                                      event.preventDefault();
-                                      setEditingSearchPath(null);
+                            <div
+                              className={`flex min-w-0 items-center gap-2 px-3 py-2 text-sm ${
+                                isSelected ? "bg-accent" : "hover:bg-accent"
+                              }`}
+                              onContextMenu={() => handleSearchRowContextMenu(result)}
+                            >
+                              {isEditing ? (
+                                <>
+                                  <SmartIcon
+                                    icon={result.is_dir ? Folder : File}
+                                    className="text-muted-foreground h-4 w-4 shrink-0"
+                                    sysIcon={
+                                      result.is_dir
+                                        ? { type: "folder" }
+                                        : { type: "ext", value: result.extension || "" }
                                     }
-                                  }}
-                                  className="bg-background min-w-0 flex-1 rounded border px-1.5 py-0.5 outline-none focus-visible:ring-1"
-                                  autoFocus
-                                  aria-label={t("context_menu.rename")}
-                                />
-                              </>
-                            ) : (
-                              <button
-                                type="button"
-                                className="focus-visible:ring-primary/60 flex min-w-0 flex-1 items-center gap-2 text-left outline-none focus-visible:ring-2"
-                                onClick={(event) => handleSearchRowClick(result, event)}
-                                title={result.path}
-                              >
-                                <SmartIcon
-                                  icon={result.is_dir ? Folder : File}
-                                  className={
-                                    result.is_dir
-                                      ? "h-4 w-4 shrink-0 text-blue-500"
-                                      : "text-muted-foreground h-4 w-4 shrink-0"
-                                  }
-                                  sysIcon={
-                                    result.is_dir
-                                      ? { type: "folder" }
-                                      : { type: "ext", value: result.extension || "" }
-                                  }
-                                />
-                                <span className="min-w-0 flex-1 truncate">{result.name}</span>
-                                <span className="text-muted-foreground max-w-[42%] min-w-0 shrink truncate text-xs opacity-60">
-                                  {result.path}
-                                </span>
-                              </button>
-                            )}
-                          </div>
-                        </AppContextMenu>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </>
-            ) : (
-              <div className="text-muted-foreground p-4 text-center text-sm">
-                {t("search.no_results")}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
+                                  />
+                                  <input
+                                    value={editingSearchValue}
+                                    onChange={(event) => setEditingSearchValue(event.target.value)}
+                                    onBlur={() => void submitSearchRename()}
+                                    onKeyDown={(event) => {
+                                      event.stopPropagation();
+                                      if (event.key === "Enter") {
+                                        event.preventDefault();
+                                        void submitSearchRename();
+                                      } else if (event.key === "Escape") {
+                                        event.preventDefault();
+                                        setEditingSearchPath(null);
+                                      }
+                                    }}
+                                    className="bg-background min-w-0 flex-1 rounded border px-1.5 py-0.5 outline-none focus-visible:ring-1"
+                                    autoFocus
+                                    aria-label={t("context_menu.rename")}
+                                  />
+                                </>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="focus-visible:ring-primary/60 flex min-w-0 flex-1 items-center gap-2 text-left outline-none focus-visible:ring-2"
+                                  onClick={(event) => handleSearchRowClick(result, event)}
+                                  title={result.path}
+                                >
+                                  <SmartIcon
+                                    icon={result.is_dir ? Folder : File}
+                                    className={
+                                      result.is_dir
+                                        ? "h-4 w-4 shrink-0 text-blue-500"
+                                        : "text-muted-foreground h-4 w-4 shrink-0"
+                                    }
+                                    sysIcon={
+                                      result.is_dir
+                                        ? { type: "folder" }
+                                        : { type: "ext", value: result.extension || "" }
+                                    }
+                                  />
+                                  <span className="min-w-0 flex-1 truncate">{result.name}</span>
+                                  <span className="text-muted-foreground max-w-[42%] min-w-0 shrink truncate text-xs opacity-60">
+                                    {result.path}
+                                  </span>
+                                </button>
+                              )}
+                            </div>
+                          </AppContextMenu>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </>
+              ) : (
+                <div className="text-muted-foreground p-4 text-center text-sm">
+                  {t("search.no_results")}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </header>
       {viewMode === "icon" && photoAnalysisEnabled && photoAnalysisScope === currentPath && (
         <PhotoAnalysisProgressIndicator progress={photoAnalysisProgress} />
       )}
-    </header>
+    </>
   );
 }

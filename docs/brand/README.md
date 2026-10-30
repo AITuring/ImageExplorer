@@ -34,3 +34,11 @@ cp /private/tmp/imageexplorer-approved-sizes/64x64.png public/logo-menu.png
 > Background extraction ONLY for the approved application icon. Remove the white/light gray background completely and produce true transparent alpha outside the folder and its papers. Preserve the original foreground precisely: blue thin folder, same exact proportions, texture, position, colors, left printed PROJECT NOTES document, central mountain lake photograph, right lavender ARCHIVE document and every printed detail. Do not redesign, redraw, restyle, reshape, recolor or add anything. Retain only a very subtle close contact shadow if it can have transparent alpha; remove the broad studio floor shadow. Keep all white paper areas opaque. Output square transparent PNG with the same composition and generous margin. No checkerboard drawn into the image, no opaque backdrop.
 
 桌面 Dock/Finder 中已安装的应用需要重新打包、安装后才会采用新图标；本次接入更新的是项目资源。
+
+## 2026-10-30 Dock 比例修正
+
+用户反馈旧版在 Dock 中偏扁，本次用内置 imagegen 重新构图：收窄文件夹并增加主体高度，使可见轮廓更接近正方形；保持薄文件夹、平整无装饰的正面及三种文件。旧透明母稿保存在 `approved/logo-before-square.png`。当前 `public/logo.png` 与全部打包图标已同步。
+
+提示词要点：
+
+> Edit the approved icon to fix its squat wide silhouette. Recompose the visible subject to equal width and height, centered on a transparent square canvas. Narrow the thin blue folder moderately, raise its flat undecorated front modestly, and retain the printed document, central photo and lavender archive. Do not stretch the artwork or add a background tile. Preserve realistic materials and crisp small-size detail.

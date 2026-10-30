@@ -35,7 +35,7 @@ import { makeNativeFileDragGestureHandlers } from "@/lib/nativeFileDragGesture";
 import { isPermissionDeniedError, requestDirectoryAccess } from "@/lib/directoryAccess";
 
 /** 列表视图固定行高 */
-const LIST_ITEM_HEIGHT = 40;
+const LIST_ITEM_HEIGHT = 32;
 /** 网格视图固定行高 */
 const GRID_ROW_HEIGHT = 152;
 const PHOTO_GRID_ROW_HEIGHT = 248;
@@ -650,7 +650,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
         }}
       >
         <div
-          className={`bg-background/60 h-full overflow-hidden p-4 transition-colors ${
+          data-view={viewMode}
+          className={`finder-files h-full overflow-hidden transition-colors ${
             isFileDragOver ? "ring-primary/30 ring-2 ring-inset" : ""
           }`}
           tabIndex={0}

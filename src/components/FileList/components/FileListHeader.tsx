@@ -14,7 +14,7 @@ export function FileListHeader({ sortField, sortDirection, onSort }: FileListHea
   const SortIcon = sortDirection === "asc" ? ChevronUp : ChevronDown;
 
   return (
-    <div className="border-border/50 text-muted-foreground mb-2 flex items-center border-b pb-2 text-xs font-medium select-none">
+    <div className="finder-list-header border-border/50 text-muted-foreground mb-2 flex items-center border-b pb-2 text-xs font-medium select-none">
       <div
         className="hover:text-foreground flex min-w-0 flex-1 cursor-pointer items-center gap-1 px-2 transition-colors"
         onClick={() => onSort("name")}

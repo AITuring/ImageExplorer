@@ -1,5 +1,8 @@
 {
   "back": "Back",
   "forward": "Forward",
-  "search_placeholder": "Search..."
+  "search_placeholder": "Search...",
+  "path": "Path navigation",
+  "edit_path": "Edit folder path",
+  "computer": "Computer"
 }

@@ -45,7 +45,8 @@ export const FileListItem = memo(function FileListItem({
 
   return (
     <div
-      className={`flex w-full cursor-default items-center rounded-md p-2 text-sm transition-colors ${
+      data-selected={isSelected}
+      className={`finder-list-row flex w-full cursor-default items-center rounded-md p-2 text-sm transition-colors ${
         isSelected ? "bg-accent/80 ring-primary/20 ring-1" : "hover:bg-accent/60 focus:bg-accent/60"
       } ${isFocused ? "outline-primary outline outline-1 outline-offset-[-1px]" : ""}`}
       onClick={onClick}

@@ -178,12 +178,12 @@ function firstNumber(value: string | null) {
 
 function formatAperture(value: string | null) {
   const number = firstNumber(value);
-  return number !== null && Number.isFinite(number) ? `f/${number}` : null;
+  return number !== null && Number.isFinite(number) ? `f/${Number(number.toFixed(1))}` : null;
 }
 
 function formatFocalLength(value: string | null) {
   const number = firstNumber(value);
-  return number !== null && Number.isFinite(number) ? `${number}mm` : null;
+  return number !== null && Number.isFinite(number) ? `${Number(number.toFixed(1))}mm` : null;
 }
 
 function formatShutterSpeed(value: string | null) {

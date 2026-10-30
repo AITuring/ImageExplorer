@@ -54,8 +54,9 @@ export function TabItem({
   return (
     <div
       ref={domRef}
+      data-active={isActive}
       className={cn(
-        "group relative flex h-7 max-w-[180px] min-w-[100px] cursor-pointer items-center gap-1.5 rounded-md px-2.5 text-xs transition-all duration-150",
+        "finder-tab group relative flex h-7 max-w-[180px] min-w-[100px] cursor-pointer items-center gap-1.5 rounded-md px-2.5 text-xs transition-all duration-150",
         isActive
           ? "bg-background/90 text-foreground shadow-sm"
           : "text-muted-foreground hover:bg-background/50 hover:text-foreground",

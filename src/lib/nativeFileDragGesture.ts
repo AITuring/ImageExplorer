@@ -3,7 +3,7 @@ import { getFileDragIcon, startNativeFileDrag } from "@/lib/dragData";
 
 const DRAG_START_DISTANCE_PX = 10;
 const INTERACTIVE_TARGET_SELECTOR =
-  'button, input, select, textarea, [contenteditable="true"], [role="button"]';
+  'button, input, select, textarea, [contenteditable="true"], [role="button"], [data-context-menu-content]';
 
 interface PointerStart {
   id: number;

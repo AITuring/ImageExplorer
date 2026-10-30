@@ -1,0 +1,519 @@
+/* Finder-inspired desktop surfaces. Content stays opaque; glass belongs to chrome. */
+:root {
+  color-scheme: light;
+  --background: 0 0% 100%;
+  --foreground: 240 6% 14%;
+  --card: 0 0% 100%;
+  --card-foreground: 240 6% 14%;
+  --popover: 240 8% 98%;
+  --popover-foreground: 240 6% 14%;
+  --primary: 211 100% 44%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 240 5% 94%;
+  --secondary-foreground: 240 6% 18%;
+  --muted: 240 5% 95%;
+  --muted-foreground: 240 3% 43%;
+  --accent: 240 5% 91%;
+  --accent-foreground: 240 6% 14%;
+  --border: 240 5% 85%;
+  --input: 240 5% 82%;
+  --ring: 211 100% 48%;
+  --radius: 0.625rem;
+  --finder-chrome: 248 248 250;
+  --finder-sidebar: 236 236 240;
+  --finder-highlight: 255 255 255;
+  --finder-shadow: 25 27 34;
+  --finder-selection: #0865d8;
+  --finder-sidebar-selection: rgb(0 0 0 / 8%);
+  --finder-stripe: rgb(0 0 0 / 2.5%);
+}
+
+.dark {
+  color-scheme: dark;
+  --background: 240 3% 12%;
+  --foreground: 0 0% 94%;
+  --card: 240 3% 15%;
+  --card-foreground: 0 0% 94%;
+  --popover: 240 3% 19%;
+  --popover-foreground: 0 0% 94%;
+  --primary: 211 100% 58%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 240 3% 21%;
+  --secondary-foreground: 0 0% 94%;
+  --muted: 240 3% 18%;
+  --muted-foreground: 240 3% 67%;
+  --accent: 240 3% 26%;
+  --accent-foreground: 0 0% 98%;
+  --border: 240 3% 28%;
+  --input: 240 3% 33%;
+  --ring: 211 100% 63%;
+  --finder-chrome: 43 43 47;
+  --finder-sidebar: 38 38 42;
+  --finder-highlight: 255 255 255;
+  --finder-shadow: 0 0 0;
+  --finder-selection: #245da8;
+  --finder-sidebar-selection: rgb(255 255 255 / 13%);
+  --finder-stripe: rgb(255 255 255 / 3%);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+body {
+  margin: 0;
+  background: transparent;
+  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  font-optical-sizing: auto;
+}
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+button {
+  cursor: default;
+}
+button:focus-visible,
+[tabindex]:focus-visible:not([role^="menuitem"]) {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+.finder-window {
+  background: rgb(var(--finder-chrome) / 52%);
+}
+.finder-traffic-region {
+  position: absolute;
+  top: 2px;
+  left: 0;
+  width: 84px;
+  height: 36px;
+  z-index: 60;
+}
+.finder-workspace {
+  container-type: inline-size;
+}
+.finder-content {
+  background: hsl(var(--background));
+}
+.finder-sidebar {
+  padding-top: 48px;
+  background:
+    linear-gradient(rgb(var(--finder-highlight) / 6%), transparent 70%),
+    rgb(var(--finder-sidebar) / 74%);
+  border-right: 1px solid rgb(var(--finder-shadow) / 10%);
+  box-shadow: inset -1px 0 rgb(var(--finder-highlight) / 8%);
+  -webkit-backdrop-filter: blur(28px) saturate(1.3);
+  backdrop-filter: blur(28px) saturate(1.3);
+}
+.finder-sidebar-scroll {
+  padding: 2px 8px 0;
+}
+.finder-sidebar-scroll > .p-3 {
+  padding: 9px 2px;
+  border-bottom: 0;
+}
+.finder-sidebar-scroll > .mt-auto {
+  border-top: 1px solid hsl(var(--border) / 45%);
+}
+.finder-sidebar-scroll section.mt-4 {
+  border-top: 0;
+  padding-top: 2px;
+}
+.finder-sidebar h3 {
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 5px;
+  padding-left: 10px;
+}
+.finder-sidebar button {
+  font-size: 13px;
+}
+.finder-sidebar-row {
+  min-height: 30px;
+  border-radius: 7px;
+  text-align: left;
+}
+.finder-sidebar-row:hover {
+  background: rgb(var(--finder-highlight) / 8%);
+}
+.finder-sidebar-row[data-active="true"] {
+  background: var(--finder-sidebar-selection);
+  font-weight: 600;
+}
+.finder-sidebar-row > button {
+  font-size: 13px;
+}
+.finder-sidebar-icon {
+  color: hsl(var(--primary));
+  stroke-width: 1.7;
+}
+.finder-sidebar[data-collapsed="true"] {
+  border: 0;
+  box-shadow: none;
+}
+.finder-window:has(.finder-sidebar[data-collapsed="true"]) .finder-toolbar {
+  padding-left: 88px;
+}
+.finder-toolbar {
+  height: 52px;
+  gap: 12px;
+  padding: 0 16px 0 12px;
+  background: rgb(var(--finder-chrome) / 82%);
+  box-shadow: inset 0 -1px rgb(var(--finder-shadow) / 6%);
+}
+.finder-control-group {
+  border-radius: 18px;
+  padding: 3px;
+  background: linear-gradient(
+    rgb(var(--finder-highlight) / 15%),
+    rgb(var(--finder-highlight) / 3%)
+  );
+  border: 1px solid rgb(var(--finder-shadow) / 9%);
+  box-shadow:
+    inset 0 1px rgb(var(--finder-highlight) / 24%),
+    0 1px 3px rgb(var(--finder-shadow) / 5%);
+}
+.finder-control-group > button {
+  width: 29px;
+  height: 27px;
+  padding: 5px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+.finder-control-group > button[aria-pressed="true"] {
+  color: hsl(var(--foreground));
+  background: rgb(var(--finder-shadow) / 11%);
+  box-shadow: inset 0 1px 2px rgb(var(--finder-shadow) / 5%);
+}
+.dark .finder-control-group > button[aria-pressed="true"] {
+  background: rgb(255 255 255 / 16%);
+}
+.finder-control-group > button:active:not(:disabled) {
+  background: hsl(var(--accent));
+}
+.finder-location {
+  min-width: 52px;
+}
+.finder-location-button {
+  max-width: 100%;
+  padding: 5px 3px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: -0.015em;
+}
+.finder-location-button > svg {
+  color: hsl(var(--muted-foreground));
+}
+.finder-location-button:hover {
+  background: hsl(var(--accent) / 55%);
+}
+.finder-search {
+  width: clamp(130px, 20cqw, 220px);
+}
+.finder-search-input {
+  font-size: 12px;
+  border-radius: 18px;
+  border: 1px solid rgb(var(--finder-shadow) / 12%);
+  background: rgb(var(--finder-highlight) / 12%);
+  box-shadow: inset 0 1px 2px rgb(var(--finder-shadow) / 4%);
+}
+.finder-search-input:focus {
+  outline: 2px solid hsl(var(--ring) / 65%);
+  outline-offset: 1px;
+}
+.finder-tabs {
+  min-height: 36px;
+  background: rgb(var(--finder-chrome) / 85%);
+  border-bottom: 1px solid hsl(var(--border) / 55%);
+}
+.finder-tab {
+  border: 1px solid transparent;
+  flex: 1 1 160px;
+  max-width: 240px;
+  height: 27px;
+  border-radius: 7px;
+  text-align: center;
+}
+.finder-tab[data-active="true"] {
+  background: rgb(var(--finder-highlight) / 65%);
+  border-color: rgb(var(--finder-shadow) / 7%);
+  box-shadow: 0 1px 3px rgb(var(--finder-shadow) / 8%);
+}
+.dark .finder-tab[data-active="true"] {
+  background: rgb(255 255 255 / 12%);
+}
+.finder-tab button:focus-visible {
+  opacity: 1;
+}
+.finder-pathbar {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 3px;
+  height: 29px;
+  padding: 0 12px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  border-top: 1px solid hsl(var(--border) / 55%);
+  background: rgb(var(--finder-chrome) / 90%);
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+}
+.finder-pathbar button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 4px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.finder-pathbar button:hover {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+.finder-pathbar [aria-current] {
+  color: hsl(var(--foreground));
+  font-weight: 500;
+}
+.finder-files {
+  background: hsl(var(--background));
+  padding: 10px;
+}
+.finder-files[data-view="column"],
+.finder-files[data-view="gallery"] {
+  padding: 0;
+}
+.finder-files[data-view="list"] {
+  padding: 0 10px 0;
+}
+.finder-list-header {
+  height: 32px;
+  padding: 0 0 0 3px;
+  margin-bottom: 8px;
+  font-size: 11px;
+}
+.finder-list-row {
+  height: 32px;
+  padding: 4px 8px;
+  font-size: 13px;
+  border-radius: 5px;
+}
+.finder-list-row > div:first-child {
+  gap: 7px;
+}
+.finder-list-row > div:first-child > img {
+  width: 20px;
+  height: 20px;
+}
+.finder-files [data-index]:nth-child(even) .finder-list-row:not([data-selected="true"]) {
+  background: var(--finder-stripe);
+}
+.finder-list-row[data-selected="true"],
+.finder-column-row[data-selected="true"] {
+  background: var(--finder-selection);
+  color: white;
+  --tw-ring-color: transparent;
+}
+.finder-list-row[data-selected="true"] .text-muted-foreground,
+.finder-column-row[data-selected="true"] .text-muted-foreground {
+  color: rgb(255 255 255 / 85%);
+}
+.finder-list-row[data-selected="true"] span {
+  background: transparent;
+}
+.finder-grid-item {
+  border-radius: 9px;
+}
+.finder-grid-item[data-selected="true"] {
+  background: hsl(var(--primary) / 13%);
+  --tw-ring-color: hsl(var(--primary) / 32%);
+}
+.finder-grid-item[data-selected="true"] .truncate.text-xs {
+  background: var(--finder-selection);
+  color: white;
+  padding-inline: 4px;
+}
+.finder-column-row {
+  font-size: 13px;
+  min-height: 29px;
+}
+.finder-button {
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.finder-button.h-10 {
+  height: 32px;
+}
+.finder-button.h-9 {
+  height: 28px;
+}
+.finder-button:active:not(:disabled) {
+  filter: brightness(0.94);
+}
+.finder-input {
+  font-size: 13px;
+  border-radius: 7px;
+}
+.finder-input.h-10 {
+  height: 32px;
+}
+.finder-menu,
+.finder-popover {
+  background: hsl(var(--popover) / 94%);
+  border: 1px solid rgb(var(--finder-shadow) / 15%);
+  border-radius: 11px;
+  box-shadow:
+    inset 0 1px rgb(var(--finder-highlight) / 25%),
+    0 10px 36px rgb(var(--finder-shadow) / 22%);
+  -webkit-backdrop-filter: blur(24px) saturate(1.2);
+  backdrop-filter: blur(24px) saturate(1.2);
+  padding: 5px;
+}
+.finder-menu [role^="menuitem"] {
+  font-size: 13px;
+  min-height: 27px;
+  padding-block: 4px;
+  border-radius: 5px;
+}
+.finder-menu [role^="menuitem"][data-highlighted] {
+  background: var(--finder-selection);
+  color: white;
+}
+.finder-menu [role^="menuitem"][data-highlighted] .text-muted-foreground {
+  color: rgb(255 255 255 / 80%);
+}
+.finder-dialog {
+  background: hsl(var(--popover) / 97%);
+  border-radius: 18px;
+  border: 1px solid rgb(var(--finder-shadow) / 15%);
+  box-shadow:
+    inset 0 1px rgb(var(--finder-highlight) / 25%),
+    0 24px 80px rgb(var(--finder-shadow) / 30%);
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+}
+.finder-dialog-overlay {
+  background: rgb(0 0 0 / 25%);
+}
+@container (max-width: 570px) {
+  .finder-toolbar {
+    gap: 6px;
+    padding-right: 10px;
+    padding-left: 8px;
+  }
+  .finder-search {
+    width: 120px;
+  }
+  .finder-control-group > button {
+    width: 25px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  .finder-window,
+  .finder-toolbar,
+  .finder-tabs,
+  .finder-pathbar {
+    background: rgb(var(--finder-chrome));
+  }
+  .finder-sidebar {
+    background: rgb(var(--finder-sidebar));
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .finder-menu,
+  .finder-popover,
+  .finder-dialog {
+    background: hsl(var(--popover));
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .finder-control-group {
+    background: hsl(var(--secondary));
+  }
+}
+@media (prefers-contrast: more) {
+  :root {
+    --muted-foreground: 240 3% 30%;
+    --border: 240 3% 55%;
+  }
+  .dark {
+    --muted-foreground: 240 3% 80%;
+    --border: 240 3% 60%;
+  }
+  .finder-sidebar {
+    border-right-color: hsl(var(--border));
+  }
+  .finder-control-group,
+  .finder-search-input {
+    border-color: hsl(var(--border));
+  }
+}
+
+.finder-control-group > .finder-analysis-toggle {
+  width: auto;
+  display: flex;
+  gap: 5px;
+  padding-inline: 9px;
+  font-size: 11px;
+}
+
+/* Native-style menus must disappear immediately when Radix closes them.
+   Avoid retaining an exit-animation layer in WebKit's backdrop compositor. */
+.finder-menu {
+  animation: none;
+}
+.finder-menu[data-state="closed"] {
+  display: none;
+  pointer-events: none;
+}
+
+@container (max-width: 570px) {
+  .finder-analysis-toggle span {
+    display: none;
+  }
+  .finder-control-group > .finder-analysis-toggle {
+    width: 25px;
+    padding-inline: 5px;
+  }
+  .finder-location {
+    min-width: 0;
+  }
+}
+@container (max-width: 440px) {
+  .finder-search {
+    width: 90px;
+  }
+}
+
+/* Closed modal layers must release both visibility and Radix's focus lock. */
+.finder-dialog,
+.finder-dialog-overlay {
+  animation: none;
+}
+.finder-dialog[data-state="closed"],
+.finder-dialog-overlay[data-state="closed"] {
+  display: none;
+  pointer-events: none;
+}

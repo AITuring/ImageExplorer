@@ -71,8 +71,18 @@ function CustomSelect({
   const selectedLabel = options.find((o) => o.value === value)?.label;
 
   return (
-    <div className="relative" ref={ref}>
+    <div
+      className="relative"
+      ref={ref}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && isOpen) {
+          event.stopPropagation();
+          setIsOpen(false);
+        }
+      }}
+    >
       <button
+        aria-expanded={isOpen}
         onClick={() => setIsOpen(!isOpen)}
         className="border-input bg-background/50 hover:bg-accent hover:text-accent-foreground focus:ring-ring flex h-8 w-[180px] items-center justify-between rounded-md border px-3 text-sm shadow-sm transition-colors focus:ring-1 focus:outline-none"
       >
@@ -84,14 +94,16 @@ function CustomSelect({
         <div className="animate-in fade-in-0 zoom-in-95 bg-popover text-popover-foreground absolute top-full right-0 z-50 mt-1 w-[180px] overflow-hidden rounded-md border shadow-lg ring-1 ring-black/5">
           <div className="p-1">
             {options.map((option) => (
-              <div
+              <button
+                type="button"
+                aria-pressed={value === option.value}
                 key={option.value}
                 onClick={() => {
                   onChange(option.value);
                   setIsOpen(false);
                 }}
                 className={cn(
-                  "hover:bg-accent hover:text-accent-foreground relative flex cursor-default items-center rounded-sm py-1.5 pr-2 pl-8 text-sm transition-colors outline-none select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+                  "hover:bg-accent focus-visible:bg-accent hover:text-accent-foreground relative flex w-full cursor-default items-center rounded-sm py-1.5 pr-2 pl-8 text-left text-sm transition-colors outline-none select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
                   value === option.value && "bg-accent/50"
                 )}
               >
@@ -101,7 +113,7 @@ function CustomSelect({
                   </span>
                 )}
                 {option.label}
-              </div>
+              </button>
             ))}
           </div>
         </div>
@@ -537,7 +549,7 @@ function SettingsDialogComponent({ open, onOpenChange }: SettingsDialogProps) {
                     >
                       <span
                         className={cn(
-                          "bg-white absolute top-0.5 h-5 w-5 rounded-full shadow transition-transform",
+                          "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform",
                           legacyTabNumberShortcuts ? "translate-x-5" : "translate-x-0.5"
                         )}
                       />

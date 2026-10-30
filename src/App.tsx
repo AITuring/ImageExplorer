@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { Loader2 } from "lucide-react";
 import { Sidebar } from "@/components/Sidebar";
+import { PathBar } from "@/components/PathBar";
 import { TopBar } from "@/components/TopBar";
 import { FileList } from "@/components/FileList";
 import { IndexingOverlay } from "@/components/IndexingOverlay";
@@ -62,9 +63,7 @@ function App() {
       try {
         const update = await check();
         if (!update || cancelled) return;
-        const accepted = window.confirm(
-          `${t("updates.available", { version: update.version })}`
-        );
+        const accepted = window.confirm(`${t("updates.available", { version: update.version })}`);
         if (!accepted || cancelled) return;
         await update.downloadAndInstall();
         if (!cancelled) await relaunch();
@@ -274,7 +273,7 @@ function App() {
 
   return (
     <div
-      className="bg-background/80 flex h-screen flex-col"
+      className="finder-window relative flex h-screen overflow-hidden"
       onContextMenu={(e) => e.preventDefault()}
     >
       {/* 索引加载遮罩 */}
@@ -285,34 +284,17 @@ function App() {
       <FileInfoDialog />
 
       {isInitializing ? (
-        <div className="flex h-full items-center justify-center">
+        <div className="flex h-full flex-1 items-center justify-center">
           <Loader2 className="text-primary h-8 w-8 animate-spin" />
         </div>
       ) : (
         <>
-          {/* macOS 标题栏拖拽区域 - 为红绿灯按钮预留空间 */}
-          <div className="relative h-8 w-full shrink-0">
-            {/* 避开顶部 2px 的 resize 边缘 */}
-            <div
-              className="absolute bottom-0 left-0 h-[30px] w-full"
-              data-tauri-drag-region
-              style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
-            />
-          </div>
-
-          {/* Tab 栏 */}
-          <TabBar />
-
-          {/* 顶部导航栏 */}
-          <TopBar onNavigate={handleNavigate} />
-
-          {/* 主内容区 */}
-          <div className="flex flex-1 overflow-hidden">
-            {/* 左侧边栏 */}
-            <Sidebar onNavigate={handleNavigate} />
-
-            {/* 文件列表 */}
-            <main className="flex-1 overflow-auto">
+          <div className="finder-traffic-region" data-tauri-drag-region />
+          <Sidebar onNavigate={handleNavigate} currentPath={activeTab?.path ?? ""} />
+          <div className="finder-workspace flex min-w-0 flex-1 flex-col overflow-hidden">
+            <TopBar onNavigate={handleNavigate} />
+            <TabBar />
+            <main className="finder-content min-h-0 flex-1 overflow-hidden">
               {activeTab?.path ? (
                 <FileList
                   currentPath={activeTab.path}
@@ -325,6 +307,7 @@ function App() {
                 </div>
               )}
             </main>
+            <PathBar path={activeTab?.path ?? ""} onNavigate={handleNavigate} />
           </div>
         </>
       )}

@@ -29,6 +29,7 @@ import { getLocationName, useLocations } from "@/stores/locations";
 import { FileEntry, FolderItem, MountedVolume, SidebarItemActions } from "@/types";
 
 interface SidebarProps {
+  currentPath: string;
   onNavigate: (path: string) => void;
 }
 
@@ -44,6 +45,7 @@ function clampSidebarWidth(width: number) {
 
 function SidebarLocationRow({
   path,
+  active,
   icon: Icon,
   onNavigate,
   onToggleFavorite,
@@ -52,6 +54,7 @@ function SidebarLocationRow({
   onRemove,
 }: {
   path: string;
+  active: boolean;
   icon: typeof Star;
   onNavigate: (path: string) => void;
   onToggleFavorite?: () => void;
@@ -73,9 +76,13 @@ function SidebarLocationRow({
 
   return (
     <AppContextMenu type="sidebar-item" sidebarItemActions={sidebarItemActions} asChild>
-      <div className="group hover:bg-accent flex min-w-0 items-center rounded-md">
+      <div
+        className="finder-sidebar-row group flex min-w-0 items-center rounded-md"
+        data-active={active}
+      >
         <button
           className="flex min-h-8 min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm"
+          aria-current={active ? "page" : undefined}
           onClick={() => onNavigate(path)}
           title={path}
         >
@@ -134,6 +141,7 @@ const getQuickAccess = (t: (key: string) => string, home: string) => {
 
 function FolderTreeItem({
   item,
+  currentPath,
   level = 0,
   onNavigate,
   showHiddenFiles,
@@ -141,6 +149,7 @@ function FolderTreeItem({
   onHide,
 }: {
   item: FolderItem;
+  currentPath: string;
   level?: number;
   onNavigate: (path: string) => void;
   showHiddenFiles: boolean;
@@ -251,7 +260,9 @@ function FolderTreeItem({
     <div>
       <AppContextMenu type="sidebar-item" sidebarItemActions={sidebarItemActions}>
         <button
-          className="hover:bg-accent flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
+          className="finder-sidebar-row flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
+          aria-current={currentPath === item.path ? "page" : undefined}
+          data-active={currentPath === item.path}
           style={{ paddingLeft: `${level * 12 + 8}px` }}
           onClick={() => onNavigate(item.path)}
         >
@@ -298,6 +309,7 @@ function FolderTreeItem({
             <FolderTreeItem
               key={child.path}
               item={child}
+              currentPath={currentPath}
               level={level + 1}
               onNavigate={onNavigate}
               showHiddenFiles={showHiddenFiles}
@@ -309,7 +321,7 @@ function FolderTreeItem({
   );
 }
 
-export function Sidebar({ onNavigate }: SidebarProps) {
+export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
   const { t } = useTranslation();
   const setTrashOpen = useTrashDialog((state) => state.setOpen);
   const favorites = useLocations((state) => state.favorites);
@@ -509,13 +521,14 @@ export function Sidebar({ onNavigate }: SidebarProps) {
 
   return (
     <aside
-      className={`border-border/50 bg-background/40 relative z-30 flex min-h-0 shrink-0 flex-col border-r backdrop-blur-xl ${
+      data-collapsed={isSidebarCollapsed}
+      className={`finder-sidebar relative z-30 flex min-h-0 shrink-0 flex-col ${
         isResizing ? "" : "transition-[width] duration-150 ease-out"
       }`}
       style={{ width: `${sidebarWidth}px` }}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <div className="flex h-full min-h-0 min-w-0 flex-col overflow-x-hidden overflow-y-auto">
+      <div className="finder-sidebar-scroll flex h-full min-h-0 min-w-0 flex-col overflow-x-hidden overflow-y-auto">
         {/* 快速访问 */}
         <div className="border-border/50 border-b p-3">
           <h3 className="text-muted-foreground mb-2 px-2 text-xs font-medium">
@@ -539,13 +552,14 @@ export function Sidebar({ onNavigate }: SidebarProps) {
                     sidebarItemActions={sidebarItemActions}
                   >
                     <button
-                      className="hover:bg-accent flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
+                      className="finder-sidebar-row flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
+                      aria-current={currentPath === item.path ? "page" : undefined}
+                      data-active={currentPath === item.path}
                       onClick={() => onNavigate(item.path)}
                     >
-                      <SmartIcon
-                        icon={item.icon}
-                        className="text-muted-foreground h-4 w-4"
-                        sysIcon={item.sysIcon}
+                      <item.icon
+                        className="finder-sidebar-icon h-4 w-4 shrink-0"
+                        aria-hidden="true"
                       />
                       <span>{item.name}</span>
                     </button>
@@ -570,6 +584,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
                     <SidebarLocationRow
                       key={`favorite:${path}`}
                       path={path}
+                      active={currentPath === path}
                       icon={Star}
                       onNavigate={onNavigate}
                       isFavorite
@@ -597,6 +612,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
                     <SidebarLocationRow
                       key={`recent:${path}`}
                       path={path}
+                      active={currentPath === path}
                       icon={Clock3}
                       onNavigate={onNavigate}
                       onRemoveRecent={() => void removeRecentLocation(path)}
@@ -621,6 +637,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
                 <FolderTreeItem
                   key={item.path}
                   item={item}
+                  currentPath={currentPath}
                   onNavigate={onNavigate}
                   showHiddenFiles={showHiddenFiles}
                   hiddenPaths={hiddenSidebarPaths}
@@ -652,7 +669,9 @@ export function Sidebar({ onNavigate }: SidebarProps) {
                           sidebarItemActions={sidebarItemActions}
                         >
                           <button
-                            className="hover:bg-accent flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
+                            className="finder-sidebar-row flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
+                            aria-current={currentPath === volume.path ? "page" : undefined}
+                            data-active={currentPath === volume.path}
                             onClick={() => onNavigate(volume.path)}
                             title={volume.path}
                           >
