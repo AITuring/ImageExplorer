@@ -24,7 +24,12 @@ import { getLargestCachedFileThumbnail, loadFileThumbnail } from "@/lib/iconCach
 import { useCameraAfMetadata } from "@/hooks/useCameraAfMetadata";
 import { useSharpnessInspector } from "@/hooks/useSharpnessInspector";
 import { usePhotoMetadata } from "@/hooks/usePhotoMetadata";
-import { getPhotoMetadataSummary } from "@/lib/photoMetadata";
+import {
+  formatAperture,
+  formatFocalLength,
+  formatShutterSpeed,
+  type PhotoMetadata,
+} from "@/lib/photoMetadata";
 import type { FileEntry } from "@/types/index";
 import {
   isAnalyzablePhoto,
@@ -134,7 +139,7 @@ const FocusAnalysisDetails = memo(function FocusAnalysisDetails({
 
   return (
     <div
-      className="bg-muted/30 text-muted-foreground flex min-h-7 w-full shrink-0 items-center justify-center gap-x-3 gap-y-1 rounded-md border px-3 py-1 text-[11px] leading-4"
+      className="bg-muted/30 text-muted-foreground flex min-h-7 w-full shrink-0 flex-wrap items-center justify-center gap-x-3 gap-y-1 rounded-md border px-3 py-1 text-[11px] leading-4"
       role="status"
       aria-live="polite"
     >
@@ -230,6 +235,55 @@ const FocusAnalysisDetails = memo(function FocusAnalysisDetails({
         </>
       )}
     </div>
+  );
+});
+
+const PhotoMetadataPanel = memo(function PhotoMetadataPanel({
+  metadata,
+}: {
+  metadata: PhotoMetadata | null;
+}) {
+  const { t } = useTranslation();
+  const iso = metadata?.iso?.match(/\d+(?:\.\d+)?/)?.[0] ?? null;
+  const settings = [
+    { label: "ISO", value: iso ? `ISO ${iso}` : "—" },
+    {
+      label: t("file_list.details.aperture"),
+      value: formatAperture(metadata?.aperture ?? null) ?? "—",
+    },
+    {
+      label: t("file_list.details.shutter"),
+      value: formatShutterSpeed(metadata?.shutterSpeed ?? null) ?? "—",
+    },
+    {
+      label: t("file_list.details.focal"),
+      value: formatFocalLength(metadata?.focalLength ?? null) ?? "—",
+    },
+  ];
+
+  return (
+    <section className="quick-look-metadata shrink-0" aria-label={t("file_list.details.shooting")}>
+      <dl className="quick-look-metadata-grid">
+        {settings.map(({ label, value }) => (
+          <div className="quick-look-metadata-cell" key={label}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+      <dl className="quick-look-equipment">
+        <div>
+          <dt>{t("file_list.details.model")}</dt>
+          <dd title={metadata?.model || metadata?.make || undefined}>
+            {metadata?.model || metadata?.make || "—"}
+          </dd>
+        </div>
+        <div>
+          <dt>{t("file_list.details.lens")}</dt>
+          <dd title={metadata?.lens || undefined}>{metadata?.lens || "—"}</dd>
+        </div>
+      </dl>
+    </section>
   );
 });
 
@@ -939,7 +993,6 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
   }, [entry]);
   const cameraAfMetadata = useCameraAfMetadata(entry, previewType === "image", "interactive");
   const photoMetadata = usePhotoMetadata(entry, previewType === "image");
-  const photoMetadataSummary = getPhotoMetadataSummary(photoMetadata);
 
   const dialogSizeClass = useMemo(() => {
     if (!entry) {
@@ -1122,17 +1175,18 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     }
 
     const HEADER_HEIGHT = 48;
+    const DETAILS_HEIGHT = 170;
     const CONTENT_PADDING_X = 10;
     const CONTENT_PADDING_Y = 10;
     const BORDER = 1;
     const MIN_DIALOG_WIDTH = 240;
-    const MIN_DIALOG_HEIGHT = 220;
+    const MIN_DIALOG_HEIGHT = 320;
     const maxDialogWidth = Math.max(320, Math.floor(viewportSize.width * 0.96));
     const maxDialogHeight = Math.max(260, Math.floor(viewportSize.height * 0.92));
     const maxContentWidth = Math.max(120, maxDialogWidth - CONTENT_PADDING_X - BORDER);
     const maxContentHeight = Math.max(
       120,
-      maxDialogHeight - HEADER_HEIGHT - CONTENT_PADDING_Y - BORDER
+      maxDialogHeight - HEADER_HEIGHT - DETAILS_HEIGHT - CONTENT_PADDING_Y - BORDER
     );
 
     const scale = Math.min(
@@ -1147,7 +1201,10 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
       width: `${Math.min(maxDialogWidth, Math.max(MIN_DIALOG_WIDTH, contentWidth + CONTENT_PADDING_X + BORDER))}px`,
       height: `${Math.min(
         maxDialogHeight,
-        Math.max(MIN_DIALOG_HEIGHT, contentHeight + HEADER_HEIGHT + CONTENT_PADDING_Y + BORDER)
+        Math.max(
+          MIN_DIALOG_HEIGHT,
+          contentHeight + HEADER_HEIGHT + DETAILS_HEIGHT + CONTENT_PADDING_Y + BORDER
+        )
       )}px`,
     };
   }, [imageDimensions, previewType, viewportSize.height, viewportSize.width]);
@@ -1551,6 +1608,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
               analysis={photoAnalysis?.get(entry.path)}
               cameraAfMetadata={cameraAfMetadata}
             />
+            <PhotoMetadataPanel metadata={photoMetadata} />
           </div>
         );
 
@@ -1716,14 +1774,6 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
               {t("common.quick_look.preview")}
               <span ref={zoomIndicatorRef}>{previewType === "image" ? " 100%" : ""}</span>
             </div>
-            {photoMetadataSummary?.camera.length ? (
-              <div
-                className="text-muted-foreground truncate text-[10px]"
-                title={photoMetadataSummary.camera.join(" · ")}
-              >
-                {photoMetadataSummary.camera.join(" · ")}
-              </div>
-            ) : null}
           </div>
           <button
             type="button"

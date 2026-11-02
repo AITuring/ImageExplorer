@@ -1,4 +1,4 @@
-import { SharpnessBadge, PhotoParameters } from "./PhotoDetails";
+import { SharpnessBadge } from "./PhotoDetails";
 import { memo, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { FileEntry } from "@/types/index";
@@ -8,8 +8,8 @@ import { getContainedFocusRegionPosition } from "@/lib/focusPoint";
 import type { PhotoAnalysisRecord } from "@/lib/photoAnalysis";
 import { getCameraAfRegions } from "@/lib/cameraAfMetadata";
 import { getPhotoMetadataSummary } from "@/lib/photoMetadata";
-import { usePhotoMetadata } from "@/hooks/usePhotoMetadata";
 import { useCameraAfMetadata } from "@/hooks/useCameraAfMetadata";
+import { usePhotoMetadata } from "@/hooks/usePhotoMetadata";
 import type { VisibleSharpness } from "@/hooks/useVisibleSharpness";
 import { Input } from "@/components/ui/input";
 
@@ -60,12 +60,12 @@ export const FileGridItem = memo(function FileGridItem({
   // thumbnail decoding.
   const canLoadViewportData = isInViewport && !isScrolling;
   const photoMetadata = usePhotoMetadata(entry, canLoadViewportData);
+  const metadataSummary = getPhotoMetadataSummary(photoMetadata);
   const cameraAfMetadata = useCameraAfMetadata(
     entry,
     photoAnalysisEnabled && isSelected && canLoadViewportData
   );
-  const metadataSummary = getPhotoMetadataSummary(photoMetadata);
-  const thumbnailSize = photoAnalysisEnabled ? 144 : 80;
+  const thumbnailSize = photoAnalysisEnabled && !entry.is_dir ? 144 : 64;
   const cameraAfRegions = getCameraAfRegions(cameraAfMetadata);
   const focusRegions =
     cameraAfRegions ??
@@ -192,8 +192,19 @@ export const FileGridItem = memo(function FileGridItem({
               </div>
             )}
           {metadataSummary && (
-            <div className="mt-0.5 w-full px-1 text-center">
-              <PhotoParameters summary={metadataSummary} />
+            <div className="text-muted-foreground mt-1 w-full space-y-0.5 px-1 text-[11px] leading-4 tabular-nums">
+              {metadataSummary.dimensions && <div>{metadataSummary.dimensions}</div>}
+              {metadataSummary.exposure.length > 0 && (
+                <>
+                  <div
+                    className="truncate"
+                    title={metadataSummary.exposure.slice(0, 3).join(" · ")}
+                  >
+                    {metadataSummary.exposure.slice(0, 3).join(" · ")}
+                  </div>
+                  {metadataSummary.exposure[3] && <div>{metadataSummary.exposure[3]}</div>}
+                </>
+              )}
             </div>
           )}
         </div>

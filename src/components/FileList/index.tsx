@@ -34,9 +34,9 @@ import { isPermissionDeniedError, requestDirectoryAccess } from "@/lib/directory
 
 /** 列表视图固定行高 */
 const LIST_ITEM_HEIGHT = 32;
-/** 网格视图固定行高 */
-const GRID_ROW_HEIGHT = 152;
-const PHOTO_GRID_ROW_HEIGHT = 248;
+/** 文件夹行保持 Finder 式紧凑间距；照片行仍给分析信息留空间。 */
+const GRID_ROW_HEIGHT = 116;
+const PHOTO_GRID_ROW_HEIGHT = 264;
 /** 网格项最小宽度 */
 const GRID_ITEM_MIN_WIDTH = 132;
 /** 网格间距 */
@@ -346,7 +346,10 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     if (!el) return;
     const containerWidth = el.clientWidth - 16; // p-2 padding
     const itemWidth = photoAnalysisEnabled ? 176 : GRID_ITEM_MIN_WIDTH;
-    const nextColumns = Math.max(1, Math.floor(containerWidth / (itemWidth + GRID_GAP)));
+    const nextColumns = Math.max(
+      1,
+      Math.floor((containerWidth + GRID_GAP) / (itemWidth + GRID_GAP))
+    );
     setGridColumns((current) => (current === nextColumns ? current : nextColumns));
   }, [photoAnalysisEnabled]);
 
@@ -378,10 +381,17 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   const gridVirtualizer = useVirtualizer({
     count: gridRowCount,
     getScrollElement: () => gridScrollRef.current,
-    estimateSize: () => (photoAnalysisEnabled ? PHOTO_GRID_ROW_HEIGHT : GRID_ROW_HEIGHT),
+    estimateSize: (rowIndex) => {
+      if (!photoAnalysisEnabled) return GRID_ROW_HEIGHT;
+      const row = sortedEntries.slice(rowIndex * gridColumns, (rowIndex + 1) * gridColumns);
+      return row.some((entry) => !entry.is_dir) ? PHOTO_GRID_ROW_HEIGHT : GRID_ROW_HEIGHT;
+    },
     overscan: 2,
     useAnimationFrameWithResizeObserver: true,
   });
+  useEffect(() => {
+    gridVirtualizer.measure();
+  }, [gridColumns, photoAnalysisEnabled, sortedEntries, gridVirtualizer]);
   const gridIsScrolling = viewMode === "icon" && gridVirtualizer.isScrolling;
   const gridViewportStartRow = gridVirtualizer.range?.startIndex ?? null;
   const gridViewportEndRow = gridVirtualizer.range?.endIndex ?? null;
@@ -835,7 +845,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                         <div
                           className="grid gap-3 p-2"
                           style={{
-                            gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+                            gridTemplateColumns: `repeat(${cols}, minmax(0, ${photoAnalysisEnabled ? 176 : GRID_ITEM_MIN_WIDTH}px))`,
                           }}
                         >
                           {rowEntries.map((entry, colIdx) => {

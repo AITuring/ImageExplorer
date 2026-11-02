@@ -77,6 +77,7 @@ export function TopBar({ onNavigate }: TopBarProps) {
 
   // 搜索状态
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const visibleSearchResults = useMemo(
     () => filterHiddenEntries(searchResults, showHiddenFiles),
@@ -90,6 +91,7 @@ export function TopBar({ onNavigate }: TopBarProps) {
   const [editingSearchPath, setEditingSearchPath] = useState<string | null>(null);
   const [editingSearchValue, setEditingSearchValue] = useState("");
   const searchInputRef = useRef<HTMLDivElement>(null);
+  const searchFieldRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchVersionRef = useRef(0); // 用于取消旧请求
   const isComposingRef = useRef(false); // 标记正在使用输入法
@@ -188,6 +190,23 @@ export function TopBar({ onNavigate }: TopBarProps) {
     setSearchResults([]);
     setSelectedSearchPaths([]);
     setEditingSearchPath(null);
+    setSearchOpen(false);
+  }, []);
+
+  useEffect(() => {
+    if (searchOpen) searchFieldRef.current?.focus();
+  }, [searchOpen]);
+
+  useEffect(() => {
+    const focusSearch = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        setSearchOpen(true);
+        searchFieldRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", focusSearch);
+    return () => window.removeEventListener("keydown", focusSearch);
   }, []);
 
   const handleResultClick = (result: SearchResult) => {
@@ -369,11 +388,12 @@ export function TopBar({ onNavigate }: TopBarProps) {
       }
       if (searchInputRef.current && !searchInputRef.current.contains(e.target as Node)) {
         setShowResults(false);
+        if (!searchQuery) setSearchOpen(false);
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
+  }, [searchQuery]);
 
   const pathSegments = currentPath.split("/").filter(Boolean);
 
@@ -445,7 +465,7 @@ export function TopBar({ onNavigate }: TopBarProps) {
         onContextMenu={(e) => e.preventDefault()}
       >
         {/* 导航按钮 */}
-        <div className="finder-control-group flex items-center">
+        <div className="finder-control-group finder-navigation-group flex items-center">
           <button
             className={`rounded-md p-1.5 transition-colors ${
               canGoBack
@@ -548,25 +568,45 @@ export function TopBar({ onNavigate }: TopBarProps) {
         </div>
 
         {/* 搜索框 */}
-        <div className="finder-search relative shrink-0" ref={searchInputRef}>
-          <Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
-          <AppContextMenu type="text-input" textInputActions={searchInputActions} asChild>
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => handleSearchInputChange(e.target.value)}
-              onFocus={() => searchQuery && visibleSearchResults.length > 0 && setShowResults(true)}
-              onCompositionStart={() => (isComposingRef.current = true)}
-              onCompositionEnd={(e) => {
-                isComposingRef.current = false;
-                // 组合结束后立即触发搜索
-                handleSearchInputChange(e.currentTarget.value);
-              }}
-              placeholder={t("nav.search_placeholder")}
+        <div
+          className={`finder-search relative shrink-0 ${searchOpen ? "finder-search-expanded" : ""}`}
+          ref={searchInputRef}
+        >
+          {searchOpen ? (
+            <>
+              <Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
+              <AppContextMenu type="text-input" textInputActions={searchInputActions} asChild>
+                <input
+                  ref={searchFieldRef}
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => handleSearchInputChange(e.target.value)}
+                  onFocus={() =>
+                    searchQuery && visibleSearchResults.length > 0 && setShowResults(true)
+                  }
+                  onCompositionStart={() => (isComposingRef.current = true)}
+                  onCompositionEnd={(e) => {
+                    isComposingRef.current = false;
+                    // 组合结束后立即触发搜索
+                    handleSearchInputChange(e.currentTarget.value);
+                  }}
+                  placeholder={t("nav.search_placeholder")}
+                  aria-label={t("nav.search_placeholder")}
+                  className="finder-search-input placeholder:text-muted-foreground h-8 w-full pr-8 pl-9 outline-none"
+                />
+              </AppContextMenu>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="finder-search-trigger flex h-8 w-8 items-center justify-center"
+              onClick={() => setSearchOpen(true)}
               aria-label={t("nav.search_placeholder")}
-              className="finder-search-input placeholder:text-muted-foreground h-8 w-full pr-8 pl-9 outline-none"
-            />
-          </AppContextMenu>
+              title={t("nav.search_placeholder")}
+            >
+              <Search className="h-4 w-4" />
+            </button>
+          )}
 
           {/* 清空按钮 */}
           {searchQuery && (
