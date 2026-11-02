@@ -1,192 +1,137 @@
-# ImageExplorer
+<div align="center">
+  <img src="./src-tauri/icons/128x128@2x.png" width="112" alt="ImageExplorer 应用图标" />
+  <h1>ImageExplorer</h1>
+  <p>面向 macOS 的文件浏览器，让日常文件管理与 RAW 照片筛选在同一个窗口完成。</p>
+  <p><a href="./README.md">English</a> · 中文 · <a href="https://github.com/AITuring/ImageExplorer/releases">下载安装</a> · <a href="https://github.com/AITuring/ImageExplorer/actions/workflows/release.yml">自动构建</a></p>
+</div>
 
-一款现代化、高性能的 macOS 文件管理器 — 基于 Rust 和 React 构建。
+![CI](https://github.com/AITuring/ImageExplorer/actions/workflows/ci.yml/badge.svg)
+![Release](https://github.com/AITuring/ImageExplorer/actions/workflows/release.yml/badge.svg)
 
-[English](./README.md) | [中文](./README.zh-CN.md)
+## 看得见照片，也管得好文件
 
-ImageExplorer 将 Windows 资源管理器的高效逻辑带到 macOS：可编辑地址栏、常驻文件夹树、Everything 级极速搜索，同时保持原生 macOS 设计风格。
+ImageExplorer 结合 Finder 风格的界面、可编辑路径栏、目录树和本地索引搜索。它直接浏览磁盘上的文件，不需要先把照片导入图库；选片之后可以继续复制、移动、重命名、压缩或交给外部编辑器处理。
 
-它也针对实际的摄影筛选流程设计：打开相机照片文件夹，在图标视图中比较一组组相似画面，识别重复视角，查看估算的焦点区域，再把合适的 RAW 送到 Camera Raw 或其他编辑器。
+![RAW 照片浏览、清晰度标签与整理进度](./docs/screenshots/photo-browser-annotated.png)
 
-![ImageExplorer Screenshot](./docs/screenshot.png)
+*实拍文件浏览示例，红框标示整理进度。文中截图来自此前界面版本：当前仅保留图标、列表、分栏三种视图，清晰度自动分析，已移除独立开关。截图中的旧工具栏和参数排版不代表当前布局。*
 
-## 摄影筛选工作流
+## 三种视图，各有用途
 
-可选的 **视角与焦点识别** 模式会把图标视图变成适合筛 RAW 的 contact sheet。该模式默认关闭，只有从图标视图工具栏主动打开后才会进行识别，因此普通文件夹浏览仍保持轻量、接近 Finder 的体验。
+| 视图 | 适合做什么 | 显示内容 |
+| --- | --- | --- |
+| **图标 · ⌘1** | 对比构图、连续拍摄和相似视角 | 缩略图、文件名、清晰度标签、像素尺寸与拍摄参数；照片分析可显示视角分组及焦点标记 |
+| **列表 · ⌘2** | 快速查找文件、对比参数和排序 | 缩略图、名称、清晰度、ISO / 光圈 / 快门 / 焦距、大小、修改日期；缩略图不叠加焦点框 |
+| **分栏 · ⌘3** | 逐层浏览文件夹，同时查看单张照片 | 左侧文件缩略图，右侧大图、清晰度、详细参数；无选择时默认选中第一项 |
 
-![图标视图中的焦点识别与视角分组](./docs/screenshots/icon-view-focus-analysis.png)
+三个视图共用文件选择状态与清晰度样式；切换视图按选中文件定位。整理任务和进度不依赖当前视图。大量图片采用缓存、有界后台任务，列表与图标采用虚拟化渲染，分栏缩略图仅在可见时请求。
 
-打开后，应用会：
+![分栏浏览和选中文件的大图预览](./docs/screenshots/column-preview-annotated.png)
 
-1. 使用低分辨率视觉指纹比较相似画面，并按视角分组；分组不要求文件名连续。
-2. 为每组循环分配不同的背景色，方便快速扫过连拍和重复构图。
-3. 在缩略图上绘制小型焦点方框；空格预览放大时方框会跟随图片缩放，底部会显示位置、置信度和判断方式。
-4. 在文件名下方懒加载 macOS 可读取的 EXIF 摘要，包括尺寸、ISO、光圈、快门、焦段、机身和镜头。
+*分栏预览示例，红框标示文件图标区域；当前该区域已改为与列表共用的缩略图，右侧参数也已拆分为下面的分组。*
 
-无论是否开启图标视图的识别模式，快速预览都会自动开启“清晰度”并复用当前预览，默认以红色高亮整张图中相对更锐的边缘；也可点“框选”后检查局部区域。高频计算会离开界面线程执行，这份本地预览结果不会冒充相机 AF。
+## 照片信息与清晰度
 
-### 相机真实 AF 元数据
+### 详细参数，不再挤成一行
 
-如果 Sony RAW/JPEG 中保留了 MakerNote 对焦坐标，ImageExplorer 会调用
-ExifTool 读取 `FocusLocation`/`FocusFrameSize`，并兼容文档化的
-`FlexibleSpotPosition`。这类结果使用实线青色方框，并标注为“相机 AF”。
-虚线琥珀色方框表示文件没有可绘制的相机 AF 坐标，此时才会显示独立的
-锐度估算，绝不会冒充相机真实 AF。
-部分 Sony 文件只记录 AF 区域的中心点，没有写入区域宽高；这时青色框会标明
-“显示框为近似”，框内小点才是文件记录的中心位置。只有同时读取到
-`FocusLocation` 和 `FocusFrameSize` 时，才会把方框视为相机记录的精确 AF 区域。
+分栏右侧将可读取的信息分组显示，缺失字段不占位：
 
-macOS 可通过 `brew install exiftool` 安装 ExifTool，也可以用
-`IMAGEEXPLORER_EXIFTOOL` 或 `EXIFTOOL_PATH` 指向应用内或独立的可执行文件。
-如果某张 Sony 文件没有写入 AF 坐标，界面会明确显示“相机未记录可绘制 AF
-坐标”。标签定义可参考 [ExifTool Sony MakerNote 文档](https://exiftool.org/TagNames/Sony.html)。
+| 分组 | 字段 |
+| --- | --- |
+| **拍摄参数** | 感光度 ISO、光圈、快门速度、焦距、拍摄时间 |
+| **相机与镜头** | 制造商、相机型号、镜头名称 |
+| **文件信息** | 宽高像素、百万像素数、文件大小、修改时间、格式 |
+| **拍摄位置** | 文件内嵌的 GPS 经纬度；点击“显示地图”加载 OpenStreetMap |
 
-![图标视图中的重复视角高亮](./docs/screenshots/icon-view-focus-groups.png)
+照片参数优先通过 macOS ImageIO 读取，部分字段使用 Spotlight 回退。RAW 支持和字段完整性取决于 macOS 解码能力及文件本身。GPS 不会凭空推断；加载地图会将该坐标发送给 OpenStreetMap，未点击时不请求地图。
 
-![RAW/JPEG 配对缩略图](./docs/screenshots/icon-view-raw-pairs.png)
+### 自动分析，辅助选片
 
-选中文件后按 **空格** 打开快速预览，可使用左右箭头按钮或 Left/Right 键切换文件，按住 **⌘/Ctrl + 滚轮** 以鼠标指针为中心放大。照片显示后会自动分析整张图；可点“框选”后拖出局部区域，也可用“整张”重新分析全图，结果随图片缩放保持对齐。相邻 RAW 会提前生成预览，连续浏览时减少等待。
+- 文件夹照片自动提取特征、识别相似视角，进度条显示当前阶段和处理数量。
+- 清晰度标签区分“锐利”、偏软、检测中或不可用，三种视图使用一致的样式。
+- 清晰度是基于预览图的辅助判断，不能替代原始 RAW 的全尺寸检查，也不是相机实际合焦状态。
+- 有可用 Sony MakerNote 坐标时，可显示相机 AF 区域；只有中心点时标记为近似显示框。缺少相机坐标时，估计焦点与相机 AF 分开标识。
+- Sony AF 元数据可选依赖 ExifTool：`brew install exiftool`，也可通过 `IMAGEEXPLORER_EXIFTOOL` 或 `EXIFTOOL_PATH` 指定可执行文件。普通浏览不要求安装它。
 
-![带焦点标记的空格快速预览](./docs/screenshots/quick-look-zoom-focus.png)
+### 空格快速预览
 
-> 只有文件中确实存在 Sony MakerNote 坐标时才绘制“相机 AF”实线方框。没有坐标时的虚线方框只是挑片辅助，最终仍建议结合全尺寸 RAW 判断。
+选中文件按 **Space** 打开 Quick Look。支持前后切图、以鼠标位置为中心缩放、全图或选区清晰度分析，以及相邻 RAW 预取。原生预览能力用于兼容更多格式；照片可交给系统默认应用或其他编辑器继续处理。
 
-## 功能特性
+![Quick Look 放大检查照片细节](./docs/screenshots/quick-look-zoom-focus.png)
 
-- **可编辑地址栏** — 输入路径导航、使用 Cmd+C/Cmd+V 复制粘贴、面包屑点击跳转
-- **文件夹树状图** — Windows 风格可折叠树，懒加载
-- **外接磁盘识别** — 在侧边栏“位置”中显示 macOS 当前挂载的 USB、移动硬盘和网络卷，插拔后自动刷新；首次访问未授权磁盘时会调用 macOS 系统面板请求目录权限
-- **可调宽侧边栏** — 拖拽分隔条调整宽度，继续拖到边缘可隐藏；隐藏后显示附着小把手，点击或向右轻拖即可恢复，并自动记住设置
-- **极速搜索** — SQLite FTS5 + Rust 驱动的毫秒级全盘搜索，结果面板固定在搜索框下方且不会被文件内容遮挡；搜索结果支持 Finder 风格选中、右键操作和就地重命名
-- **Finder 风格缩略图** — 图标 / 列表视图支持常见相机 RAW 格式的原生缩略图，使用进程内 Quick Look 生成，并带有渐进式加载与缓存，适合大目录浏览
-- **可选照片分析** — 全局识别相似视角、循环分配组颜色，并在缩略图上标出估算焦点；默认关闭，不影响普通文件夹浏览
-- **焦点感知的空格预览** — 使用 Core Image 原始 RAW 解码并渐进加载，支持键盘切换、相邻图片预取、指针中心缩放、整图或选区清晰度高亮，以及图片下方的焦点判断数据
-- **EXIF 快速查看** — 只对可见图标卡片懒加载，并限制并发数量，在不拖慢网格布局的情况下显示相机参数
-- **Finder 风格选择与重命名** — 使用更接近 Finder 的轻量选中态；在图标 / 列表视图中单击已选中的文件名即可就地重命名，Enter 确认、Escape 取消
-- **多标签页 & 多窗口** — 标签页支持跨窗口拖拽并保留导航历史；脱离成新窗口后仍打开当前目录并保留历史；文件和文件夹也可拖入另一个窗口或其当前目录，移动完成后源窗口与目标窗口自动刷新
-- **Cmd+X 剪切** — 原生剪切支持，告别 Cmd+C → Cmd+Option+V
-- **文件操作队列** — 复制、移动、移到废纸篓统一进入顺序任务队列，支持取消、进度、错误、历史记录和常驻操作中心
-- **一步撤销** — 已完成的复制/移动会保留可逆历史，可在操作中心撤销；删除操作继续通过系统废纸篓恢复
-- **同名冲突处理** — 复制或移动前可选择保留两者、替换（原项目移到废纸篓）、跳过冲突或取消
-- **废纸篓管理** — 从侧边栏打开系统废纸篓，浏览项目、恢复到原始位置或清空废纸篓
-- **ZIP 工作流** — 在右键菜单中将选中的文件/文件夹压缩为 ZIP，或解压 ZIP；归档任务会进入操作中心
-- **项目属性检查器** — 通过“显示简介”查看路径、大小、时间、权限、所有者、Package、Alias 和符号链接目标等详细属性
-- **收藏夹与最近位置** — 持久化保存常用文件夹，并从侧边栏快速返回最近访问的目录
-- **QuickLook 预览** — 按空格键预览文件（文本、图片、视频、音频、PDF、HEIC、DNG、PSD），并对浏览器不支持的格式回退到 macOS 原生缩略图
-- **右键菜单** — Windows 风格，支持 Finder 风格的排序与整理，以及 20+ 操作："新建文件"、文件夹"在新标签页打开"、"在终端打开"、"复制路径"等
-- **深色模式** — 浅色 / 深色 / 跟随系统
-- **国际化** — 英语、简体中文
+*早期 Quick Look 实拍截图，演示放大检查细节；焦点标记与控制布局已随版本更新。*
 
-## 开发路线
+## 文件管理功能
 
-后续开发请参考 [与 macOS Finder 的差异分析及详细开发计划](./docs/finder-gap-analysis-and-development-plan.zh-CN.md)：第 6 节列出原 22 个工作包及新增可选 N06 分享原型的当前状态，第 7.4 节为下一批执行清单，并附代码证据、依赖和实机验收标准。工时保留原始估算，剩余范围须重新估算。以下 M1–M8 为已有功能的历史里程碑，不代表所有 Finder 兼容场景均已验收。
+| 功能 | 能做什么 |
+| --- | --- |
+| 路径与导航 | 输入完整路径、点击面包屑、前进/后退；可折叠目录树、可调宽侧边栏 |
+| 本地搜索 | SQLite FTS5 索引搜索；结果支持选择、右键操作和重命名，首次索引需要时间 |
+| 外置卷 | 在侧边栏显示已挂载卷，响应挂载变化；访问受保护目录时遵循 macOS 授权 |
+| 标签页与窗口 | 多标签、多窗口、拖动分离标签页、保留导航历史、跨窗口移动文件 |
+| 复制与移动 | ⌘C / ⌘X / ⌘V，任务队列、进度、取消、错误提示与同名冲突处理 |
+| 冲突与恢复 | 保留两者、替换、跳过或取消；持久化操作记录，失败任务重试，支持可恢复操作的一步撤销 |
+| 重命名与整理 | 行内重命名、批量重命名、排序、整理、新建文件与文件夹 |
+| 废纸篓与 ZIP | 浏览/恢复/清空废纸篓，压缩与解压 ZIP；耗时操作进入任务队列 |
+| 文件简介 | 路径、权限、所有者、时间，以及包、别名、符号链接信息 |
+| 常用位置 | 收藏夹、最近位置、隐藏文件显示；浅色/深色/跟随系统，中英双语 |
 
-当前实现状态按里程碑跟踪：
+## 下载与安装
 
-| 里程碑 | 状态 | 范围 |
-| ------ | ---- | ---- |
-| M1 | 已完成 | 丰富文件元数据、发现隐藏项目、显示隐藏文件设置 |
-| M2 | 已完成 | 复制/移动/删除任务队列、操作进度中心、取消和跨窗口刷新事件 |
-| M3 | 已完成 | 同名冲突窗口，支持保留两者、替换到废纸篓、跳过和取消 |
-| M4 | 已完成 | 操作历史，以及已完成复制/移动操作的一步撤销 |
-| M5 | 已完成 | 废纸篓浏览/恢复/清空，以及进入任务队列的 ZIP 压缩解压流程 |
-| M6 | 已完成 | Package、Alias、符号链接识别，跨平台详细属性查看，以及元数据边界测试 |
-| M7 | 已完成 | 持久化收藏夹与最近位置，以及文件菜单和侧边栏管理 |
-| M8 | 已完成 | 性能加固、有界缩略图缓存、监听器生命周期管理、可恢复文件操作、磁盘空间预检、操作状态持久化、SQLite 迁移/完整性修复、自动更新接入和发布检查 |
+前往 [Releases](https://github.com/AITuring/ImageExplorer/releases)，选择最新的成功构建：
 
-M3 的冲突决策会应用到当前整个任务。默认的“保留两者”会继续使用已有的自动生成不重名路径逻辑。M4 撤销会删除复制出来的结果，或把移动后的项目移回原目录；删除项目仍通过系统废纸篓恢复。
+- **Apple Silicon（M 系列）**：`ImageExplorer-macos-arm64.dmg`
+- **Intel Mac**：`ImageExplorer-macos-x64.dmg`
+- 打开 DMG，将应用拖入 Applications；也提供 `.app.zip` 和 `SHA256SUMS.txt`。
 
-M5 在支持的平台使用系统废纸篓 API，macOS 使用 Finder 自动化完成浏览、恢复和清空；ZIP 在 macOS 使用 `ditto`，其他平台使用 `zip`/`unzip`。
+每次 push 发布的是 **预览版 Release**，使用临时签名，未经 Apple Developer ID 签名和公证，macOS 可能阻止首次启动。预览版不提供自动更新元数据。正式签名/公证发布需要单独配置密钥和 updater 公钥，不能将自动构建成功等同于正式发行验收。
 
-M6 的“显示简介”会在打开时重新读取文件系统元数据，避免搜索索引中的轻量条目覆盖真实属性；Package 使用目录扩展名识别，Alias 支持 `.alias` 文件标记，macOS Finder Alias 会通过 Spotlight 元数据识别并通过 Finder 自动化解析目标，符号链接保留链接本身与目标路径。
+## 本地启动
 
-M7 将收藏夹和最多 12 条最近位置保存到应用设置中。收藏夹只接收文件夹，保证侧边栏导航路径明确；两个区域都支持点击打开，右键菜单可以移除条目且不会修改文件系统内容。
-
-### 7.2 性能与 7.3 发布质量加固
-
-- 文件列表继续使用虚拟化渲染；后台索引器改为分批写入，避免百万文件扫描全部驻留内存。
-- 复制/移动操作增加目标磁盘空间预检、瞬时 I/O/网络错误重试、目录递归字节统计和操作状态持久化。应用异常退出后，排队中/执行中的任务会恢复为可重试失败态，不再静默消失。
-- 缩略图内存缓存采用有界 LRU（同时限制条目数和字节数）；多个窗口共享同一路径 watcher，并在最后一个视图离开后释放监听器。
-- SQLite 使用版本化迁移表、WAL、完整性检查；索引数据库损坏时自动备份并重建，未完成的索引构建也会在下次启动时识别并重建。
-- `pnpm perf:smoke` 提供可重复的主机文件系统基线。它不会冒充 Tauri IPC 或 React P95 测量，10 万目录、100 万索引、100GB 复制仍需在发布机上按清单实测。
-- 已接入 `tauri-plugin-updater` 签名更新流程。发布前必须替换 `src-tauri/tauri.conf.json` 中的占位公钥，并在 CI secrets 配置 `TAURI_SIGNING_PRIVATE_KEY` 以及 Apple 签名/公证密钥。
-- `pnpm release:check` 校验 bundle、entitlements、updater 元数据和发布前置条件；`.github/workflows/release.yml` 在配置 Apple secrets 后执行严格发布检查和构建。
-- 完整发布验收项见 [docs/performance-release-checklist.md](./docs/performance-release-checklist.md)。
-- 权限行为和本地存储边界见 [docs/permissions.md](./docs/permissions.md)。
-
-## 技术栈
-
-| 层级 | 技术 |
-| ---- | ---- |
-| 桌面框架 | [Tauri 2](https://tauri.app/) |
-| 前端 | React 19 + TypeScript 5.8 |
-| 后端 | Rust (2021 edition) |
-| 样式 | Tailwind CSS 4 + shadcn/ui |
-| 搜索引擎 | SQLite FTS5 + 并行文件遍历 |
-| 构建工具 | Vite 7 |
-| 包管理器 | pnpm |
-
-## 从源码编译
-
-**前置依赖：**
-
-- [Node.js](https://nodejs.org/) (LTS)
-- [pnpm](https://pnpm.io/)
-- [Rust](https://www.rust-lang.org/tools/install)
-- Xcode Command Line Tools (`xcode-select --install`)
+需要 Node.js 24、pnpm 10、Rust stable，以及 Xcode Command Line Tools（`xcode-select --install`）。
 
 ```bash
-# 克隆仓库
-git clone git@github.com:callback-io/ImageExplorer.git
+git clone https://github.com/AITuring/ImageExplorer.git
 cd ImageExplorer
-
-# 安装依赖
-pnpm install
-
-# 开发模式运行
+pnpm install --frozen-lockfile
 pnpm tauri dev
-
-# 构建生产版本 (.dmg)
-pnpm tauri build
 ```
 
-## 开发
+`pnpm tauri dev` 启动完整桌面应用并支持前端热更新；`pnpm dev` 只启动网页前端，不能独立提供文件系统和 RAW 原生能力。若提示端口 1420 被占用，请停止此前的开发服务后重试。
 
-### 常用命令
+```bash
+# 本地构建预览安装包，不需要 updater 签名密钥
+pnpm tauri build --bundles app,dmg --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
-| 命令 | 说明 |
-| ---- | ---- |
-| `pnpm tauri dev` | 启动应用（含热更新） |
-| `pnpm tauri build` | 构建生产版本 |
-| `pnpm dev` | 仅启动前端开发服务器（端口 1420） |
-| `pnpm check` | ESLint + TypeScript 检查 |
-| `pnpm cargo:clippy` | Rust 代码检查（警告视为错误） |
-| `pnpm check:all` | 全部检查（前端 + Rust） |
-
-### 项目结构
-
-```text
-src/                    # React 前端
-├── components/         # UI 组件（FileList、Sidebar、TabBar、TopBar 等）
-├── hooks/              # 自定义 Hooks（useTabs、useSetting、useTheme、照片元数据）
-├── stores/             # Zustand 状态（viewMode、clipboard、照片分析开关）
-├── contexts/           # React Context（tabs、theme）
-├── lib/                # 工具库（i18n、设置、缩略图、照片分析、元数据）
-└── locales/            # 国际化翻译（en、zh）
-
-src-tauri/src/          # Rust 后端
-├── commands/           # Tauri 命令（文件系统/EXIF、缩略图、搜索、应用、监听）
-├── db/                 # SQLite 层（schema、索引器、搜索引擎）
-└── index/              # 内存索引（回退方案）
+# 完整自动检查：前端、格式、Rust 测试与 Clippy
+pnpm check:ci
 ```
 
-### Git Hooks
+安装包输出在 `src-tauri/target/release/bundle/`。
 
-通过 [Husky](https://typicode.github.io/husky/) + [lint-staged](https://github.com/lint-staged/lint-staged) 实现提交前自动检查：
+## 每次 push 自动发布
 
-- `*.{ts,tsx}` → ESLint 修复 + Prettier 格式化
-- `*.{json,css,md}` → Prettier 格式化
+[Release 工作流](./.github/workflows/release.yml) 对所有分支和标签的 push 运行，也支持手动触发：
+
+1. 在 Apple Silicon 与 Intel macOS runner 上安装锁定依赖，执行 `pnpm check:ci`。
+2. 分别构建 `.dmg` 和 `.app.zip`，汇总两个架构的产物。
+3. 两端都成功后生成 SHA-256 校验文件，并发布 `build-<run_id>` 预览 Release，记录来源引用与完整 commit SHA。
+4. 每次 push 独立运行，不取消前一次构建；重跑同一任务复用同一个 Release。检查或构建失败时不发布缺少安装包的正式可见 Release。
+
+发布仅使用 GitHub 自动提供的 `GITHUB_TOKEN`（发布 job 的 `contents: write`），不需要另建 PAT。仓库需允许 GitHub Actions 运行和写入 Release。删除分支不发布；GitHub 对大批量标签/分支推送的事件限制仍适用。
+
+[Signed Release](./.github/workflows/release-signed.yml) 保留为手动入口，输入已有版本标签，严格检查签名配置并生成待审阅草稿。具体密钥与正式发布验收见 [发布清单](./docs/performance-release-checklist.md)。
+
+## 技术与项目文档
+
+React 19 · TypeScript · Tailwind CSS 4 · Tauri 2 · Rust · SQLite FTS5 · Vite
+
+- [Finder 差异分析与开发计划](./docs/finder-gap-analysis-and-development-plan.zh-CN.md)
+- [性能与正式发布清单](./docs/performance-release-checklist.md)
+- [权限与本地数据边界](./docs/permissions.md)
+
+当前重点是 macOS，自动安装包覆盖 Apple Silicon 与 Intel；不宣称 Windows/Linux 已完成发行验收。
 
 ## 许可证
 
-[BSL 1.1](./LICENSE) — 非商业用途免费使用。详见 LICENSE 文件。
+[BSL 1.1](./LICENSE)，具体使用授权以 LICENSE 为准。

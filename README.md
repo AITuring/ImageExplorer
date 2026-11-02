@@ -1,195 +1,137 @@
-# ImageExplorer
+<div align="center">
+  <img src="./src-tauri/icons/128x128@2x.png" width="112" alt="ImageExplorer app icon" />
+  <h1>ImageExplorer</h1>
+  <p>A macOS file browser for everyday file management and practical RAW photo review.</p>
+  <p>English · <a href="./README.zh-CN.md">中文</a> · <a href="https://github.com/AITuring/ImageExplorer/releases">Download</a> · <a href="https://github.com/AITuring/ImageExplorer/actions/workflows/release.yml">Builds</a></p>
+</div>
 
-A modern, fast file manager for macOS — built with Rust and React.
+![CI](https://github.com/AITuring/ImageExplorer/actions/workflows/ci.yml/badge.svg)
+![Release](https://github.com/AITuring/ImageExplorer/actions/workflows/release.yml/badge.svg)
 
-[English](./README.md) | [中文](./README.zh-CN.md)
+## Browse files. Review photos. Keep working.
 
-ImageExplorer brings the best of Windows Explorer to macOS: an editable address bar, a persistent folder tree, and blazing-fast Everything-style search — all wrapped in a native macOS design.
+ImageExplorer combines a Finder-inspired interface with an editable address bar, a folder tree and local indexed search. Browse files directly on disk without importing a photo library, then copy, move, rename, archive or open the originals in your preferred editor.
 
-It is also built for a practical photography workflow: open a folder of camera files, compare a burst of similar frames in icon view, identify repeated viewpoints, check the estimated focus area, and send the selected RAW file to Camera Raw or another editor.
+![RAW photo browsing with sharpness labels and analysis progress](./docs/screenshots/photo-browser-annotated.png)
 
-![ImageExplorer Screenshot](./docs/screenshot.png)
+*Real-file example with analysis progress annotated in red. Screenshots show an earlier UI: the current app has three views, automatic analysis and no separate sharpness toggle. Older toolbar and metadata layouts pictured here are not the current layout.*
 
-## Photo review workflow
+## Three views
 
-The optional **View & Focus Analysis** mode turns icon view into a fast contact sheet for RAW review. It is off by default, so ordinary folders keep the lightweight Finder-like experience until you enable it from the icon-view toolbar.
+| View | Best for | What you see |
+| --- | --- | --- |
+| **Icons · ⌘1** | Comparing compositions, bursts and similar viewpoints | Thumbnails, names, sharpness, dimensions and exposure settings; analysis can show viewpoint groups and focus markers |
+| **List · ⌘2** | Finding, sorting and comparing files | Thumbnail, name, sharpness, ISO / aperture / shutter / focal length, size and modified date; no focus overlay on thumbnails |
+| **Columns · ⌘3** | Navigating folders with a large single-file preview | File thumbnails on the left, image and detailed information on the right; defaults to the first item when nothing is selected |
 
-![Icon view with focus analysis and view grouping](./docs/screenshots/icon-view-focus-analysis.png)
+Views share selection and sharpness styling; switching views locates the selected file. Folder analysis and its progress continue across views. Icons and lists use virtualized rendering; column thumbnails load when visible, with cached previews and bounded background work.
 
-When the mode is enabled:
+![Column browsing and large photo preview](./docs/screenshots/column-preview-annotated.png)
 
-1. Similar frames are compared using a low-resolution visual fingerprint and grouped by viewpoint, even when they are not adjacent in filename order.
-2. Each group receives a rotating background tint so a burst or repeated composition is easy to scan.
-3. A small focus box is drawn over each thumbnail. The marker follows the image during Quick Look zoom, and the preview footer reports its normalized position, confidence, and estimation method.
-4. Camera metadata is loaded lazily below the filename when macOS exposes it: dimensions, ISO, aperture, shutter speed, focal length, camera body, and lens.
+*Earlier column-view example. The red annotation marks the file-icon area, now replaced with the shared row thumbnails. The metadata panel is now divided into the groups below.*
 
-Whether or not grid analysis is enabled, Quick Look automatically enables **Sharpness** and reuses the displayed preview to highlight relatively sharper edges across the full image in red. Choose **Select** to inspect a local area. The high-frequency pass runs away from the interface thread, and this local preview result is never presented as camera AF.
+## Photo information and sharpness
 
-### Camera AF metadata
+### A structured inspector
 
-When the source file contains Sony MakerNote focus coordinates, ImageExplorer
-uses ExifTool to read `FocusLocation`/`FocusFrameSize` (and the documented
-`FlexibleSpotPosition` fallback). Those rectangles are rendered as solid cyan
-boxes and labelled **Camera AF**. A dashed amber box means the file did not
-provide a drawable camera rectangle and the app is showing its separate
-sharpness estimate instead; it is never presented as the camera's AF result.
-Sony AF metadata may contain only the selected area's center point: in that
-case the cyan box is explicitly marked as an approximate display frame and a
-small dot marks the recorded center. Only `FocusLocation` together with
-`FocusFrameSize` is treated as an exact camera rectangle.
+Available metadata is grouped rather than squeezed into a single line. Missing fields are omitted.
 
-Install ExifTool on macOS with `brew install exiftool`, or set
-`IMAGEEXPLORER_EXIFTOOL`/`EXIFTOOL_PATH` to a bundled or standalone executable.
-If a Sony file has no AF coordinates, the UI reports that explicitly. The
-official tag definitions are maintained in the [ExifTool Sony MakerNote
-reference](https://exiftool.org/TagNames/Sony.html).
+| Group | Fields |
+| --- | --- |
+| **Shooting settings** | ISO, aperture, shutter speed, focal length, capture time |
+| **Camera & lens** | Manufacturer, camera model, lens name |
+| **File information** | Pixel dimensions, megapixels, size, modification date, format |
+| **Photo location** | Embedded GPS latitude/longitude, with an on-demand OpenStreetMap preview |
 
-![Repeated viewpoints highlighted in icon view](./docs/screenshots/icon-view-focus-groups.png)
+Metadata is read through macOS ImageIO with Spotlight fallback for some fields. RAW compatibility and field availability depend on macOS and the source file. GPS is never inferred: clicking **Show map** shares the recorded coordinates with OpenStreetMap; no map request is sent before that click.
 
-![RAW/JPEG pairs in icon view](./docs/screenshots/icon-view-raw-pairs.png)
+### Automatic analysis for culling
 
-Press **Space** to open Quick Look, use the arrow buttons or Left/Right keys to move through the folder, and hold **⌘/Ctrl + scroll** to zoom around the pointer. Full-image sharpness analysis starts automatically when the photo appears; choose **Select** to draw a local area, or use **Full** to analyze the whole image again. The result stays aligned while zooming. Adjacent RAW previews are prefetched so moving through a sequence feels immediate.
+- Folder analysis extracts visual features and groups similar viewpoints; progress reports the current stage and item count.
+- Shared badges distinguish sharp, soft, pending and unavailable results across views.
+- Sharpness is a preview-based aid, not proof of camera focus or a substitute for inspecting the original RAW at full size.
+- Where available, Sony MakerNote coordinates provide camera AF regions. Center-only metadata is identified as an approximate display box; estimated focus and actual camera AF remain distinct.
+- Sony AF metadata optionally uses ExifTool: `brew install exiftool`, or set `IMAGEEXPLORER_EXIFTOOL` / `EXIFTOOL_PATH`. Basic browsing does not require it.
 
-![Quick Look zoom with focus marker](./docs/screenshots/quick-look-zoom-focus.png)
+### Space-bar Quick Look
 
-> Camera AF boxes are only drawn from coordinates actually present in the file's Sony MakerNote. When those tags are absent, the dashed estimate is a selection aid rather than a replacement for checking the full-resolution RAW.
+Press **Space** on a file to preview it. Move between images, zoom around the pointer, inspect full-image or selected-area sharpness, and take advantage of adjacent RAW prefetching. Native preview support covers additional formats; open originals in the default app or another editor to continue editing.
 
-## Features
+![Zooming into real photo detail in Quick Look](./docs/screenshots/quick-look-zoom-focus.png)
 
-- **Editable Address Bar** — Navigate by typing paths, copy/paste with Cmd+C/Cmd+V, breadcrumb clicking
-- **Folder Tree Sidebar** — Windows-style collapsible tree with lazy loading
-- **Mounted Volumes** — Shows mounted USB, external, and network volumes in the sidebar Locations section, refreshes after mount/unmount, and requests macOS folder access when a volume has not been authorized yet
-- **Resizable Sidebar** — Drag the sidebar divider to adjust its width, drag it to the edge to hide it, and use the attached edge handle to click or drag it back open; the setting is remembered
-- **Everything-Style Search** — Millisecond-level full-disk search powered by SQLite FTS5 + Rust, with an anchored result panel that stays above the file content and supports Finder-like selection, context-menu actions, and inline rename
-- **Finder-Like Thumbnails** — Native thumbnail previews in icon/list views, including common camera RAW formats, generated through in-process Quick Look with progressive loading and caching for large folders
-- **Optional Photo Analysis** — Group similar viewpoints globally, cycle distinct group colors, and mark an estimated focus region without changing the default lightweight browsing mode
-- **Focus-Aware Quick Look** — Space-bar preview with Core Image RAW decoding, progressive loading, adjacent-image prefetching, pointer-centered zoom, full-image or selected-area sharpness highlighting, and focus data beneath the image
-- **EXIF-at-a-Glance** — Lazy, bounded-concurrency metadata loading for visible icon cards so camera settings appear without delaying folder layout
-- **Finder-Like Selection & Rename** — Subtle native-style selection states; in icon/list views, click a selected filename to rename it inline (Enter confirms, Escape cancels)
-- **Multi-Tab & Multi-Window** — Drag tabs between windows while preserving their navigation history; detached tabs open with their current folder and history; move files and folders into another window or its current folder, with source and destination views refreshed after completion
-- **Cmd+X Cut** — Native cut support, no more Cmd+C → Cmd+Option+V
-- **Queued File Operations** — Copy, move, archive, and trash operations run through a sequential queue with cancellation, progress, errors, durable recovery state, and same-target retry after restart
-- **One-Step Undo** — Completed copy and move operations persist their recovery actions and can be undone after restart; delete operations remain recoverable through the system Trash
-- **Name Conflict Resolution** — Before copy or move, choose to keep both, safely replace while retaining the original for Undo, skip conflicts, or cancel
-- **Trash Management** — Open the system Trash from the sidebar to browse items, restore them to their original location, or empty the Trash
-- **ZIP Workflows** — Compress selected files/folders to a ZIP or extract a ZIP from the context menu; archive work runs through the operation center
-- **Item Info Inspector** — Use “Get Info” to inspect path, size, timestamps, permissions, ownership, package, alias, and symbolic-link details
-- **Favorites & Recent Locations** — Keep frequently used folders in a persistent Favorites section and revisit the latest directories from the Recent section
-- **QuickLook Preview** — Press Space to preview files (text, images, video, audio, PDF, HEIC, DNG, PSD), with native macOS thumbnail fallback for unsupported formats
-- **Context Menus** — Windows-style right-click with 20+ actions, Finder-like sorting and arranging: "New File", "Open in New Tab" for folders, "Open in Terminal", "Copy Path", etc.
-- **Dark Mode** — Light / Dark / System theme
-- **i18n** — English and Simplified Chinese
+*An earlier Quick Look capture showing detail inspection; focus markers and controls have evolved since this screenshot.*
 
-## Development Roadmap
+## File management
 
-See the [Finder gap analysis and detailed development plan (Chinese)](./docs/finder-gap-analysis-and-development-plan.zh-CN.md): section 6 tracks the original 22 work packages plus the optional N06 sharing prototype, and section 7.4 lists the next actions with code evidence, dependencies, and macOS acceptance criteria. Estimates are historical; remaining scope needs re-estimation. M1–M8 below describe implementation milestones, not complete Finder compatibility validation.
+| Feature | Capabilities |
+| --- | --- |
+| Navigation | Editable paths, breadcrumbs, back/forward history, collapsible folder tree and resizable sidebar |
+| Local search | SQLite FTS5 index; select, rename and act on results. Initial indexing takes time |
+| Mounted volumes | External disks and mounted-volume changes, with macOS access authorization where required |
+| Tabs & windows | Multiple tabs/windows, tab detachment, navigation history and cross-window file movement |
+| Copy & move | ⌘C / ⌘X / ⌘V, queued operations, progress, cancellation, errors and conflict resolution |
+| Recovery | Keep both, replace, skip or cancel; persistent operation history, retries and one-step undo for recoverable operations |
+| Organization | Inline and batch rename, sorting, arranging, new files and folders |
+| Trash & ZIP | Browse/restore/empty Trash; queued ZIP compression and extraction |
+| Get Info | Paths, permissions, ownership, timestamps, packages, aliases and symbolic links |
+| Preferences | Favorites, recent locations, hidden files, light/dark/system theme, English and Simplified Chinese |
 
-The current implementation status is tracked by milestones:
+## Download and install
 
-| Milestone | Status | Scope |
-| --------- | ------ | ----- |
-| M1 | Complete | Rich file metadata, hidden-item discovery, and a show-hidden-files setting |
-| M2 | Complete | Copy/move/delete queue, progress center, cancellation, and cross-window refresh events |
-| M3 | Complete | Same-name conflict dialog with keep-both, recoverable replace, skip, and cancel decisions |
-| M4 | Complete | Durable operation history, restart recovery, retry, and one-step undo for copy/move/archive actions |
-| M5 | Complete | Trash browsing/restore/empty controls and queued ZIP archive workflows |
-| M6 | Complete | Package, alias, and symbolic-link identification, cross-platform item details, and metadata boundary tests |
-| M7 | Complete | Persistent Favorites and Recent Locations with file-menu and sidebar management |
-| M8 | Complete | Performance hardening, bounded thumbnail cache, watcher lifecycle management, resilient queued operations, disk-space preflight, persistent recovery state, SQLite migrations/integrity repair, updater integration, and release checks |
+Visit [Releases](https://github.com/AITuring/ImageExplorer/releases) and choose a successful build:
 
-M3 conflict decisions are applied to the whole pending operation. The default keep-both behavior preserves the existing automatic unique-name fallback. M4 persists recovery requests and undo intents before filesystem publication: undo removes copied/archive results or moves moved items back to their exact original path; deleted items remain available through the operating system Trash.
+- **Apple Silicon (M-series):** `ImageExplorer-macos-arm64.dmg`
+- **Intel Mac:** `ImageExplorer-macos-x64.dmg`
+- Open the DMG and drag the app to Applications. ZIP alternatives and `SHA256SUMS.txt` are also provided.
 
-M5 uses the platform Trash APIs where available and Finder automation on macOS. ZIP compression uses `ditto` on macOS and `zip`/`unzip` on other platforms.
+Push builds are **preview releases**, ad-hoc signed but not Apple Developer ID signed or notarized. macOS may block first launch. These previews do not publish automatic updater metadata. A production signed release requires separate signing credentials, an updater public key and release acceptance checks.
 
-M6 reloads filesystem metadata when “Get Info” opens so lightweight search-index entries do not hide the real attributes. Packages are identified by directory extension, `.alias` files are marked as aliases, and macOS Finder aliases are detected through Spotlight metadata and resolved through Finder automation. Symbolic links preserve both the link and its target path.
+## Run locally
 
-M7 stores Favorites and up to twelve Recent Locations in the application settings store. Favorites are limited to directories so sidebar navigation remains unambiguous; both sections support opening locations from the sidebar, while context menus can remove entries without changing the filesystem.
-
-### Performance and release hardening
-
-- Directory rendering remains virtualized; the backend indexer writes bounded batches instead of retaining a full million-file scan in memory.
-- Copy/move jobs perform a best-effort destination free-space preflight, retry transient I/O/network errors, report recursive directory byte totals, and atomically persist requests, selected targets, completed items, and undo actions. Queued/running work is marked recoverable after an unexpected restart instead of disappearing.
-- Thumbnail memory is bounded by an LRU cache (entry and byte limits). Directory watchers use reference counting so multiple windows share one watcher and release it when the last view leaves.
-- SQLite uses a versioned migration table, WAL settings, integrity checks, and automatic backup/recreation when the index database is corrupt. A failed/incomplete index build is detected and rebuilt.
-- `pnpm perf:smoke` provides repeatable host filesystem baselines. It intentionally does not claim a Tauri IPC or React P95; device-specific 100k/1M/100GB measurements remain part of release validation.
-- The signed Tauri updater is wired through `tauri-plugin-updater`. Replace the placeholder public key in `src-tauri/tauri.conf.json` and configure `TAURI_SIGNING_PRIVATE_KEY` plus Apple signing/notarization secrets before distributing builds.
-- `pnpm release:check` validates bundle, entitlements, updater metadata, and release prerequisites. The macOS workflow in `.github/workflows/release.yml` performs strict signing/notarization checks when the required Apple secrets are present.
-- The full release gate is documented in [docs/performance-release-checklist.md](./docs/performance-release-checklist.md).
-- Permission behavior and stored-data boundaries are documented in [docs/permissions.md](./docs/permissions.md).
-
-## Tech Stack
-
-| Layer | Technology |
-| ----- | ---------- |
-| Desktop Framework | [Tauri 2](https://tauri.app/) |
-| Frontend | React 19 + TypeScript 5.8 |
-| Backend | Rust (2021 edition) |
-| Styling | Tailwind CSS 4 + shadcn/ui |
-| Search Engine | SQLite FTS5 + parallel filesystem traversal |
-| Build Tool | Vite 7 |
-| Package Manager | pnpm |
-
-## Build from Source
-
-**Prerequisites:**
-
-- [Node.js](https://nodejs.org/) (LTS)
-- [pnpm](https://pnpm.io/)
-- [Rust](https://www.rust-lang.org/tools/install)
-- Xcode Command Line Tools (`xcode-select --install`)
+Install Node.js 24, pnpm 10, Rust stable and Xcode Command Line Tools (`xcode-select --install`).
 
 ```bash
-# Clone the repository
-git clone git@github.com:callback-io/ImageExplorer.git
+git clone https://github.com/AITuring/ImageExplorer.git
 cd ImageExplorer
-
-# Install dependencies
-pnpm install
-
-# Run in development mode
+pnpm install --frozen-lockfile
 pnpm tauri dev
-
-# Build production app (.dmg)
-pnpm tauri build
 ```
 
-## Development
+`pnpm tauri dev` runs the full desktop app with frontend hot reload. `pnpm dev` only serves the web frontend, without native filesystem/RAW capabilities. If port 1420 is occupied, stop the previous development server and retry.
 
-### Commands
+```bash
+# Build preview installers without an updater signing key
+pnpm tauri build --bundles app,dmg --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
-| Command | Description |
-| ------- | ----------- |
-| `pnpm tauri dev` | Start app with hot reload |
-| `pnpm tauri build` | Build production app bundle |
-| `pnpm dev` | Frontend dev server only (port 1420) |
-| `pnpm check` | ESLint + TypeScript check |
-| `pnpm cargo:clippy` | Rust lint (warnings = errors) |
-| `pnpm check:all` | All checks (frontend + Rust) |
-
-### Project Structure
-
-```text
-src/                    # React frontend
-├── components/         # UI components (FileList, Sidebar, TabBar, TopBar, etc.)
-├── hooks/              # Custom hooks (useTabs, useSetting, useTheme, photo metadata)
-├── stores/             # Zustand stores (viewMode, clipboard, photo analysis mode)
-├── contexts/           # React contexts (tabs, theme)
-├── lib/                # Utilities (i18n, settings, thumbnails, photo analysis, metadata)
-└── locales/            # i18n translations (en, zh)
-
-src-tauri/src/          # Rust backend
-├── commands/           # Tauri commands (fs/EXIF, thumbnails, search, apps, watcher)
-├── db/                 # SQLite layer (schema, indexer, search engine)
-└── index/              # In-memory index (fallback)
+# Frontend checks, formatting, Rust tests and Clippy
+pnpm check:ci
 ```
 
-### Git Hooks
+Installers are written to `src-tauri/target/release/bundle/`.
 
-Pre-commit hooks via [Husky](https://typicode.github.io/husky/) + [lint-staged](https://github.com/lint-staged/lint-staged):
+## A release for every push
 
-- `*.{ts,tsx}` → ESLint fix + Prettier
-- `*.{json,css,md}` → Prettier
+The [Release workflow](./.github/workflows/release.yml) runs on pushes to all branches and tags, and supports manual dispatch:
+
+1. Install locked dependencies and run `pnpm check:ci` on Apple Silicon and Intel macOS runners.
+2. Build `.dmg` and `.app.zip` packages for both architectures.
+3. After both builds succeed, generate SHA-256 checksums and publish a `build-<run_id>` prerelease with the source ref and full commit SHA.
+4. Each push runs independently without cancelling earlier builds. A rerun reuses its release. Failed checks/builds do not publish a visible release with missing installers.
+
+Publishing uses the automatic `GITHUB_TOKEN` with `contents: write` only in the publish job; no personal token is required. Repository policy must allow Actions and release writes. Branch deletion does not publish; GitHub's bulk-push event limits still apply.
+
+The separate [Signed Release workflow](./.github/workflows/release-signed.yml) accepts an existing version tag through manual dispatch, checks signing prerequisites and creates a reviewable draft. See the [release checklist](./docs/performance-release-checklist.md) for required credentials and acceptance criteria.
+
+## Technology and documentation
+
+React 19 · TypeScript · Tailwind CSS 4 · Tauri 2 · Rust · SQLite FTS5 · Vite
+
+- [Finder gap analysis and development plan (Chinese)](./docs/finder-gap-analysis-and-development-plan.zh-CN.md)
+- [Performance and production release checklist](./docs/performance-release-checklist.md)
+- [Permissions and local data boundaries](./docs/permissions.md)
+
+macOS is the current focus. Automated packages cover Apple Silicon and Intel; Windows/Linux production acceptance is not claimed.
 
 ## License
 
-[BSL 1.1](./LICENSE) — Free for non-commercial use. See LICENSE for details.
+[BSL 1.1](./LICENSE). See the license file for the precise terms.

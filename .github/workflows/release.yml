@@ -1,16 +1,32 @@
 name: Release
 
 on:
-  workflow_dispatch:
   push:
-    tags:
-      - "v*"
+    branches: ["**"]
+    tags: ["**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Each push gets its own release. Never cancel an earlier push's build.
+concurrency:
+  group: release-${{ github.run_id }}
+  cancel-in-progress: false
 
 jobs:
-  macos-release:
-    runs-on: macos-latest
-    permissions:
-      contents: write
+  build:
+    name: Build ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -21,34 +37,77 @@ jobs:
           node-version: 24
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
       - run: pnpm install --frozen-lockfile
       - run: pnpm check:ci
-      - run: pnpm release:check
+      - name: Build preview app and disk image
+        # Ad-hoc signing only; no Developer ID, notarization or updater feed.
         env:
-          RELEASE_STRICT: "1"
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      - name: Build and publish signed updater artifacts
-        uses: tauri-apps/tauri-action@v0
+          APPLE_SIGNING_IDENTITY: "-"
+        run: pnpm tauri build --bundles app,dmg --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      - name: Collect installers
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p release-assets
+          ditto -c -k --sequesterRsrc --keepParent src-tauri/target/release/bundle/macos/ImageExplorer.app "release-assets/ImageExplorer-macos-${ARCH}.app.zip"
+          shopt -s nullglob
+          images=(src-tauri/target/release/bundle/dmg/*.dmg)
+          test "${#images[@]}" -eq 1
+          cp "${images[0]}" "release-assets/ImageExplorer-macos-${ARCH}.dmg"
+      - uses: actions/upload-artifact@v4
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: ImageExplorer ${{ github.ref_name }}
-          releaseBody: Signed ImageExplorer release
-          releaseDraft: true
-          prerelease: false
+          name: macos-${{ matrix.arch }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: macos-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish complete preview release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+          SOURCE_REF: ${{ github.ref }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          tag="build-${RUN_ID}"
+          title="ImageExplorer build ${RUN_NUMBER} (${COMMIT:0:7})"
+          cd release-assets
+          test -f ImageExplorer-macos-arm64.dmg
+          test -f ImageExplorer-macos-x64.dmg
+          test -f ImageExplorer-macos-arm64.app.zip
+          test -f ImageExplorer-macos-x64.app.zip
+          sha256sum *.dmg *.zip > SHA256SUMS.txt
+          printf '## macOS preview / macOS 预览版\n\nCommit: `%s`\n\nSource: `%s`\n\n' "$COMMIT" "$SOURCE_REF" > ../release-notes.md
+          cat >> ../release-notes.md <<'NOTES'
+          - **Apple Silicon (M-series):** download `macos-arm64.dmg`.
+          - **Intel:** download `macos-x64.dmg`.
+          - Open the DMG and drag ImageExplorer to Applications. ZIP alternatives and SHA-256 checksums are included.
+          - This automated preview uses ad-hoc signing. It is **not Apple-notarized** and does not publish automatic updater metadata. macOS may block first launch.
+          - 每次 push 对应一个独立预览 Release；下载对应芯片的 DMG，拖入 Applications 安装。此预览版未经 Apple 公证，不提供自动更新。
+          NOTES
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --target "$COMMIT" --title "$title" --notes-file ../release-notes.md --draft --prerelease
+          fi
+          gh release upload "$tag" *.dmg *.zip SHA256SUMS.txt --clobber
+          gh release edit "$tag" --draft=false --prerelease --notes-file ../release-notes.md
+          printf 'Release: https://github.com/%s/releases/tag/%s\n' "$GH_REPO" "$tag" >> "$GITHUB_STEP_SUMMARY"
