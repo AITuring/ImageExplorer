@@ -84,7 +84,7 @@ ImageExplorer 结合 Finder 风格的界面、可编辑路径栏、目录树和�
 - **Intel Mac**：`ImageExplorer-macos-x64.dmg`
 - 打开 DMG，将应用拖入 Applications；也提供 `.app.zip` 和 `SHA256SUMS.txt`。
 
-每次 push 发布的是 **预览版 Release**，使用临时签名，未经 Apple Developer ID 签名和公证，macOS 可能阻止首次启动。预览版不提供自动更新元数据。正式签名/公证发布需要单独配置密钥和 updater 公钥，不能将自动构建成功等同于正式发行验收。
+每次 push 发布的是带版本号的 **正式 GitHub Release**（标记为 Latest，而非 Pre-release），使用临时签名，未经 Apple Developer ID 签名和公证，macOS 可能阻止首次启动。当前构建不提供自动更新元数据。正式签名/公证发布需要单独配置密钥和 updater 公钥，不能将自动构建成功等同于正式发行验收。
 
 ## 本地启动
 
@@ -100,7 +100,7 @@ pnpm tauri dev
 `pnpm tauri dev` 启动完整桌面应用并支持前端热更新；`pnpm dev` 只启动网页前端，不能独立提供文件系统和 RAW 原生能力。若提示端口 1420 被占用，请停止此前的开发服务后重试。
 
 ```bash
-# 本地构建预览安装包，不需要 updater 签名密钥
+# 本地构建安装包，不需要 updater 签名密钥
 pnpm tauri build --bundles app,dmg --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
 # 完整自动检查：前端、格式、Rust 测试与 Clippy
@@ -115,10 +115,10 @@ pnpm check:ci
 
 1. 在 Apple Silicon 与 Intel macOS runner 上安装锁定依赖，执行 `pnpm check:ci`。
 2. 分别构建 `.dmg` 和 `.app.zip`，汇总两个架构的产物。
-3. 两端都成功后生成 SHA-256 校验文件，并发布 `build-<run_id>` 预览 Release，记录来源引用与完整 commit SHA。
-4. 每次 push 独立运行，不取消前一次构建；重跑同一任务复用同一个 Release。检查或构建失败时不发布缺少安装包的正式可见 Release。
+3. 构建前原子预留版本号，从 `v0.1.0` 开始递增补丁号：`v0.1.1`、`v0.1.2`……；安装包内版本与 Release 一致。两端都成功后生成 SHA-256 校验文件并发布正式 Release，记录来源引用与完整 commit SHA。
+4. 每次 push 独立运行，不取消前一次构建；重跑同一任务复用同一个版本。并发推送不会占用相同版本，Latest 指向已发布的最高版本；失败构建保留已占用的标签，因此版本可能跳号。检查或构建失败时不发布缺少安装包的正式可见 Release。
 
-发布仅使用 GitHub 自动提供的 `GITHUB_TOKEN`（发布 job 的 `contents: write`），不需要另建 PAT。仓库需允许 GitHub Actions 运行和写入 Release。删除分支不发布；GitHub 对大批量标签/分支推送的事件限制仍适用。
+发布仅使用 GitHub 自动提供的 `GITHUB_TOKEN`（版本预留和发布 job 的 `contents: write`），不需要另建 PAT。仓库需允许 GitHub Actions 运行和写入 Release。删除分支不发布；GitHub 对大批量标签/分支推送的事件限制仍适用。
 
 [Signed Release](./.github/workflows/release-signed.yml) 保留为手动入口，输入已有版本标签，严格检查签名配置并生成待审阅草稿。具体密钥与正式发布验收见 [发布清单](./docs/performance-release-checklist.md)。
 

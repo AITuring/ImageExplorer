@@ -15,7 +15,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  version:
+    name: Reserve release version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/github-script@v7
+        id: version
+        with:
+          script: |
+            const { reserveVersion } = require('./scripts/release-version.cjs');
+            core.setOutput('version', await reserveVersion(github, context));
+
   build:
+    needs: version
     name: Build ${{ matrix.arch }}
     strategy:
       fail-fast: false
@@ -43,8 +60,27 @@ jobs:
         with:
           workspaces: src-tauri -> target
       - run: pnpm install --frozen-lockfile
+      - name: Set application version
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          python3 - <<'PYVERSION'
+          import json, os, re
+          from pathlib import Path
+          version = os.environ['RELEASE_VERSION']
+          assert re.fullmatch(r'\d+\.\d+\.\d+', version)
+          for name in ['package.json', 'src-tauri/tauri.conf.json']:
+              p = Path(name)
+              data = json.loads(p.read_text())
+              data['version'] = version
+              p.write_text(json.dumps(data, indent=2) + '\n')
+          p = Path('src-tauri/Cargo.toml')
+          p.write_text(re.sub(r'(?m)^version = "[^"]+"', f'version = "{version}"', p.read_text(), count=1))
+          p = Path('src-tauri/Cargo.lock')
+          p.write_text(re.sub(r'(name = "imageexplorer"\nversion = ")[^"]+', lambda m: m[1] + version, p.read_text(), count=1))
+          PYVERSION
       - run: pnpm check:ci
-      - name: Build preview app and disk image
+      - name: Build versioned app and disk image
         # Ad-hoc signing only; no Developer ID, notarization or updater feed.
         env:
           APPLE_SIGNING_IDENTITY: "-"
@@ -68,7 +104,7 @@ jobs:
 
   publish:
     name: Publish release
-    needs: build
+    needs: [version, build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -79,35 +115,47 @@ jobs:
           pattern: macos-*
           path: release-assets
           merge-multiple: true
-      - name: Publish complete preview release
+      - name: Publish versioned release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           COMMIT: ${{ github.sha }}
           SOURCE_REF: ${{ github.ref }}
           RUN_ID: ${{ github.run_id }}
-          RUN_NUMBER: ${{ github.run_number }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -euo pipefail
-          tag="build-${RUN_ID}"
-          title="ImageExplorer build ${RUN_NUMBER} (${COMMIT:0:7})"
+          tag="v${RELEASE_VERSION}"
+          title="ImageExplorer ${RELEASE_VERSION}"
           cd release-assets
           test -f ImageExplorer-macos-arm64.dmg
           test -f ImageExplorer-macos-x64.dmg
           test -f ImageExplorer-macos-arm64.app.zip
           test -f ImageExplorer-macos-x64.app.zip
           sha256sum *.dmg *.zip > SHA256SUMS.txt
-          printf '## macOS preview / macOS 预览版\n\nCommit: `%s`\n\nSource: `%s`\n\n' "$COMMIT" "$SOURCE_REF" > ../release-notes.md
+          printf '## macOS release / macOS 发布版\n\nCommit: `%s`\n\nSource: `%s`\n\n' "$COMMIT" "$SOURCE_REF" > ../release-notes.md
           cat >> ../release-notes.md <<'NOTES'
           - **Apple Silicon (M-series):** download `macos-arm64.dmg`.
           - **Intel:** download `macos-x64.dmg`.
           - Open the DMG and drag ImageExplorer to Applications. ZIP alternatives and SHA-256 checksums are included.
-          - This automated preview uses ad-hoc signing. It is **not Apple-notarized** and does not publish automatic updater metadata. macOS may block first launch.
-          - 每次 push 对应一个独立预览 Release；下载对应芯片的 DMG，拖入 Applications 安装。此预览版未经 Apple 公证，不提供自动更新。
+          - This build uses ad-hoc signing. It is **not Apple-notarized** and does not publish automatic updater metadata. macOS may block first launch.
+          - 每次 push 对应一个独立版本 Release；下载对应芯片的 DMG，拖入 Applications 安装。此构建未经 Apple 公证，不提供自动更新。
           NOTES
           if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" --target "$COMMIT" --title "$title" --notes-file ../release-notes.md --draft --prerelease
+            gh release create "$tag" --target "$COMMIT" --title "$title" --notes-file ../release-notes.md --draft --verify-tag
           fi
           gh release upload "$tag" *.dmg *.zip SHA256SUMS.txt --clobber
-          gh release edit "$tag" --draft=false --prerelease --notes-file ../release-notes.md
+          gh release edit "$tag" --draft=false --prerelease=false --notes-file ../release-notes.md
           printf 'Release: https://github.com/%s/releases/tag/%s\n' "$GH_REPO" "$tag" >> "$GITHUB_STEP_SUMMARY"
+      - name: Mark highest published version as Latest
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const releases = await github.paginate(github.rest.repos.listReleases, { ...context.repo, per_page: 100 });
+            const versions = releases.filter(r => !r.draft && !r.prerelease && /^v\d+\.\d+\.\d+$/.test(r.tag_name));
+            versions.sort((a, b) => {
+              const av = a.tag_name.slice(1).split('.').map(Number);
+              const bv = b.tag_name.slice(1).split('.').map(Number);
+              return bv[0] - av[0] || bv[1] - av[1] || bv[2] - av[2];
+            });
+            if (versions[0]) await github.rest.repos.updateRelease({ ...context.repo, release_id: versions[0].id, make_latest: 'true' });

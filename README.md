@@ -84,7 +84,7 @@ Visit [Releases](https://github.com/AITuring/ImageExplorer/releases) and choose 
 - **Intel Mac:** `ImageExplorer-macos-x64.dmg`
 - Open the DMG and drag the app to Applications. ZIP alternatives and `SHA256SUMS.txt` are also provided.
 
-Push builds are **preview releases**, ad-hoc signed but not Apple Developer ID signed or notarized. macOS may block first launch. These previews do not publish automatic updater metadata. A production signed release requires separate signing credentials, an updater public key and release acceptance checks.
+Push builds are **versioned GitHub Releases** (Latest, not prereleases), ad-hoc signed but not Apple Developer ID signed or notarized. macOS may block first launch. These builds do not publish automatic updater metadata. A production signed release requires separate signing credentials, an updater public key and release acceptance checks.
 
 ## Run locally
 
@@ -100,7 +100,7 @@ pnpm tauri dev
 `pnpm tauri dev` runs the full desktop app with frontend hot reload. `pnpm dev` only serves the web frontend, without native filesystem/RAW capabilities. If port 1420 is occupied, stop the previous development server and retry.
 
 ```bash
-# Build preview installers without an updater signing key
+# Build installers without an updater signing key
 pnpm tauri build --bundles app,dmg --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
 # Frontend checks, formatting, Rust tests and Clippy
@@ -115,10 +115,10 @@ The [Release workflow](./.github/workflows/release.yml) runs on pushes to all br
 
 1. Install locked dependencies and run `pnpm check:ci` on Apple Silicon and Intel macOS runners.
 2. Build `.dmg` and `.app.zip` packages for both architectures.
-3. After both builds succeed, generate SHA-256 checksums and publish a `build-<run_id>` prerelease with the source ref and full commit SHA.
-4. Each push runs independently without cancelling earlier builds. A rerun reuses its release. Failed checks/builds do not publish a visible release with missing installers.
+3. Atomically reserve a version before building, starting at `v0.1.0` and incrementing the patch: `v0.1.1`, `v0.1.2`, and so on. The app version matches its Release. After both builds succeed, publish checksums and a regular Release with the source ref and full commit SHA.
+4. Each push runs independently without cancelling earlier builds. A rerun reuses its version. Concurrent pushes reserve distinct versions; Latest points to the highest published version. Failed builds retain reserved tags, so version gaps are possible. Failed checks/builds do not publish a visible release with missing installers.
 
-Publishing uses the automatic `GITHUB_TOKEN` with `contents: write` only in the publish job; no personal token is required. Repository policy must allow Actions and release writes. Branch deletion does not publish; GitHub's bulk-push event limits still apply.
+Publishing uses the automatic `GITHUB_TOKEN` with `contents: write` only in the version-reservation and publish jobs; no personal token is required. Repository policy must allow Actions and release writes. Branch deletion does not publish; GitHub's bulk-push event limits still apply.
 
 The separate [Signed Release workflow](./.github/workflows/release-signed.yml) accepts an existing version tag through manual dispatch, checks signing prerequisites and creates a reviewable draft. See the [release checklist](./docs/performance-release-checklist.md) for required credentials and acceptance criteria.
 
