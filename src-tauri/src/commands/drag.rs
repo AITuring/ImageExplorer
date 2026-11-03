@@ -79,7 +79,7 @@ pub fn start_native_file_drag(
     let item = drag::DragItem::Files(paths);
     let image = drag::Image::Raw(icon);
     let options = drag::Options {
-        mode: drag::DragMode::Copy,
+        mode: drag::DragMode::CopyOrMove,
         ..Default::default()
     };
     let on_drag_end = move |result: drag::DragResult, _cursor_position| {

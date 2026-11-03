@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { FileEntry, FileCommandActions } from "@/types";
+import type { FileOperationSnapshot } from "@/types";
 import type { ViewMode } from "@/stores/viewMode";
-import { useClipboard } from "@/stores/clipboard";
 import { registerKeyboardCommands } from "@/lib/keyboardShortcuts";
 import { isCommandEnabled, registerAppCommands, runCommand } from "@/lib/commands";
 import { viewModeCommands } from "@/lib/viewModeCommands";
@@ -46,15 +47,11 @@ function matchesModifiedKey(event: KeyboardEvent, key: string): boolean {
 export function useFileKeyboardShortcuts(
   options: UseFileKeyboardShortcutsOptions
 ): FileCommandActions {
-  const clipboard = useClipboard();
-
   // Keep registered commands stable while their handlers read current selection and operations.
   const optionsRef = useRef(options);
-  const clipboardRef = useRef(clipboard);
 
   useEffect(() => {
     optionsRef.current = options;
-    clipboardRef.current = clipboard;
   });
 
   const commands = useMemo<FileCommandActions>(() => {
@@ -107,13 +104,15 @@ export function useFileKeyboardShortcuts(
       paste: {
         id: "file.paste",
         shortcut: "⌘V",
-        enabled: () => clipboardRef.current.hasPending(),
+        // The system pasteboard can change before the focus refresh finishes.
+        // Read it when the shortcut runs instead of relying on cached state.
+        enabled: () => optionsRef.current.canMutate,
         run: () => optionsRef.current.handlePaste(),
       },
       pasteAsMove: {
         id: "file.paste-as-move",
         shortcut: "⌘⌥V",
-        enabled: () => clipboardRef.current.hasPending(),
+        enabled: () => optionsRef.current.canMutate,
         run: () => optionsRef.current.handlePasteAsMove(),
       },
       delete: {
@@ -213,6 +212,23 @@ export function useFileKeyboardShortcuts(
           enabled: () => isCommandEnabled(commands.pasteAsMove),
           run: () => {
             runCommand(commands.pasteAsMove);
+          },
+        },
+        {
+          id: "file.undo-last-operation",
+          scope: "file-view",
+          matches: (event) => matchesModifiedKey(event, "z"),
+          run: async () => {
+            const operations = await invoke<FileOperationSnapshot[]>("get_file_operations");
+            const latest = operations
+              .filter((operation) => operation.undo_status === "available")
+              .sort(
+                (left, right) =>
+                  right.started_at - left.started_at || right.id.localeCompare(left.id)
+              )[0];
+            if (latest) {
+              await invoke("undo_file_operation", { operationId: latest.id });
+            }
           },
         },
         {

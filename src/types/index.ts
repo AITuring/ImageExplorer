@@ -50,9 +50,20 @@ export interface SearchResult {
 
 export interface SearchResponse {
   results: SearchResult[];
+  warning?: string | null;
+  index_reconciling?: boolean;
+  index_failed?: boolean;
 }
 
-export type FileOperationKind = "copy" | "move" | "delete" | "compress" | "extract";
+export type FileOperationKind =
+  | "copy"
+  | "move"
+  | "delete"
+  | "compress"
+  | "extract"
+  | "create_file"
+  | "create_directory"
+  | "rename";
 export type FileOperationStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type FileOperationConflictPolicy = "keep_both" | "replace" | "skip";
 export type FileOperationUndoStatus =

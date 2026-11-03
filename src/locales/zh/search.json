@@ -1,5 +1,13 @@
 {
   "searching": "搜索中...",
+  "failed": "搜索失败，请检查索引状态后重试。",
+  "load_more": "加载更多结果",
+  "scope_label": "搜索范围",
+  "scope_indexed": "主目录索引",
+  "scope_current": "当前文件夹",
+  "partial_results": "部分目录无法读取，结果可能不完整",
+  "index_reconciling": "正在核对主目录文件，当前结果可能尚未更新",
+  "index_failed": "文件索引核对失败，当前结果可能不是最新的",
   "no_results": "未找到匹配结果",
   "results_label": "搜索结果"
 }

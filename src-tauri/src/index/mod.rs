@@ -29,6 +29,8 @@ pub struct FileIndex {
     name_index: Vec<(String, String)>,
     /// 是否正在构建
     pub is_building: bool,
+    /// 最近一次磁盘核对失败，搜索结果可能仍来自旧快照。
+    pub last_build_failed: bool,
     /// 索引的文件数量
     pub file_count: usize,
 }
@@ -39,6 +41,7 @@ impl FileIndex {
             files: HashMap::new(),
             name_index: Vec::new(),
             is_building: false,
+            last_build_failed: false,
             file_count: 0,
         }
     }

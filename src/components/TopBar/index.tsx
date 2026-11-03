@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   Search,
   ChevronLeft,
@@ -17,7 +18,7 @@ import { TextInputActions, SearchResult, SearchResponse, FileActions, FileEntry 
 import { SmartIcon } from "@/components/SmartIcon";
 import { useViewMode } from "@/stores/viewMode";
 import { useTabs } from "@/hooks/useTabs";
-import { SEARCH_DEBOUNCE_MS, FOCUS_DELAY_MS } from "@/constants/config";
+import { SEARCH_DEBOUNCE_MS, FOCUS_DELAY_MS, SMART_FOLDER_PREFIX } from "@/constants/config";
 import { filterHiddenEntries } from "@/utils/file";
 import { useSetting } from "@/hooks/useSetting";
 import { useClipboard } from "@/stores/clipboard";
@@ -35,6 +36,14 @@ import {
 
 interface TopBarProps {
   onNavigate?: (path: string, selectFile?: string) => void;
+}
+
+type SearchScope = "indexed" | "current";
+
+function cancelScopedSearch(version: number) {
+  void invoke("cancel_directory_search", {
+    requestId: Date.now() * 1000 + version,
+  }).catch((error) => console.error("Could not cancel scoped search:", error));
 }
 
 function toSearchFileEntry(result: SearchResult): FileEntry {
@@ -79,6 +88,13 @@ export function TopBar({ onNavigate }: TopBarProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchWarning, setSearchWarning] = useState<string | null>(null);
+  const [indexReconciling, setIndexReconciling] = useState(false);
+  const [indexFailed, setIndexFailed] = useState(false);
+  const [searchScope, setSearchScope] = useState<SearchScope>("indexed");
+  const [searchHasMore, setSearchHasMore] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const visibleSearchResults = useMemo(
     () => filterHiddenEntries(searchResults, showHiddenFiles),
     [searchResults, showHiddenFiles]
@@ -94,6 +110,7 @@ export function TopBar({ onNavigate }: TopBarProps) {
   const searchFieldRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchVersionRef = useRef(0); // 用于取消旧请求
+  const scopedSearchPathRef = useRef(currentPath);
   const isComposingRef = useRef(false); // 标记正在使用输入法
 
   useEffect(() => {
@@ -124,41 +141,101 @@ export function TopBar({ onNavigate }: TopBarProps) {
     };
   }, [isEditing]);
 
-  // 搜索（使用内存索引，极速响应）
-  const handleSearch = useCallback(async (query: string, version: number) => {
-    // 如果正在输入拼音，不要搜索
-    if (isComposingRef.current) return;
+  // Indexed Home search and direct traversal of the current folder.
+  const handleSearch = useCallback(
+    async (query: string, version: number, scope: SearchScope) => {
+      // 如果正在输入拼音，不要搜索
+      if (isComposingRef.current) return;
 
-    if (!query.trim()) {
-      setSearchResults([]);
-      setShowResults(false);
-      setIsSearching(false);
-      return;
-    }
-
-    try {
-      // 使用内存索引搜索，极速响应
-      const response = await invoke<SearchResponse>("search_indexed", {
-        query,
-        limit: 50,
-      });
-
-      // 只接受最新版本的结果
-      if (version === searchVersionRef.current) {
-        setSearchResults(response.results);
-        setIsSearching(false);
-      }
-    } catch (e) {
-      console.error("Search failed:", e);
-      if (version === searchVersionRef.current) {
+      if (!query.trim()) {
         setSearchResults([]);
+        setSearchHasMore(false);
+        setSearchError(null);
+        setSearchWarning(null);
+        setIndexReconciling(false);
+        setIndexFailed(false);
+        setShowResults(false);
         setIsSearching(false);
+        return;
       }
+
+      try {
+        const response =
+          scope === "current"
+            ? await invoke<SearchResponse>("search_directory", {
+                root: currentPath,
+                query,
+                limit: 51,
+                requestId: Date.now() * 1000 + version,
+              })
+            : await invoke<SearchResponse>("search_indexed", { query, limit: 51 });
+
+        // 只接受最新版本的结果
+        if (version === searchVersionRef.current) {
+          setSearchResults(response.results.slice(0, 50));
+          setSearchHasMore(response.results.length > 50);
+          setSearchError(null);
+          setSearchWarning(response.warning ?? null);
+          setIndexReconciling(response.index_reconciling ?? false);
+          setIndexFailed(response.index_failed ?? false);
+          setIsSearching(false);
+        }
+      } catch (e) {
+        console.error("Search failed:", e);
+        if (version === searchVersionRef.current) {
+          setSearchResults([]);
+          setSearchHasMore(false);
+          setSearchError(String(e));
+          setSearchWarning(null);
+          setIndexReconciling(false);
+          setIndexFailed(false);
+          setIsSearching(false);
+        }
+      }
+    },
+    [currentPath]
+  );
+
+  const loadMoreSearchResults = useCallback(async () => {
+    if (isLoadingMore || !searchHasMore || !searchQuery.trim()) return;
+    const version = searchVersionRef.current;
+    const requestedLimit = searchResults.length + 51;
+    setIsLoadingMore(true);
+    try {
+      const response =
+        searchScope === "current"
+          ? await invoke<SearchResponse>("search_directory", {
+              root: currentPath,
+              query: searchQuery,
+              limit: requestedLimit,
+              requestId: Date.now() * 1000 + version,
+            })
+          : await invoke<SearchResponse>("search_indexed", {
+              query: searchQuery,
+              limit: requestedLimit,
+            });
+      if (version === searchVersionRef.current) {
+        setSearchResults(response.results.slice(0, requestedLimit - 1));
+        setSearchHasMore(response.results.length === requestedLimit);
+        setSearchError(null);
+        setSearchWarning(response.warning ?? null);
+        setIndexReconciling(response.index_reconciling ?? false);
+        setIndexFailed(response.index_failed ?? false);
+      }
+    } catch (error) {
+      if (version === searchVersionRef.current) setSearchError(String(error));
+    } finally {
+      setIsLoadingMore(false);
     }
-  }, []);
+  }, [currentPath, isLoadingMore, searchHasMore, searchQuery, searchResults.length, searchScope]);
 
   const handleSearchInputChange = (value: string) => {
     setSearchQuery(value);
+    setSearchError(null);
+    setSearchWarning(null);
+    setIndexReconciling(false);
+    setIndexFailed(false);
+    setSearchHasMore(false);
 
     if (debounceRef.current) {
       clearTimeout(debounceRef.current);
@@ -167,6 +244,7 @@ export function TopBar({ onNavigate }: TopBarProps) {
     // 递增版本号
     searchVersionRef.current += 1;
     const currentVersion = searchVersionRef.current;
+    cancelScopedSearch(currentVersion);
 
     // 有输入内容时立即显示下拉框和 loading
     if (value.trim() && !isComposingRef.current) {
@@ -178,14 +256,110 @@ export function TopBar({ onNavigate }: TopBarProps) {
       setSearchResults([]);
     }
 
-    // 内存索引极速，防抖配置
+    // Debounce input before starting an indexed query or directory traversal.
     debounceRef.current = setTimeout(() => {
-      handleSearch(value, currentVersion);
+      handleSearch(value, currentVersion, searchScope);
     }, SEARCH_DEBOUNCE_MS);
   };
 
+  const changeSearchScope = (scope: SearchScope) => {
+    if (
+      scope === searchScope ||
+      (scope === "current" && currentPath.startsWith(SMART_FOLDER_PREFIX))
+    )
+      return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    setSearchScope(scope);
+    setSearchResults([]);
+    setSearchError(null);
+    setSearchWarning(null);
+    setIndexReconciling(false);
+    setIndexFailed(false);
+    setSearchHasMore(false);
+    searchVersionRef.current += 1;
+    cancelScopedSearch(searchVersionRef.current);
+    if (searchQuery.trim()) {
+      setIsSearching(true);
+      setShowResults(true);
+      void handleSearch(searchQuery, searchVersionRef.current, scope);
+    }
+  };
+
+  useEffect(() => {
+    if (scopedSearchPathRef.current === currentPath) return;
+    scopedSearchPathRef.current = currentPath;
+    if (searchScope !== "current" || !searchQuery.trim()) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    const scope = currentPath.startsWith(SMART_FOLDER_PREFIX) ? "indexed" : "current";
+    if (scope !== searchScope) setSearchScope(scope);
+    searchVersionRef.current += 1;
+    cancelScopedSearch(searchVersionRef.current);
+    setIsSearching(true);
+    setShowResults(true);
+    void handleSearch(searchQuery, searchVersionRef.current, scope);
+  }, [currentPath, handleSearch, searchQuery, searchScope]);
+
+  useEffect(() => {
+    if (!searchOpen || !searchQuery.trim()) return;
+    let disposed = false;
+    const unlisten: Array<() => void> = [];
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    const refresh = () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        searchVersionRef.current += 1;
+        void handleSearch(searchQuery, searchVersionRef.current, searchScope);
+      }, 250);
+    };
+    const register = async () => {
+      const subscriptions = await Promise.allSettled([
+        listen<string>("dir-change", ({ payload }) => {
+          if (
+            searchScope === "current" &&
+            (payload === currentPath || payload.startsWith(`${currentPath.replace(/\/$/, "")}/`))
+          ) {
+            refresh();
+          }
+        }),
+        listen("index-ready", () => {
+          if (searchScope === "indexed") refresh();
+        }),
+        listen<string>("index-status", ({ payload }) => {
+          if (searchScope === "indexed" && ["building", "ready", "failed"].includes(payload)) {
+            refresh();
+          }
+        }),
+        listen<{ status: string }>("file-operation-updated", ({ payload }) => {
+          if (["completed", "failed", "cancelled"].includes(payload.status)) refresh();
+        }),
+      ]);
+      for (const subscription of subscriptions) {
+        if (subscription.status === "rejected") {
+          console.error("Could not watch search changes:", subscription.reason);
+        } else if (disposed) {
+          subscription.value();
+        } else {
+          unlisten.push(subscription.value);
+        }
+      }
+    };
+    void register();
+    window.addEventListener("focus", refresh);
+    return () => {
+      disposed = true;
+      if (refreshTimer) clearTimeout(refreshTimer);
+      unlisten.forEach((stop) => stop());
+      window.removeEventListener("focus", refresh);
+    };
+  }, [currentPath, handleSearch, searchOpen, searchQuery, searchScope]);
+
   const closeSearchResults = useCallback(() => {
+    searchVersionRef.current += 1;
+    cancelScopedSearch(searchVersionRef.current);
     setSearchQuery("");
+    setSearchError(null);
+    setSearchWarning(null);
+    setSearchHasMore(false);
     setShowResults(false);
     setSearchResults([]);
     setSelectedSearchPaths([]);
@@ -225,8 +399,8 @@ export function TopBar({ onNavigate }: TopBarProps) {
     if (!searchQuery.trim()) return;
     searchVersionRef.current += 1;
     setIsSearching(true);
-    void handleSearch(searchQuery, searchVersionRef.current);
-  }, [handleSearch, searchQuery]);
+    void handleSearch(searchQuery, searchVersionRef.current, searchScope);
+  }, [handleSearch, searchQuery, searchScope]);
 
   const handleSearchRowClick = (result: SearchResult, event: React.MouseEvent) => {
     const isMultiSelect = event.metaKey || event.ctrlKey;
@@ -257,7 +431,7 @@ export function TopBar({ onNavigate }: TopBarProps) {
     if (!newName || !oldEntry || newName === oldEntry.name) return;
 
     try {
-      await invoke("rename", { path: editingSearchPath, newName });
+      await invoke("rename_with_history", { path: editingSearchPath, newName });
       refreshSearchResults();
     } catch (error) {
       console.error("Failed to rename search result:", error);
@@ -283,21 +457,25 @@ export function TopBar({ onNavigate }: TopBarProps) {
           closeSearchResults();
         }
       },
-      onCopy: (entries) => clipboard.copy(entries.map((entry) => entry.path)),
-      onCut: (entries) => clipboard.cut(entries.map((entry) => entry.path)),
+      onCopy: (entries) => void clipboard.copy(entries.map((entry) => entry.path)),
+      onCut: (entries) => void clipboard.cut(entries.map((entry) => entry.path)),
       onPaste: async () => {
-        if (!clipboard.hasPending()) return;
+        const pending = await clipboard.getForPaste();
+        if (!pending) return;
         try {
-          const paths = [...clipboard.paths];
-          if (clipboard.operation === "copy") {
-            await enqueueFileOperation({ kind: "copy", paths, destDir: currentPath });
-          } else if (clipboard.operation === "cut") {
-            const operationId = await enqueueFileOperation({
-              kind: "move",
-              paths,
+          if (pending.operation === "copy") {
+            await enqueueFileOperation({
+              kind: "copy",
+              paths: pending.paths,
               destDir: currentPath,
             });
-            if (operationId) clipboard.clear();
+          } else {
+            const operationId = await enqueueFileOperation({
+              kind: "move",
+              paths: pending.paths,
+              destDir: currentPath,
+            });
+            if (operationId) await clipboard.consumeCut(pending.changeCount);
           }
         } catch (error) {
           console.error("Failed to paste from search results:", error);
@@ -581,9 +759,7 @@ export function TopBar({ onNavigate }: TopBarProps) {
                   type="text"
                   value={searchQuery}
                   onChange={(e) => handleSearchInputChange(e.target.value)}
-                  onFocus={() =>
-                    searchQuery && visibleSearchResults.length > 0 && setShowResults(true)
-                  }
+                  onFocus={() => searchQuery && setShowResults(true)}
                   onCompositionStart={() => (isComposingRef.current = true)}
                   onCompositionEnd={(e) => {
                     isComposingRef.current = false;
@@ -624,11 +800,39 @@ export function TopBar({ onNavigate }: TopBarProps) {
           {/* 搜索结果下拉框 */}
           {showResults && (
             <div className="finder-popover text-popover-foreground absolute top-full right-0 z-[100] mt-2 w-[min(500px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border shadow-xl">
+              <div
+                className="border-border/60 flex gap-1 border-b p-2"
+                role="group"
+                aria-label={t("search.scope_label")}
+              >
+                <button
+                  type="button"
+                  className={`rounded-md px-2.5 py-1 text-xs ${searchScope === "indexed" ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-accent"}`}
+                  onClick={() => changeSearchScope("indexed")}
+                  aria-pressed={searchScope === "indexed"}
+                >
+                  {t("search.scope_indexed")}
+                </button>
+                <button
+                  type="button"
+                  className={`rounded-md px-2.5 py-1 text-xs ${searchScope === "current" ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-accent"}`}
+                  onClick={() => changeSearchScope("current")}
+                  aria-pressed={searchScope === "current"}
+                  disabled={currentPath.startsWith(SMART_FOLDER_PREFIX)}
+                >
+                  {t("search.scope_current")}
+                </button>
+              </div>
               {isSearching ? (
                 <div className="text-muted-foreground flex items-center justify-center p-4 text-sm">
                   {t("search.searching")}
                 </div>
-              ) : visibleSearchResults.length > 0 ? (
+              ) : searchError ? (
+                <div className="text-destructive p-4 text-sm" role="alert">
+                  <p>{t("search.failed")}</p>
+                  <p className="mt-1 text-xs break-words opacity-80">{searchError}</p>
+                </div>
+              ) : visibleSearchResults.length > 0 || searchHasMore ? (
                 <>
                   <div className="bg-muted/50 text-muted-foreground flex justify-between px-3 py-1.5 text-xs font-medium">
                     <span>{t("search.results_label")}</span>
@@ -716,11 +920,45 @@ export function TopBar({ onNavigate }: TopBarProps) {
                       );
                     })}
                   </ul>
+                  {searchHasMore && (
+                    <button
+                      type="button"
+                      className="text-primary hover:bg-accent w-full border-t px-3 py-2 text-center text-xs"
+                      onClick={() => void loadMoreSearchResults()}
+                      disabled={isLoadingMore}
+                    >
+                      {isLoadingMore ? t("search.searching") : t("search.load_more")}
+                    </button>
+                  )}
                 </>
               ) : (
                 <div className="text-muted-foreground p-4 text-center text-sm">
                   {t("search.no_results")}
                 </div>
+              )}
+              {searchWarning && (
+                <p
+                  className="border-border/60 border-t px-3 py-2 text-xs text-amber-500"
+                  role="status"
+                >
+                  {t("search.partial_results")}: {searchWarning}
+                </p>
+              )}
+              {indexReconciling && (
+                <p
+                  className="border-border/60 text-muted-foreground border-t px-3 py-2 text-xs"
+                  role="status"
+                >
+                  {t("search.index_reconciling")}
+                </p>
+              )}
+              {indexFailed && (
+                <p
+                  className="border-border/60 border-t px-3 py-2 text-xs text-amber-500"
+                  role="status"
+                >
+                  {t("search.index_failed")}
+                </p>
               )}
             </div>
           )}

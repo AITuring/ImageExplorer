@@ -82,7 +82,9 @@
     "message": "Indexing your files for fast search. This may take a moment...",
     "background": "Running in background...",
     "scanning": "Scanning files...",
-    "indexed": "Indexed {{count}} files"
+    "indexed": "Indexed {{count}} files",
+    "failed_title": "Index refresh failed",
+    "failed_message": "Search uses the previous index; it will retry on restart"
   },
   "operations": {
     "title": "File Operations",
@@ -91,6 +93,9 @@
     "kind_delete": "Move to Trash",
     "kind_compress": "Compress ZIP",
     "kind_extract": "Extract ZIP",
+    "kind_create_file": "New File",
+    "kind_create_directory": "New Folder",
+    "kind_rename": "Rename",
     "status_queued": "Queued",
     "status_running": "In progress",
     "status_completed": "Completed",

@@ -128,11 +128,12 @@ class WindowManager {
 
     const windowOptions = {
       url: appUrl.toString(),
-      title: "HyperExplorer",
+      title: "ImageExplorer",
       width: 1000,
       height: 700,
-      minWidth: 800,
+      minWidth: 620,
       minHeight: 600,
+      resizable: true,
       x: options?.x,
       y: options?.y,
       transparent: true,

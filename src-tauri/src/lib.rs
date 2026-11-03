@@ -15,6 +15,7 @@ use commands::apps::{
     get_installed_apps, get_recommended_apps, get_sf_symbol, get_terminal_apps,
     open_in_terminal_with, open_native_quick_look, open_with,
 };
+use commands::clipboard::{consume_cut_file_clipboard, read_file_clipboard, write_file_clipboard};
 use commands::drag::start_native_file_drag;
 use commands::fs::{
     batch_rename, check_full_disk_access, copy_file, create_directory, create_file,
@@ -23,14 +24,18 @@ use commands::fs::{
     read_camera_af_metadata, read_image_base64, read_image_dimensions, read_image_metadata,
     read_text_file, rename,
 };
-use commands::search::{get_smart_files, search_files};
+use commands::search::{
+    cancel_directory_search, get_smart_files, search_directory, search_files, DirectorySearchState,
+};
 use commands::watcher::{stop_watching, unwatch_directory, watch_directory, WatcherState};
 use db::{Database, IndexBuilder, IndexUpdater, SearchEngine};
 use index::{create_shared_index, IndexedFile, SharedIndex};
 use operations::{
-    cancel_file_operation, clear_file_operation, get_file_operation_conflicts, get_file_operations,
-    retry_file_operation, start_compress_operation, start_copy_operation, start_delete_operation,
-    start_extract_operation, start_move_operation, undo_file_operation, OperationManager,
+    cancel_file_operation, clear_file_operation, create_directory_with_history,
+    create_file_with_history, get_file_operation_conflicts, get_file_operations,
+    rename_with_history, retry_file_operation, start_compress_operation, start_copy_operation,
+    start_delete_operation, start_extract_operation, start_move_operation, undo_file_operation,
+    OperationManager,
 };
 use serde::Serialize;
 use std::process::Child;
@@ -49,6 +54,8 @@ pub type SharedDatabase = Arc<Database>;
 #[derive(Serialize)]
 struct SearchResponse {
     results: Vec<IndexedFile>,
+    index_reconciling: bool,
+    index_failed: bool,
 }
 
 #[tauri::command]
@@ -150,22 +157,37 @@ async fn search_indexed(
             })
             .collect();
 
-        return Ok(SearchResponse { results });
+        let (index_reconciling, index_failed) = index
+            .read()
+            .map(|state| (state.is_building, state.last_build_failed))
+            .unwrap_or((true, false));
+        return Ok(SearchResponse {
+            results,
+            index_reconciling,
+            index_failed,
+        });
     }
 
     // 回退到内存索引（阻塞等待，避免索引构建期间返回空结果）
     let index = index.inner().clone();
     let results = tauri::async_runtime::spawn_blocking(move || {
-        let index = match index.read() {
-            Ok(idx) => idx,
-            Err(_) => return vec![],
-        };
-        index.search(&query, limit_val)
+        let index = index
+            .read()
+            .map_err(|error| format!("Search index lock failed: {error}"))?;
+        Ok::<_, String>((
+            index.search(&query, limit_val),
+            index.is_building,
+            index.last_build_failed,
+        ))
     })
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())??;
 
-    Ok(SearchResponse { results })
+    Ok(SearchResponse {
+        results: results.0,
+        index_reconciling: results.1,
+        index_failed: results.2,
+    })
 }
 
 /// 获取索引状态
@@ -173,6 +195,7 @@ async fn search_indexed(
 struct IndexStatus {
     is_building: bool,
     file_count: usize,
+    last_build_failed: bool,
 }
 
 #[tauri::command]
@@ -182,12 +205,14 @@ fn get_index_status(index: tauri::State<'_, SharedIndex>) -> IndexStatus {
         IndexStatus {
             is_building: index.is_building,
             file_count: index.file_count,
+            last_build_failed: index.last_build_failed,
         }
     } else {
         // 如果无法获取锁（正在构建中），返回构建中状态
         IndexStatus {
             is_building: true,
             file_count: 0,
+            last_build_failed: false,
         }
     }
 }
@@ -220,9 +245,8 @@ fn build_index_background(
             let home_str = home.to_string_lossy().to_string();
 
             if let Some(ref db) = database {
-                // Install the watcher before the startup delay. Buffering
-                // changes here closes the gap between the previous snapshot
-                // and a later decision to reuse or rebuild it.
+                // Start the watcher before the snapshot. Events arriving while
+                // the snapshot is built are replayed after it is committed.
                 let is_building = Arc::new(AtomicBool::new(true));
                 let (stop_tx, stop_rx) = std::sync::mpsc::channel();
                 if let Ok(mut senders) = stop_senders.lock() {
@@ -247,8 +271,13 @@ fn build_index_background(
                     }
                 };
 
+                if let Ok(mut idx) = index.write() {
+                    idx.is_building = true;
+                    idx.last_build_failed = false;
+                    idx.file_count = db.file_count().max(0) as usize;
+                }
                 println!(
-                    "Delaying index decision for {} seconds to allow UI to load...",
+                    "Delaying index reconciliation for {} seconds to allow UI to load...",
                     config::INDEX_BUILD_DELAY_SECS
                 );
                 std::thread::sleep(std::time::Duration::from_secs(
@@ -256,31 +285,19 @@ fn build_index_background(
                 ));
 
                 let builder = IndexBuilder::new(db.connection());
-                if !db.needs_rebuild() && watcher_started {
-                    let count = db.file_count();
-                    println!("SQLite index ready: {} files (skipping rebuild)", count);
-
-                    if let Ok(mut idx) = index.write() {
-                        idx.is_building = false;
-                        idx.file_count = count as usize;
-                    }
-                    is_building.store(false, Ordering::Release);
-                    let _ = app.emit("index-status", "ready");
-                    return;
-                }
-
-                if let Ok(mut idx) = index.write() {
-                    idx.is_building = true;
-                }
-                println!("Starting SQLite index build...");
+                // A healthy persisted index can still be stale after the app
+                // was closed. Always reconcile it with the filesystem.
+                println!("Starting SQLite index reconciliation...");
                 let _ = app.emit("index-status", "building");
-                match builder.build(&home_str, Some(&app)) {
+                let build_succeeded = match builder.build(&home_str, Some(&app)) {
                     Ok(count) => {
                         println!("SQLite index built: {} files", count);
                         if let Ok(mut idx) = index.write() {
                             idx.is_building = false;
                             idx.file_count = count;
+                            idx.last_build_failed = false;
                         }
+                        true
                     }
                     Err(e) => {
                         eprintln!(
@@ -290,19 +307,24 @@ fn build_index_background(
                         if let Ok(mut idx) = index.write() {
                             idx.is_building = false;
                             idx.file_count = db.file_count().max(0) as usize;
+                            idx.last_build_failed = true;
                         }
                         if let Err(marker_error) = builder.mark_rebuild_required() {
                             eprintln!("Failed to mark SQLite index for a retry: {marker_error}");
                         }
+                        false
                     }
-                }
+                };
                 is_building.store(false, Ordering::Release);
                 if !watcher_started {
                     if let Err(error) = builder.mark_rebuild_required() {
                         eprintln!("Failed to mark SQLite index for retry: {error}");
                     }
                 }
-                let _ = app.emit("index-status", "ready");
+                let _ = app.emit(
+                    "index-status",
+                    if build_succeeded { "ready" } else { "failed" },
+                );
                 return;
             }
 
@@ -435,6 +457,7 @@ fn start_sqlite_watcher(
                 is_building.store(true, Ordering::Release);
                 if let Ok(mut idx) = index.write() {
                     idx.is_building = true;
+                    idx.last_build_failed = false;
                 }
                 let _ = app.emit("index-status", "building");
 
@@ -443,6 +466,7 @@ fn start_sqlite_watcher(
                         if let Ok(mut idx) = index.write() {
                             idx.is_building = false;
                             idx.file_count = count;
+                            idx.last_build_failed = false;
                         }
                         println!("SQLite index reconciled after watcher gap: {count} files");
                     }
@@ -456,12 +480,17 @@ fn start_sqlite_watcher(
                         if let Ok(mut idx) = index.write() {
                             idx.is_building = false;
                             idx.file_count = db.file_count().max(0) as usize;
+                            idx.last_build_failed = true;
                         }
                     }
                 }
 
                 is_building.store(false, Ordering::Release);
-                let _ = app.emit("index-status", "ready");
+                let failed = index
+                    .read()
+                    .map(|idx| idx.last_build_failed)
+                    .unwrap_or(true);
+                let _ = app.emit("index-status", if failed { "failed" } else { "ready" });
 
                 if watcher_disconnected || watcher_had_error {
                     // The snapshot restores current search results, but there
@@ -722,6 +751,7 @@ pub fn run() {
         .manage(shared_index.clone())
         .manage(shared_database.clone())
         .manage(operation_manager)
+        .manage(DirectorySearchState::default())
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
 
@@ -813,12 +843,17 @@ pub fn run() {
             create_directory,
             create_file,
             rename,
+            create_directory_with_history,
+            create_file_with_history,
+            rename_with_history,
             copy_file,
             move_file,
             watch_directory,
             unwatch_directory,
             stop_watching,
             search_files,
+            search_directory,
+            cancel_directory_search,
             search_indexed,
             get_smart_files,
             get_index_status,
@@ -836,6 +871,9 @@ pub fn run() {
             close_native_quick_look,
             get_sf_symbol,
             start_native_file_drag,
+            read_file_clipboard,
+            write_file_clipboard,
+            consume_cut_file_clipboard,
             read_text_file,
             read_image_base64,
             read_image_dimensions,

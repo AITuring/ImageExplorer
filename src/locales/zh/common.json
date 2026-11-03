@@ -82,7 +82,9 @@
     "message": "正在为您的文件建立索引以实现快速搜索，这可能需要一些时间...",
     "background": "后台运行中...",
     "scanning": "正在扫描文件...",
-    "indexed": "已索引 {{count}} 个文件"
+    "indexed": "已索引 {{count}} 个文件",
+    "failed_title": "文件索引核对失败",
+    "failed_message": "搜索仍可使用旧索引；重启后会重新核对"
   },
   "operations": {
     "title": "文件操作",
@@ -91,6 +93,9 @@
     "kind_delete": "移到废纸篓",
     "kind_compress": "压缩 ZIP",
     "kind_extract": "解压 ZIP",
+    "kind_create_file": "新建文件",
+    "kind_create_directory": "新建文件夹",
+    "kind_rename": "重命名",
     "status_queued": "排队中",
     "status_running": "处理中",
     "status_completed": "已完成",

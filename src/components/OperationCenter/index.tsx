@@ -6,6 +6,9 @@ import {
   Clock3,
   Copy,
   FolderInput,
+  FolderPlus,
+  FilePlus2,
+  Pencil,
   PackageOpen,
   RotateCcw,
   Trash2,
@@ -24,6 +27,16 @@ function itemName(path: string | null): string {
 }
 
 function OperationIcon({ kind }: { kind: FileOperationSnapshot["kind"] }) {
+  if (kind === "create_file")
+    return (
+      <FilePlus2 className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+    );
+  if (kind === "create_directory")
+    return (
+      <FolderPlus className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+    );
+  if (kind === "rename")
+    return <Pencil className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />;
   if (kind === "copy")
     return <Copy className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />;
   if (kind === "move") {
@@ -131,7 +144,7 @@ function OperationRow({
         <p className="text-destructive line-clamp-2 text-xs" title={operation.errors.join("\n")}>
           {operation.error_details[0] && (
             <span className="font-medium">
-              {t(`operations.error_code_${operation.error_details[0].code}`)}: {" "}
+              {t(`operations.error_code_${operation.error_details[0].code}`)}:{" "}
             </span>
           )}
           {operation.errors[0]}

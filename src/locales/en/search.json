@@ -1,5 +1,13 @@
 {
   "searching": "Searching...",
+  "failed": "Search failed. Check the index and try again.",
+  "load_more": "Load more results",
+  "scope_label": "Search scope",
+  "scope_indexed": "Indexed Home",
+  "scope_current": "Current Folder",
+  "partial_results": "Some folders could not be read; results may be incomplete",
+  "index_reconciling": "Checking Home files; results may not be up to date yet",
+  "index_failed": "Index refresh failed; results may be out of date",
   "no_results": "No results found",
   "results_label": "Results"
 }

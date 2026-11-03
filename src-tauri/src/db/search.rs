@@ -159,15 +159,19 @@ impl SearchEngine {
     }
 
     /// 按扩展名过滤
-    pub fn filter_by_extensions(&self, extensions: &[String], limit: usize) -> Vec<SearchResult> {
+    pub fn filter_by_extensions(
+        &self,
+        extensions: &[String],
+        limit: usize,
+    ) -> Result<Vec<SearchResult>, String> {
         if extensions.is_empty() {
-            return vec![];
+            return Ok(vec![]);
         }
 
-        let conn = match self.conn.lock() {
-            Ok(c) => c,
-            Err(_) => return vec![],
-        };
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|error| format!("Failed to acquire index database lock: {error}"))?;
 
         // 构建 IN 子句
         let placeholders: Vec<String> = extensions.iter().map(|_| "?".to_string()).collect();
@@ -179,10 +183,9 @@ impl SearchEngine {
             placeholders.join(", ")
         );
 
-        let mut stmt = match conn.prepare(&sql) {
-            Ok(s) => s,
-            Err(_) => return vec![],
-        };
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|error| format!("Failed to prepare category search: {error}"))?;
 
         // 构建参数
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = extensions
@@ -193,7 +196,7 @@ impl SearchEngine {
 
         let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
 
-        let results = stmt
+        let rows = stmt
             .query_map(params_refs.as_slice(), |row| {
                 Ok(SearchResult {
                     name: row.get(0)?,
@@ -206,12 +209,10 @@ impl SearchEngine {
                     is_hidden: row.get::<_, String>(0)?.starts_with('.'),
                 })
             })
-            .ok();
+            .map_err(|error| format!("Failed to execute category search: {error}"))?;
 
-        match results {
-            Some(rows) => rows.filter_map(|r| r.ok()).collect(),
-            None => vec![],
-        }
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Failed to read category search results: {error}"))
     }
 }
 
@@ -242,5 +243,21 @@ mod tests {
             .execute("DROP TABLE files_fts", [])
             .expect("remove FTS table to simulate an index error");
         assert!(engine.search("not-present", 10).is_err());
+    }
+
+    #[test]
+    fn category_search_reports_database_errors_instead_of_empty_results() {
+        let (engine, conn) = engine();
+        let extensions = vec!["jpg".to_string()];
+        assert!(engine
+            .filter_by_extensions(&extensions, 10)
+            .expect("valid category query")
+            .is_empty());
+
+        conn.lock()
+            .expect("database lock")
+            .execute("DROP TABLE files", [])
+            .expect("remove files table to simulate an index error");
+        assert!(engine.filter_by_extensions(&extensions, 10).is_err());
     }
 }

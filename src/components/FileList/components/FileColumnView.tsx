@@ -41,7 +41,7 @@ interface FileColumnViewProps {
   ) => void;
   onDoubleClick: (entry: FileEntry) => void;
   onNavigate: (path: string) => void;
-  handleMove: (src: string, dest: string) => void;
+  handleMove: (src: string | string[], dest: string) => void;
   showHiddenFiles: boolean;
 }
 
@@ -340,7 +340,7 @@ export function FileColumnView({
                     onDragOver={(event) => {
                       if (!entry.is_dir) return;
                       event.preventDefault();
-                      event.dataTransfer.dropEffect = "copy";
+                      event.dataTransfer.dropEffect = "move";
                       event.currentTarget.classList.add("bg-primary/20");
                     }}
                     onDragLeave={(event) => {
@@ -358,9 +358,8 @@ export function FileColumnView({
                       event.stopPropagation();
                       event.currentTarget.classList.remove("bg-primary/20");
                       const data = readFileDragData(event.dataTransfer);
-                      data?.paths
-                        .filter((path) => path !== entry.path)
-                        .forEach((path) => handleMove(path, entry.path));
+                      const paths = data?.paths.filter((path) => path !== entry.path) ?? [];
+                      if (paths.length > 0) handleMove(paths, entry.path);
                     }}
                   >
                     <CompactFileThumbnail entry={entry} />

@@ -21,10 +21,17 @@ import { TrashDialog } from "@/components/TrashDialog";
 import { FileInfoDialog } from "@/components/FileInfoDialog";
 import { ensureDirectoryAccess } from "@/lib/directoryAccess";
 import { useLocations } from "@/stores/locations";
+import { useClipboard } from "@/stores/clipboard";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 
 function App() {
+  useEffect(() => {
+    const refreshClipboard = () => void useClipboard.getState().refresh();
+    window.addEventListener("focus", refreshClipboard);
+    refreshClipboard();
+    return () => window.removeEventListener("focus", refreshClipboard);
+  }, []);
   const [isInitializing, setIsInitializing] = useState(true);
   const { i18n, t } = useTranslation();
   // 使用 useSetting 监听语言变更

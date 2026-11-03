@@ -1678,6 +1678,40 @@ pub fn delete_to_trash(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Move an item to Trash and return its exact new path for a verified undo.
+/// Other platforms retain the existing Trash behavior without an undo path.
+pub(crate) fn delete_to_trash_with_location(path: String) -> Result<Option<String>, String> {
+    if !path_exists(Path::new(&path)) {
+        return Ok(None);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_foundation::{NSFileManager, NSString, NSURL};
+
+        let source = unsafe { NSURL::fileURLWithPath(&NSString::from_str(&path)) };
+        let mut trashed = None;
+        unsafe {
+            NSFileManager::defaultManager()
+                .trashItemAtURL_resultingItemURL_error(&source, Some(&mut trashed))
+                .map_err(|error| error.to_string())?;
+        }
+        let trash_path = trashed
+            .and_then(|url| unsafe { url.path() })
+            .map(|path| path.to_string());
+        if let Some(parent) = Path::new(&path).parent() {
+            crate::cache::invalidate_dir_cache(&parent.to_string_lossy());
+        }
+        Ok(trash_path)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        delete_to_trash(path)?;
+        Ok(None)
+    }
+}
+
 #[tauri::command]
 pub fn exists(path: String) -> bool {
     path_exists(Path::new(&path))
@@ -2609,6 +2643,11 @@ where
         return Ok(());
     }
 
+    // A completed destination may belong to an interrupted move. Only that
+    // case requires the operation journal to already own the final path.
+    // A destination published by this call is new even though it exists by
+    // the time the final verification runs.
+    let destination_was_existing = path_exists(destination_path);
     copy_path_resumable_with_ready(
         src.clone(),
         destination.clone(),
@@ -2618,7 +2657,7 @@ where
     )?;
     // Recheck both the completed target and source immediately before the
     // destructive cross-volume source removal.
-    on_ready(destination_path, true)?;
+    on_ready(destination_path, destination_was_existing)?;
     if !on_progress(0) {
         return Err("Operation cancelled".to_string());
     }
@@ -3046,9 +3085,9 @@ pub fn batch_rename(
 #[cfg(test)]
 mod file_entry_tests {
     use super::{
-        batch_rename, copy_path_resumable, get_file_entry, is_alias_entry, load_directory_entries,
-        move_path_resumable, package_type, partial_path_for, rename, rename_without_replace,
-        validate_file_name,
+        batch_rename, copy_path_resumable, delete_to_trash_with_location, get_file_entry,
+        is_alias_entry, load_directory_entries, move_path_resumable, package_type,
+        partial_path_for, rename, rename_without_replace, validate_file_name,
     };
     use std::fs;
     use std::path::Path;
@@ -3067,6 +3106,31 @@ mod file_entry_tests {
             "imageexplorer-file-entry-{}-{stamp}-{sequence}",
             std::process::id()
         ))
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires desktop permission to move a temporary file into macOS Trash"]
+    fn trash_returns_the_exact_recoverable_path() {
+        let root = test_root();
+        fs::create_dir_all(&root).expect("create test root");
+        let source = root.join("undo-test.txt");
+        fs::write(&source, b"recover me").expect("write source");
+
+        let trashed = delete_to_trash_with_location(source.to_string_lossy().to_string())
+            .expect("move test file to Trash")
+            .expect("macOS should return the Trash location");
+        assert!(!source.exists());
+        assert_eq!(
+            fs::read(&trashed).expect("read trashed file"),
+            b"recover me"
+        );
+        fs::rename(&trashed, &source).expect("restore test file");
+        assert_eq!(
+            fs::read(&source).expect("read restored file"),
+            b"recover me"
+        );
+        fs::remove_dir_all(root).expect("remove test root");
     }
 
     #[test]

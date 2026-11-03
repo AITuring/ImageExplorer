@@ -52,7 +52,7 @@ interface FileListProps {
 function makeDragHandlers(
   entry: FileEntry,
   selectedPaths: string[],
-  handleMove: (src: string, dest: string) => void,
+  handleMove: (src: string | string[], dest: string) => void,
   isGrid: boolean
 ) {
   const dragPaths = selectedPaths.includes(entry.path) ? selectedPaths : [entry.path];
@@ -62,9 +62,7 @@ function makeDragHandlers(
     onDragOver: (e: React.DragEvent) => {
       if (!entry.is_dir) return;
       e.preventDefault();
-      // The native source advertises Copy so external apps can never move the
-      // original file. An accepted in-app drop still calls handleMove below.
-      e.dataTransfer.dropEffect = "copy";
+      e.dataTransfer.dropEffect = "move";
       if (isGrid) {
         e.currentTarget.querySelector(".group")?.classList.add("bg-primary/20", "rounded-lg");
       } else {
@@ -92,9 +90,8 @@ function makeDragHandlers(
       }
       const data = readFileDragData(e.dataTransfer);
       if (data) {
-        data.paths
-          .filter((path) => path !== entry.path)
-          .forEach((path) => handleMove(path, entry.path));
+        const paths = data.paths.filter((path) => path !== entry.path);
+        if (paths.length > 0) handleMove(paths, entry.path);
       }
     },
   };
@@ -574,7 +571,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       }
       if (operationPath.startsWith(SMART_FOLDER_PREFIX)) return;
       e.preventDefault();
-      e.dataTransfer.dropEffect = "copy";
+      e.dataTransfer.dropEffect = "move";
       setIsFileDragOver(true);
     },
     [operationPath]
@@ -595,9 +592,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       e.preventDefault();
       e.stopPropagation();
       setIsFileDragOver(false);
-      data.paths
-        .filter((path) => path !== operationPath)
-        .forEach((path) => handleMove(path, operationPath));
+      const paths = data.paths.filter((path) => path !== operationPath);
+      if (paths.length > 0) handleMove(paths, operationPath);
     },
     [operationPath, handleMove]
   );

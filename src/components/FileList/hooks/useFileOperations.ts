@@ -95,22 +95,20 @@ export function useFileOperations({
   );
 
   const handlePaste = useCallback(async () => {
-    if (!clipboard.hasPending()) return;
-
-    const paths = [...clipboard.paths];
-    const operation = clipboard.operation;
+    const pending = await clipboard.getForPaste();
+    if (!pending) return;
 
     try {
-      if (operation === "copy") {
-        await enqueueFileOperation({ kind: "copy", paths, destDir: currentPath });
-      } else if (operation === "cut") {
+      if (pending.operation === "copy") {
+        await enqueueFileOperation({ kind: "copy", paths: pending.paths, destDir: currentPath });
+      } else {
         const operationId = await enqueueFileOperation({
           kind: "move",
-          paths,
+          paths: pending.paths,
           destDir: currentPath,
         });
         // 剪切语义只应消费一次；实际结果会在进度中心中显示。
-        if (operationId) clipboard.clear();
+        if (operationId) await clipboard.consumeCut(pending.changeCount);
       }
     } catch (error) {
       console.error("Failed to enqueue paste operation:", error);
@@ -119,15 +117,16 @@ export function useFileOperations({
   }, [clipboard, currentPath, t]);
 
   const handlePasteAsMove = useCallback(async () => {
-    if (!clipboard.hasPending()) return;
+    const pending = await clipboard.getForPaste();
+    if (!pending) return;
 
     try {
       const operationId = await enqueueFileOperation({
         kind: "move",
-        paths: [...clipboard.paths],
+        paths: pending.paths,
         destDir: currentPath,
       });
-      if (operationId) clipboard.clear();
+      if (operationId) await clipboard.consumeCut(pending.changeCount);
     } catch (error) {
       console.error("Failed to enqueue move operation:", error);
       alert(t("file_list.error_paste", { error: String(error) }));
@@ -200,7 +199,7 @@ export function useFileOperations({
   const handleNewFile = useCallback(async () => {
     try {
       const defaultName = t("file_list.untitled_file");
-      const newPath = await invoke<string>("create_file", {
+      const newPath = await invoke<string>("create_file_with_history", {
         path: `${currentPath}/${defaultName}`,
       });
       await onRefresh();
@@ -213,7 +212,7 @@ export function useFileOperations({
   const handleNewFolder = useCallback(async () => {
     try {
       const defaultName = t("file_list.untitled_folder");
-      const newPath = await invoke<string>("create_directory", {
+      const newPath = await invoke<string>("create_directory_with_history", {
         path: `${currentPath}/${defaultName}`,
       });
       await onRefresh();
@@ -248,11 +247,11 @@ export function useFileOperations({
     handleNewFolder,
     handleOpenInTerminal,
     handleMove: useCallback(
-      async (sourcePath: string, targetPath: string) => {
+      async (sourcePaths: string | string[], targetPath: string) => {
         try {
           await enqueueFileOperation({
             kind: "move",
-            paths: [sourcePath],
+            paths: Array.isArray(sourcePaths) ? sourcePaths : [sourcePaths],
             destDir: targetPath,
           });
           // 目标窗口先立即获取一次最新状态；操作完成事件会再次刷新，

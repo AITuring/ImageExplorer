@@ -61,7 +61,7 @@ export function useFileRename({
     }
 
     try {
-      await invoke("rename", { path: editingPath, newName: editValue });
+      await invoke("rename_with_history", { path: editingPath, newName: editValue });
       onRefresh();
     } catch (e) {
       console.error("Failed to rename:", e);

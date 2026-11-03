@@ -46,13 +46,13 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 sys-locale = "0.3.2"
 rust-i18n = "3.1.5"
 tauri-plugin-process = "2.3.1"
-drag = "2.1.1"
+drag = { path = "../vendor/drag" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5.2"
 block2 = "0.5.1"
-objc2-app-kit = { version = "0.2.2", features = ["NSImage", "NSBitmapImageRep", "NSGraphics", "NSImageRep", "NSWorkspace", "NSRunningApplication", "block2"] }
-objc2-foundation = { version = "0.2.2", features = ["NSString", "NSData", "NSDictionary", "NSURL", "NSArray", "NSBundle", "NSGeometry", "NSFileManager", "NSOperation", "block2"] }
+objc2-app-kit = { version = "0.2.2", features = ["NSImage", "NSBitmapImageRep", "NSGraphics", "NSImageRep", "NSWorkspace", "NSRunningApplication", "NSPasteboard", "NSPasteboardItem", "block2"] }
+objc2-foundation = { version = "0.2.2", features = ["NSString", "NSData", "NSDictionary", "NSURL", "NSArray", "NSBundle", "NSGeometry", "NSFileManager", "NSError", "NSOperation", "block2"] }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-updater = "2.9.0"

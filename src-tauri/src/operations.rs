@@ -1,7 +1,7 @@
 use crate::commands::fs::{
-    copy_path_resumable_with_ready, delete_to_trash, get_disk_space, move_path_resumable,
-    move_path_resumable_with_ready, partial_path_for, path_exists, paths_equivalent,
-    rename_without_replace,
+    copy_path_resumable_with_ready, delete_to_trash, delete_to_trash_with_location, get_disk_space,
+    move_path_resumable, move_path_resumable_with_ready, partial_path_for, path_exists,
+    paths_equivalent, rename_without_replace,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -27,6 +27,11 @@ pub enum OperationKind {
     Delete,
     Compress,
     Extract,
+    #[serde(rename = "create_file")]
+    CreateFile,
+    #[serde(rename = "create_directory")]
+    CreateDirectory,
+    Rename,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -186,6 +191,12 @@ enum UndoAction {
         identity: Option<SourceIdentity>,
     },
     MoveBack {
+        from: String,
+        to: String,
+        #[serde(default)]
+        identity: Option<SourceIdentity>,
+    },
+    RenameBack {
         from: String,
         to: String,
         #[serde(default)]
@@ -844,6 +855,30 @@ fn restore_backup(
     rename_without_replace(backup, original).map_err(|error| error.to_string())
 }
 
+fn undo_rename(from: &str, to: &str, identity: Option<&SourceIdentity>) -> Result<(), String> {
+    let from_path = Path::new(from);
+    let to_path = Path::new(to);
+    if !path_exists(to_path)
+        && identity.is_some_and(|expected| source_identity_matches(from_path, expected))
+    {
+        return Ok(());
+    }
+    if !identity.is_some_and(|expected| source_identity_matches(to_path, expected)) {
+        return Err(format!("The renamed item changed; undo preserved it: {to}"));
+    }
+    if path_exists(from_path) {
+        if identity.is_some_and(|expected| source_identity_matches(from_path, expected)) {
+            fs::rename(to_path, from_path).map_err(|error| error.to_string())
+        } else {
+            Err(format!(
+                "The original name is occupied; undo preserved it: {from}"
+            ))
+        }
+    } else {
+        rename_without_replace(to_path, from_path).map_err(|error| error.to_string())
+    }
+}
+
 fn discard_backup_to_trash(
     backup_path: &str,
     original_path: &str,
@@ -1107,6 +1142,98 @@ fn run_archive_command(
 }
 
 impl OperationManager {
+    fn record_completed_change(
+        &self,
+        app: &AppHandle,
+        kind: OperationKind,
+        path: String,
+        undo_action: UndoAction,
+    ) -> Result<String, String> {
+        let id = new_operation_id();
+        let snapshot = OperationSnapshot {
+            id: id.clone(),
+            kind,
+            status: OperationStatus::Completed,
+            total_items: 1,
+            completed_items: 1,
+            failed_items: 0,
+            skipped_items: 0,
+            total_bytes: 0,
+            completed_bytes: 0,
+            current_item: Some(path.clone()),
+            errors: Vec::new(),
+            error_details: Vec::new(),
+            cancel_requested: false,
+            undo_status: UndoStatus::Available,
+            retryable: false,
+            started_at: now_seconds(),
+            finished_at: Some(now_seconds()),
+        };
+        {
+            let mut records = self.records.lock().map_err(|error| error.to_string())?;
+            records.insert(
+                id.clone(),
+                OperationRecord {
+                    snapshot: snapshot.clone(),
+                    cancel_requested: Arc::new(AtomicBool::new(false)),
+                    undo_actions: vec![undo_action],
+                    request: None,
+                },
+            );
+            if let Err(error) = persist_record_map(&records) {
+                records.remove(&id);
+                return Err(format!(
+                    "Failed to persist undo history for {path}: {error}"
+                ));
+            }
+        }
+        self.emit(app, &snapshot);
+        Ok(id)
+    }
+
+    pub fn record_created_path(
+        &self,
+        app: &AppHandle,
+        path: &Path,
+        is_directory: bool,
+    ) -> Result<String, String> {
+        let identity = source_identity(path)
+            .ok_or_else(|| format!("Cannot verify the new item: {}", path.display()))?;
+        self.record_completed_change(
+            app,
+            if is_directory {
+                OperationKind::CreateDirectory
+            } else {
+                OperationKind::CreateFile
+            },
+            path.to_string_lossy().to_string(),
+            UndoAction::RemoveCreatedPath {
+                path: path.to_string_lossy().to_string(),
+                identity: Some(identity),
+            },
+        )
+    }
+
+    pub fn record_rename(
+        &self,
+        app: &AppHandle,
+        original: &Path,
+        renamed: &Path,
+    ) -> Result<String, String> {
+        let identity = source_identity(renamed)
+            .ok_or_else(|| format!("Cannot verify the renamed item: {}", renamed.display()))?;
+        self.record_completed_change(
+            app,
+            OperationKind::Rename,
+            renamed.to_string_lossy().to_string(),
+            UndoAction::RenameBack {
+                from: original.to_string_lossy().to_string(),
+                to: renamed.to_string_lossy().to_string(),
+                identity: Some(identity),
+            },
+        )
+    }
+
     pub fn start(
         &self,
         app: AppHandle,
@@ -1451,7 +1578,7 @@ impl OperationManager {
                 None
             };
 
-            let (pending_undo_action, final_undo_action) =
+            let (pending_undo_action, mut final_undo_action) =
                 match (request.kind, destination_path.as_deref()) {
                     (OperationKind::Copy, Some(destination)) => (
                         Some(UndoAction::PendingCopy {
@@ -1809,16 +1936,35 @@ impl OperationManager {
                 })
                 .map(|_| destination_path.clone()),
                 OperationKind::Delete => {
-                    retry_operation(|| delete_to_trash(path.clone()).map(|_| ())).map(|_| None)
+                    retry_operation(|| delete_to_trash_with_location(path.clone())).map(|location| {
+                        if let Some(location) = location {
+                            let identity = source_identity(Path::new(&location));
+                            if identity.is_none() {
+                                eprintln!("Trashed item identity is unavailable; undo was not recorded: {location}");
+                            } else {
+                                final_undo_action = Some(UndoAction::MoveBack {
+                                    from: path.clone(),
+                                    identity,
+                                    to: location,
+                                });
+                            }
+                        }
+                        None
+                    })
                 }
                 OperationKind::Compress | OperationKind::Extract => {
                     Err("Archive operation was routed to the file worker".to_string())
+                }
+                OperationKind::CreateFile | OperationKind::CreateDirectory | OperationKind::Rename => {
+                    Err("Completed file mutation was routed to the file worker".to_string())
                 }
             };
 
             match result {
                 Ok(created_path) => {
-                    debug_assert_eq!(created_path.is_some(), final_undo_action.is_some());
+                    if matches!(request.kind, OperationKind::Copy | OperationKind::Move) {
+                        debug_assert_eq!(created_path.is_some(), final_undo_action.is_some());
+                    }
                     let final_undo_action = final_undo_action.map(|action| match action {
                         UndoAction::RemoveCreatedPath { path, .. } => {
                             let identity = copy_output_identity.clone().or_else(|| {
@@ -1871,7 +2017,7 @@ impl OperationManager {
                         item_index,
                         item_bytes,
                         reports_byte_progress,
-                        pending_undo_action.zip(final_undo_action),
+                        final_undo_action.map(|action| (pending_undo_action, action)),
                     );
                 }
                 Err(error) => {
@@ -2363,6 +2509,9 @@ impl OperationManager {
                     };
                     (to.clone(), result)
                 }
+                UndoAction::RenameBack { from, to, identity } => {
+                    (to.clone(), undo_rename(from, to, identity.as_ref()))
+                }
                 UndoAction::RestoreBackup {
                     backup_path,
                     original_path,
@@ -2385,6 +2534,7 @@ impl OperationManager {
                     match action {
                         UndoAction::PendingMove { from, .. }
                         | UndoAction::MoveBack { from, .. }
+                        | UndoAction::RenameBack { from, .. }
                         | UndoAction::RestoreBackup {
                             original_path: from,
                             ..
@@ -3078,7 +3228,7 @@ impl OperationManager {
         item_index: usize,
         item_bytes: u64,
         reports_byte_progress: bool,
-        undo_transition: Option<(UndoAction, UndoAction)>,
+        undo_transition: Option<(Option<UndoAction>, UndoAction)>,
     ) {
         let snapshot = {
             let Ok(mut records) = self.records.lock() else {
@@ -3093,9 +3243,11 @@ impl OperationManager {
                 }
             }
             if let Some((pending, action)) = undo_transition {
-                record
-                    .undo_actions
-                    .retain(|candidate| !same_undo_intent(candidate, &pending));
+                if let Some(pending) = pending {
+                    record
+                        .undo_actions
+                        .retain(|candidate| !same_undo_intent(candidate, &pending));
+                }
                 if !record.undo_actions.contains(&action) {
                     record.undo_actions.push(action);
                 }
@@ -3632,6 +3784,59 @@ pub fn start_delete_operation(
 }
 
 #[tauri::command]
+pub fn create_file_with_history(
+    app: AppHandle,
+    manager: State<'_, OperationManager>,
+    path: String,
+) -> Result<String, String> {
+    let created = crate::commands::fs::create_file(path)?;
+    if let Err(error) = manager.record_created_path(&app, Path::new(&created), false) {
+        eprintln!("File was created, but undo history could not be saved: {error}");
+    }
+    if let Some(parent) = Path::new(&created).parent() {
+        crate::cache::notify_dir_change(&app, &parent.to_string_lossy());
+    }
+    Ok(created)
+}
+
+#[tauri::command]
+pub fn create_directory_with_history(
+    app: AppHandle,
+    manager: State<'_, OperationManager>,
+    path: String,
+) -> Result<String, String> {
+    let created = crate::commands::fs::create_directory(path)?;
+    if let Err(error) = manager.record_created_path(&app, Path::new(&created), true) {
+        eprintln!("Folder was created, but undo history could not be saved: {error}");
+    }
+    if let Some(parent) = Path::new(&created).parent() {
+        crate::cache::notify_dir_change(&app, &parent.to_string_lossy());
+    }
+    Ok(created)
+}
+
+#[tauri::command]
+pub fn rename_with_history(
+    app: AppHandle,
+    manager: State<'_, OperationManager>,
+    path: String,
+    new_name: String,
+) -> Result<(), String> {
+    let original = Path::new(&path);
+    let renamed = original.parent().ok_or("Invalid path")?.join(&new_name);
+    crate::commands::fs::rename(path.clone(), new_name)?;
+    if original != renamed {
+        if let Err(error) = manager.record_rename(&app, original, &renamed) {
+            eprintln!("Item was renamed, but undo history could not be saved: {error}");
+        }
+        if let Some(parent) = original.parent() {
+            crate::cache::notify_dir_change(&app, &parent.to_string_lossy());
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub fn start_compress_operation(
     app: AppHandle,
     manager: State<'_, OperationManager>,
@@ -3704,15 +3909,55 @@ mod tests {
     use super::{
         conflicts, load_operation_records, new_file_request, object_identity_matches,
         persist_record_map_to_path, restore_backup, source_identity, source_identity_matches,
-        verify_created_path_identity, zip_entry_is_safe, ConflictPolicy, OperationKind,
-        OperationRequest, OperationSnapshot, OperationStatus, PersistedOperationRecord, UndoAction,
-        UndoStatus,
+        undo_rename, verify_created_path_identity, zip_entry_is_safe, ConflictPolicy,
+        OperationKind, OperationRequest, OperationSnapshot, OperationStatus,
+        PersistedOperationRecord, UndoAction, UndoStatus,
     };
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static NEXT_TEST_ROOT: AtomicU64 = AtomicU64::new(1);
+
+    #[test]
+    fn rename_undo_restores_name_and_refuses_an_external_collision() {
+        let root = test_root("rename-undo");
+        fs::create_dir_all(&root).expect("create test root");
+        let original = root.join("original.txt");
+        let renamed = root.join("renamed.txt");
+        fs::write(&original, b"original bytes").expect("write source");
+        fs::rename(&original, &renamed).expect("rename source");
+        let identity = source_identity(&renamed).expect("capture renamed identity");
+        fs::write(&original, b"external bytes").expect("occupy original name");
+
+        assert!(undo_rename(
+            &original.to_string_lossy(),
+            &renamed.to_string_lossy(),
+            Some(&identity),
+        )
+        .is_err());
+        assert_eq!(
+            fs::read(&original).expect("read external file"),
+            b"external bytes"
+        );
+        assert_eq!(
+            fs::read(&renamed).expect("read renamed file"),
+            b"original bytes"
+        );
+
+        fs::remove_file(&original).expect("remove external file");
+        undo_rename(
+            &original.to_string_lossy(),
+            &renamed.to_string_lossy(),
+            Some(&identity),
+        )
+        .expect("restore original name");
+        assert_eq!(
+            fs::read(&original).expect("read restored file"),
+            b"original bytes"
+        );
+        fs::remove_dir_all(root).expect("remove test root");
+    }
 
     fn test_root(name: &str) -> std::path::PathBuf {
         let suffix = SystemTime::now()
