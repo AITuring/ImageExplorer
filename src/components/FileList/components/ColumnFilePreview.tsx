@@ -12,9 +12,7 @@ export function ColumnFilePreview({ entry }: { entry: FileEntry }) {
   const { t } = useTranslation();
   const metadata = usePhotoMetadata(entry);
   const entries = useMemo(() => [entry], [entry]);
-  const verdict = useVisibleSharpness(entries, isAnalyzablePhoto(entry), entry.path).get(
-    entry.path
-  );
+  const verdict = useVisibleSharpness(entries, isAnalyzablePhoto(entry)).get(entry.path);
 
   return (
     <aside

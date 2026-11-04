@@ -407,15 +407,9 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   );
   const listStart = listVirtualizer.range?.startIndex ?? 0;
   const listEnd = listVirtualizer.range?.endIndex ?? -1;
-  const listViewportEntries = useMemo(
-    () => (viewMode === "list" ? sortedEntries.slice(listStart, listEnd + 1) : []),
-    [viewMode, sortedEntries, listStart, listEnd]
-  );
   const visibleSharpness = useVisibleSharpness(
-    viewMode === "list" ? listViewportEntries : gridViewportEntries,
-    viewMode === "list" || (photoAnalysisEnabled && viewMode === "icon"),
-    selectedPath,
-    viewMode === "list" ? listVirtualizer.isScrolling : gridIsScrolling
+    sortedEntries,
+    viewMode === "list" || (photoAnalysisEnabled && viewMode === "icon")
   );
 
   const photoAnalysisEnabledForFolder = photoAnalysisEnabled;

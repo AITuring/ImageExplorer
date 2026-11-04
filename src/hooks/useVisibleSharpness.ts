@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { getFileThumbnailCacheKey, loadFileThumbnail } from "@/lib/iconCache";
-import { extractSharpnessRegionPixels, FULL_IMAGE_SHARPNESS_SOURCE_SIZE } from "@/lib/sharpnessAnalysis";
+import {
+  extractSharpnessRegionPixels,
+  FULL_IMAGE_SHARPNESS_SOURCE_SIZE,
+} from "@/lib/sharpnessAnalysis";
 import { computeSharpnessMaskOffThread } from "@/lib/sharpnessWorker";
 import { IMAGE_EXTENSIONS } from "@/constants/fileTypes";
 import type { FileEntry } from "@/types";
@@ -35,7 +38,7 @@ async function measure(entry: FileEntry, signal: AbortSignal): Promise<VisibleSh
     SOURCE_SIZE,
     false,
     signal,
-    "interactive",
+    "background",
     false,
     false
   );
@@ -54,12 +57,7 @@ async function measure(entry: FileEntry, signal: AbortSignal): Promise<VisibleSh
   return result.highlightedPixels > 0 ? "sharp" : "soft";
 }
 
-export function useVisibleSharpness(
-  entries: FileEntry[],
-  enabled: boolean,
-  selectedPath: string | null,
-  isScrolling = false
-) {
+export function useVisibleSharpness(entries: FileEntry[], enabled: boolean) {
   const signature = useMemo(
     () => entries.filter(isAnalyzable).map(keyFor).join("\u001f"),
     [entries]
@@ -67,10 +65,9 @@ export function useVisibleSharpness(
   const [version, setVersion] = useState(0);
 
   useEffect(() => {
-    if (!enabled || isScrolling) return;
+    if (!enabled) return;
     const controller = new AbortController();
     const pending = entries.filter((entry) => isAnalyzable(entry) && !results.has(keyFor(entry)));
-    pending.sort((a, b) => Number(b.path === selectedPath) - Number(a.path === selectedPath));
     let next = 0;
     const worker = async () => {
       while (!controller.signal.aborted && next < pending.length) {
@@ -90,9 +87,9 @@ export function useVisibleSharpness(
         setVersion((current) => current + 1);
       }
     };
-    void Promise.all([worker(), worker()]);
+    void worker();
     return () => controller.abort();
-  }, [enabled, entries, isScrolling, selectedPath, signature]);
+  }, [enabled, entries, signature]);
 
   return useMemo(() => {
     void version;
