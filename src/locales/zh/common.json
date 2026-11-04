@@ -84,7 +84,10 @@
     "scanning": "正在扫描文件...",
     "indexed": "已索引 {{count}} 个文件",
     "failed_title": "文件索引核对失败",
-    "failed_message": "搜索仍可使用旧索引；重启后会重新核对"
+    "failed_message": "搜索仍可使用旧索引；重启后会重新核对",
+    "permission_message": "macOS 阻止访问该位置。请在系统设置中授予 ImageExplorer 全盘访问权限，然后重启应用重新核对。",
+    "permission_action": "打开权限设置",
+    "dismiss": "关闭提示"
   },
   "operations": {
     "title": "文件操作",

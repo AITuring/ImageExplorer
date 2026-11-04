@@ -84,7 +84,10 @@
     "scanning": "Scanning files...",
     "indexed": "Indexed {{count}} files",
     "failed_title": "Index refresh failed",
-    "failed_message": "Search uses the previous index; it will retry on restart"
+    "failed_message": "Search uses the previous index; it will retry on restart",
+    "permission_message": "macOS blocked access to this location. Grant ImageExplorer Full Disk Access in System Settings, then restart the app to retry.",
+    "permission_action": "Open privacy settings",
+    "dismiss": "Dismiss notice"
   },
   "operations": {
     "title": "File Operations",

@@ -196,6 +196,7 @@ struct IndexStatus {
     is_building: bool,
     file_count: usize,
     last_build_failed: bool,
+    last_build_error: Option<String>,
 }
 
 #[tauri::command]
@@ -206,6 +207,7 @@ fn get_index_status(index: tauri::State<'_, SharedIndex>) -> IndexStatus {
             is_building: index.is_building,
             file_count: index.file_count,
             last_build_failed: index.last_build_failed,
+            last_build_error: index.last_build_error.clone(),
         }
     } else {
         // 如果无法获取锁（正在构建中），返回构建中状态
@@ -213,6 +215,7 @@ fn get_index_status(index: tauri::State<'_, SharedIndex>) -> IndexStatus {
             is_building: true,
             file_count: 0,
             last_build_failed: false,
+            last_build_error: None,
         }
     }
 }
@@ -274,6 +277,7 @@ fn build_index_background(
                 if let Ok(mut idx) = index.write() {
                     idx.is_building = true;
                     idx.last_build_failed = false;
+                    idx.last_build_error = None;
                     idx.file_count = db.file_count().max(0) as usize;
                 }
                 println!(
@@ -296,6 +300,7 @@ fn build_index_background(
                             idx.is_building = false;
                             idx.file_count = count;
                             idx.last_build_failed = false;
+                            idx.last_build_error = None;
                         }
                         true
                     }
@@ -308,6 +313,7 @@ fn build_index_background(
                             idx.is_building = false;
                             idx.file_count = db.file_count().max(0) as usize;
                             idx.last_build_failed = true;
+                            idx.last_build_error = Some(e.to_string());
                         }
                         if let Err(marker_error) = builder.mark_rebuild_required() {
                             eprintln!("Failed to mark SQLite index for a retry: {marker_error}");
@@ -458,6 +464,7 @@ fn start_sqlite_watcher(
                 if let Ok(mut idx) = index.write() {
                     idx.is_building = true;
                     idx.last_build_failed = false;
+                    idx.last_build_error = None;
                 }
                 let _ = app.emit("index-status", "building");
 
@@ -467,6 +474,7 @@ fn start_sqlite_watcher(
                             idx.is_building = false;
                             idx.file_count = count;
                             idx.last_build_failed = false;
+                            idx.last_build_error = None;
                         }
                         println!("SQLite index reconciled after watcher gap: {count} files");
                     }
@@ -481,6 +489,7 @@ fn start_sqlite_watcher(
                             idx.is_building = false;
                             idx.file_count = db.file_count().max(0) as usize;
                             idx.last_build_failed = true;
+                            idx.last_build_error = Some(error.to_string());
                         }
                     }
                 }
