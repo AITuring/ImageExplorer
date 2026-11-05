@@ -28,7 +28,8 @@ export function usePhotoAnalysis(
   entries: FileEntry[],
   enabled: boolean,
   scopePath?: string,
-  priorityPaths: string[] = []
+  priorityPaths: string[] = [],
+  paused = false
 ) {
   const [state, setState] = useState<PhotoAnalysisState>({
     signature: "",
@@ -133,7 +134,7 @@ export function usePhotoAnalysis(
       (item) => !existingRecords.has(item.entry.path)
     );
 
-    if (!enabled) {
+    if (!enabled || paused) {
       return () => controller.abort();
     }
 
@@ -237,7 +238,7 @@ export function usePhotoAnalysis(
       window.clearTimeout(startTimer);
       controller.abort();
     };
-  }, [analysisSignature, enabled]);
+  }, [analysisSignature, enabled, paused]);
 
   return { records: visibleState.records, progress: visibleState.progress };
 }

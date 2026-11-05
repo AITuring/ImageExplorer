@@ -7,6 +7,71 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+static uint16_t imageexplorer_tiff_u16(const uint8_t *bytes, BOOL littleEndian) {
+    return littleEndian ? (uint16_t)(bytes[0] | bytes[1] << 8)
+                        : (uint16_t)(bytes[0] << 8 | bytes[1]);
+}
+
+static uint32_t imageexplorer_tiff_u32(const uint8_t *bytes, BOOL littleEndian) {
+    return littleEndian
+        ? (uint32_t)bytes[0] | (uint32_t)bytes[1] << 8 | (uint32_t)bytes[2] << 16 | (uint32_t)bytes[3] << 24
+        : (uint32_t)bytes[0] << 24 | (uint32_t)bytes[1] << 16 | (uint32_t)bytes[2] << 8 | (uint32_t)bytes[3];
+}
+
+// Sony ARW stores a full-resolution JPEG in a later TIFF IFD. ImageIO's
+// thumbnail API instead picks the much smaller 1616px camera preview, which
+// loses the focus difference between nearby parts of a small subject.
+static CGImageRef imageexplorer_create_arw_full_jpeg(NSURL *fileURL, uint32_t size) {
+    if (![fileURL.pathExtension.lowercaseString isEqualToString:@"arw"]) return NULL;
+    NSData *file = [NSData dataWithContentsOfURL:fileURL options:NSDataReadingMappedIfSafe error:nil];
+    if (file.length < 8) return NULL;
+    const uint8_t *bytes = file.bytes;
+    BOOL littleEndian = bytes[0] == 'I' && bytes[1] == 'I';
+    if (!littleEndian && !(bytes[0] == 'M' && bytes[1] == 'M')) return NULL;
+    if (imageexplorer_tiff_u16(bytes + 2, littleEndian) != 42) return NULL;
+
+    uint32_t ifd = imageexplorer_tiff_u32(bytes + 4, littleEndian);
+    uint32_t bestOffset = 0, bestLength = 0;
+    for (int depth = 0; depth < 16 && ifd != 0; depth++) {
+        if ((uint64_t)ifd + 2 > file.length) break;
+        uint16_t count = imageexplorer_tiff_u16(bytes + ifd, littleEndian);
+        uint64_t end = (uint64_t)ifd + 2 + (uint64_t)count * 12 + 4;
+        if (end > file.length) break;
+        uint32_t jpegOffset = 0, jpegLength = 0;
+        for (uint16_t entry = 0; entry < count; entry++) {
+            const uint8_t *tag = bytes + ifd + 2 + (uint64_t)entry * 12;
+            uint16_t id = imageexplorer_tiff_u16(tag, littleEndian);
+            if ((id == 0x0201 || id == 0x0202) &&
+                imageexplorer_tiff_u16(tag + 2, littleEndian) == 4 &&
+                imageexplorer_tiff_u32(tag + 4, littleEndian) == 1) {
+                uint32_t value = imageexplorer_tiff_u32(tag + 8, littleEndian);
+                if (id == 0x0201) jpegOffset = value;
+                else jpegLength = value;
+            }
+        }
+        if (jpegLength > bestLength && jpegLength >= 100000 &&
+            (uint64_t)jpegOffset + jpegLength <= file.length &&
+            bytes[jpegOffset] == 0xff && bytes[jpegOffset + 1] == 0xd8) {
+            bestOffset = jpegOffset;
+            bestLength = jpegLength;
+        }
+        ifd = imageexplorer_tiff_u32(bytes + end - 4, littleEndian);
+    }
+    if (!bestLength) return NULL;
+
+    NSData *jpeg = [file subdataWithRange:NSMakeRange(bestOffset, bestLength)];
+    CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)jpeg, NULL);
+    if (source == NULL) return NULL;
+    NSDictionary *options = @{
+        (id)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+        (id)kCGImageSourceCreateThumbnailWithTransform: @YES,
+        (id)kCGImageSourceThumbnailMaxPixelSize: @(size),
+    };
+    CGImageRef image = CGImageSourceCreateThumbnailAtIndex(source, 0, (__bridge CFDictionaryRef)options);
+    CFRelease(source);
+    return image;
+}
+
 static CGImageRef imageexplorer_create_imageio_preview(NSURL *fileURL, uint32_t size) {
     CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)fileURL, NULL);
     if (source == NULL) {
@@ -142,6 +207,9 @@ uint8_t *imageexplorer_quicklook_thumbnail(
         // can stall a large folder for tens of seconds. Core Image RAW decoding
         // is reserved for Quick Look; ImageIO remains the compatibility fallback.
         CGImageRef image = NULL;
+        if (preferEmbedded) {
+            image = imageexplorer_create_arw_full_jpeg(fileURL, size);
+        }
         if (!preferEmbedded) {
             image = imageexplorer_create_coreimage_raw_preview(fileURL, size);
         }

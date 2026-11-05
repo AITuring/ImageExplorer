@@ -1,9 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { getFileThumbnailCacheKey, loadFileThumbnail } from "@/lib/iconCache";
-import {
-  extractSharpnessRegionPixels,
-  FULL_IMAGE_SHARPNESS_SOURCE_SIZE,
-} from "@/lib/sharpnessAnalysis";
+import { extractSharpnessRegionPixels } from "@/lib/sharpnessAnalysis";
 import { computeSharpnessMaskOffThread } from "@/lib/sharpnessWorker";
 import { IMAGE_EXTENSIONS } from "@/constants/fileTypes";
 import type { FileEntry } from "@/types";
@@ -11,9 +8,9 @@ import type { FileEntry } from "@/types";
 export type VisibleSharpness = "sharp" | "soft" | "unavailable";
 
 const IMAGE_TYPES = new Set(IMAGE_EXTENSIONS.filter((type) => type !== "svg" && type !== "psd"));
-const SOURCE_SIZE = FULL_IMAGE_SHARPNESS_SOURCE_SIZE;
+const SOURCE_SIZE = 1024;
 // Verdicts are tiny scalars; keep a whole large folder so scrolling back does
-// not trigger another 2048px RAW decode for the same file.
+// not trigger another camera JPEG read for the same file.
 const MAX_RESULTS = 5_000;
 const results = new Map<string, VisibleSharpness>();
 
@@ -26,12 +23,9 @@ function isAnalyzable(entry: FileEntry) {
 }
 
 async function measure(entry: FileEntry, signal: AbortSignal): Promise<VisibleSharpness> {
-  const thumbnailKey = getFileThumbnailCacheKey(
-    entry.path,
-    entry.modified,
-    entry.size,
-    SOURCE_SIZE
-  );
+  const thumbnailKey =
+    getFileThumbnailCacheKey(entry.path, entry.modified, entry.size, SOURCE_SIZE) +
+    ":embedded-sharpness";
   const base64 = await loadFileThumbnail(
     thumbnailKey,
     entry.path,
@@ -39,7 +33,7 @@ async function measure(entry: FileEntry, signal: AbortSignal): Promise<VisibleSh
     false,
     signal,
     "background",
-    false,
+    true,
     false
   );
   if (!base64) return "unavailable";
@@ -47,7 +41,7 @@ async function measure(entry: FileEntry, signal: AbortSignal): Promise<VisibleSh
   image.src = `data:image/png;base64,${base64}`;
   await image.decode();
   if (signal.aborted) return "unavailable";
-  const region = extractSharpnessRegionPixels(image, { x: 0, y: 0, width: 1, height: 1 });
+  const region = extractSharpnessRegionPixels(image, { x: 0, y: 0, width: 1, height: 1 }, 1024);
   const result = await computeSharpnessMaskOffThread(
     region.pixels,
     region.width,

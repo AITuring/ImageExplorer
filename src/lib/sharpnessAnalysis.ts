@@ -19,7 +19,8 @@ export interface SharpnessRegionPixels {
   pixels: Uint8ClampedArray;
 }
 
-const MAX_ANALYSIS_EDGE = 1024;
+const MAX_ANALYSIS_EDGE = 2048;
+const FOCUS_TILE_EDGE = 128;
 export const FULL_IMAGE_SHARPNESS_SOURCE_SIZE = 2048;
 const MIN_SOURCE_REQUEST_SIZE = 2048;
 const MAX_SOURCE_REQUEST_SIZE = 6144;
@@ -104,7 +105,7 @@ export function computeSharpnessMask(
     highlightedRatio: 0,
   });
 
-  if (width < 3 || height < 3 || pixels.length < pixelCount * 4) {
+  if (width < 9 || height < 9 || pixels.length < pixelCount * 4) {
     return emptyMask();
   }
 
@@ -119,15 +120,38 @@ export function computeSharpnessMask(
     opaque[index] = pixels[pixelIndex + 3] >= 192 ? 1 : 0;
   }
 
+  // Reduce pixel-scale noise before measuring edge acutance.
+  const filtered = new Float32Array(pixelCount);
+  for (let y = 1; y < height - 1; y += 1) {
+    for (let x = 1; x < width - 1; x += 1) {
+      const index = y * width + x;
+      filtered[index] =
+        (luma[index - width - 1] +
+          2 * luma[index - width] +
+          luma[index - width + 1] +
+          2 * luma[index - 1] +
+          4 * luma[index] +
+          2 * luma[index + 1] +
+          luma[index + width - 1] +
+          2 * luma[index + width] +
+          luma[index + width + 1]) /
+        16;
+    }
+  }
+
   const scores = new Float32Array(pixelCount);
+  const tileColumns = Math.ceil(width / FOCUS_TILE_EDGE);
+  const tileRows = Math.ceil(height / FOCUS_TILE_EDGE);
+  const tileLaplacian = new Float64Array(tileColumns * tileRows);
+  const tileGradient = new Float64Array(tileColumns * tileRows);
   const histogram = new Uint32Array(1024);
   let validPixels = 0;
   let scoreSum = 0;
   let squaredScoreSum = 0;
   let maximumScore = 0;
 
-  for (let y = 1; y < height - 1; y += 1) {
-    for (let x = 1; x < width - 1; x += 1) {
+  for (let y = 4; y < height - 4; y += 1) {
+    for (let x = 4; x < width - 4; x += 1) {
       const index = y * width + x;
       const left = index - 1;
       const right = index + 1;
@@ -153,24 +177,43 @@ export function computeSharpnessMask(
       }
 
       const horizontal =
-        -luma[topLeft] -
-        luma[left] * 2 -
-        luma[bottomLeft] +
-        luma[topRight] +
-        luma[right] * 2 +
-        luma[bottomRight];
+        -filtered[topLeft] -
+        filtered[left] * 2 -
+        filtered[bottomLeft] +
+        filtered[topRight] +
+        filtered[right] * 2 +
+        filtered[bottomRight];
       const vertical =
-        -luma[topLeft] -
-        luma[top] * 2 -
-        luma[topRight] +
-        luma[bottomLeft] +
-        luma[bottom] * 2 +
-        luma[bottomRight];
+        -filtered[topLeft] -
+        filtered[top] * 2 -
+        filtered[topRight] +
+        filtered[bottomLeft] +
+        filtered[bottom] * 2 +
+        filtered[bottomRight];
       const gradient = Math.hypot(horizontal, vertical) / 8;
+      // A soft, high-contrast silhouette can have a large gradient while its
+      // transition spans several pixels. Compare the central slope with the
+      // contrast across the same edge at a wider scale.
+      const stepX = Math.abs(horizontal) >= Math.abs(vertical) ? 1 : 0;
+      const stepY = stepX ? 0 : 1;
+      const offset = stepY * width + stepX;
+      const broadContrast = Math.abs(filtered[index + offset * 3] - filtered[index - offset * 3]);
+      const acutance = (gradient * 2) / Math.max(broadContrast, 1);
       const laplacian = Math.abs(
+        filtered[index] * 4 - filtered[left] - filtered[right] - filtered[top] - filtered[bottom]
+      );
+      const score = acutance >= 0.38 ? laplacian * 0.68 + gradient * 0.32 : 0;
+
+      // Compare fine detail with the broader edge energy in each local area.
+      // A blurred silhouette may still have high contrast at a few pixels,
+      // but its surrounding surface has less fine detail than a focused one.
+      const rawLaplacian = Math.abs(
         luma[index] * 4 - luma[left] - luma[right] - luma[top] - luma[bottom]
       );
-      const score = laplacian * 0.68 + gradient * 0.32;
+      const rawGradient = Math.abs(luma[left] - luma[right]) + Math.abs(luma[top] - luma[bottom]);
+      const tile = Math.floor(y / FOCUS_TILE_EDGE) * tileColumns + Math.floor(x / FOCUS_TILE_EDGE);
+      tileLaplacian[tile] += rawLaplacian;
+      tileGradient[tile] += rawGradient;
 
       scores[index] = score;
       maximumScore = Math.max(maximumScore, score);
@@ -192,12 +235,19 @@ export function computeSharpnessMask(
   const threshold = Math.max(MIN_ABSOLUTE_SHARPNESS, percentile88, mean + deviation * 0.65);
   const supportThreshold = Math.max(MIN_ABSOLUTE_SHARPNESS * 0.55, threshold * 0.55);
   const coreMask = new Uint8Array(pixelCount);
+  const tileFocus = new Uint8Array(tileLaplacian.length);
+  for (let tile = 0; tile < tileFocus.length; tile += 1) {
+    tileFocus[tile] =
+      tileGradient[tile] > 0 && tileLaplacian[tile] / tileGradient[tile] >= 0.66 ? 1 : 0;
+  }
   let highlightedPixels = 0;
 
   for (let y = 1; y < height - 1; y += 1) {
     for (let x = 1; x < width - 1; x += 1) {
       const index = y * width + x;
       if (scores[index] < threshold) continue;
+      const tile = Math.floor(y / FOCUS_TILE_EDGE) * tileColumns + Math.floor(x / FOCUS_TILE_EDGE);
+      if (!tileFocus[tile]) continue;
 
       let supportingNeighbors = 0;
       for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
@@ -263,7 +313,8 @@ export function computeSharpnessMask(
 
 export function extractSharpnessRegionPixels(
   image: HTMLImageElement,
-  selection: NormalizedRect
+  selection: NormalizedRect,
+  maxAnalysisEdge = MAX_ANALYSIS_EDGE
 ): SharpnessRegionPixels {
   const sourceWidth = image.naturalWidth;
   const sourceHeight = image.naturalHeight;
@@ -285,7 +336,7 @@ export function extractSharpnessRegionPixels(
   );
   const selectedWidth = endX - startX;
   const selectedHeight = endY - startY;
-  const analysisScale = Math.min(1, MAX_ANALYSIS_EDGE / Math.max(selectedWidth, selectedHeight));
+  const analysisScale = Math.min(1, maxAnalysisEdge / Math.max(selectedWidth, selectedHeight));
   const analysisWidth = Math.max(1, Math.round(selectedWidth * analysisScale));
   const analysisHeight = Math.max(1, Math.round(selectedHeight * analysisScale));
 

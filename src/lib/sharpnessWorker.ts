@@ -1,4 +1,4 @@
-import { computeSharpnessMask, type SharpnessMaskResult } from "@/lib/sharpnessAnalysis";
+import type { SharpnessMaskResult } from "@/lib/sharpnessAnalysis";
 
 interface SharpnessWorkerSuccess {
   ok: true;
@@ -34,7 +34,7 @@ export function computeSharpnessMaskOffThread(
   if (signal.aborted) return Promise.reject(abortError());
 
   if (typeof Worker === "undefined") {
-    return Promise.resolve(computeSharpnessMask(pixels, width, height));
+    return Promise.reject(new Error("Sharpness analysis requires a background worker"));
   }
 
   return new Promise((resolve, reject) => {

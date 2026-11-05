@@ -407,9 +407,18 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   );
   const listStart = listVirtualizer.range?.startIndex ?? 0;
   const listEnd = listVirtualizer.range?.endIndex ?? -1;
+  const sharpnessEntries = useMemo(
+    () =>
+      viewMode === "list"
+        ? sortedEntries.slice(listStart, listEnd + 1)
+        : viewMode === "icon"
+          ? gridViewportEntries
+          : [],
+    [gridViewportEntries, listEnd, listStart, sortedEntries, viewMode]
+  );
   const visibleSharpness = useVisibleSharpness(
-    sortedEntries,
-    viewMode === "list" || (photoAnalysisEnabled && viewMode === "icon")
+    sharpnessEntries,
+    !quickLookEntry && (viewMode === "list" || (photoAnalysisEnabled && viewMode === "icon"))
   );
 
   const photoAnalysisEnabledForFolder = photoAnalysisEnabled;
@@ -417,7 +426,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     entries,
     photoAnalysisEnabledForFolder,
     currentPath,
-    gridViewportEntries.map((entry) => entry.path)
+    gridViewportEntries.map((entry) => entry.path),
+    Boolean(quickLookEntry)
   );
 
   useEffect(() => {

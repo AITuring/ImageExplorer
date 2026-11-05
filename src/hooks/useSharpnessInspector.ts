@@ -31,7 +31,7 @@ interface CachedSourceImage {
 }
 
 const FULL_IMAGE_SELECTION: NormalizedRect = { x: 0, y: 0, width: 1, height: 1 };
-const SHARPNESS_ANALYSIS_VERSION = 2;
+const SHARPNESS_ANALYSIS_VERSION = 7;
 const MAX_CACHED_FULL_IMAGE_RESULTS = 5;
 const fullImageResultCache = new Map<string, SharpnessMaskResult>();
 
@@ -185,12 +185,9 @@ export function useSharpnessInspector({
         return cached.image;
       }
 
-      const cacheKey = getFileThumbnailCacheKey(
-        entry.path,
-        entry.modified,
-        entry.size,
-        requestedSize
-      );
+      const cacheKey =
+        getFileThumbnailCacheKey(entry.path, entry.modified, entry.size, requestedSize) +
+        ":embedded-sharpness";
       const base64 = await loadFileThumbnail(
         cacheKey,
         entry.path,
@@ -198,7 +195,7 @@ export function useSharpnessInspector({
         false,
         signal,
         "interactive",
-        false,
+        true,
         false
       );
       if (!base64) {
@@ -236,8 +233,8 @@ export function useSharpnessInspector({
       setStatus("analyzing");
 
       try {
-        // The grid uses this exact RAW decode for its badge. A displayed
-        // progressive preview can be smaller and produce a different verdict.
+        // Full-image analysis uses the high-resolution embedded JPEG. The
+        // displayed preview can be smaller and hide local focus differences.
         const requestSize = isFullImage
           ? FULL_IMAGE_SHARPNESS_SOURCE_SIZE
           : getSharpnessSourceRequestSize(nextSelection, displayedDimensions);
@@ -245,8 +242,8 @@ export function useSharpnessInspector({
         const canUseDisplayedImage = Boolean(
           !isFullImage &&
           displayedImage &&
-          (preferredImage ||
-            Math.max(displayedImage.naturalWidth, displayedImage.naturalHeight) >= requestSize)
+          Math.max(displayedImage.naturalWidth, displayedImage.naturalHeight) >=
+            (preferredImage ? 1 : requestSize)
         );
         let image = canUseDisplayedImage
           ? displayedImage!
