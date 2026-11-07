@@ -20,7 +20,8 @@ export interface SharpnessRegionPixels {
 }
 
 const MAX_ANALYSIS_EDGE = 2048;
-const FOCUS_TILE_EDGE = 128;
+const FOCUS_TILE_SHIFT = 7;
+const FOCUS_TILE_EDGE = 1 << FOCUS_TILE_SHIFT;
 export const FULL_IMAGE_SHARPNESS_SOURCE_SIZE = 2048;
 const MIN_SOURCE_REQUEST_SIZE = 2048;
 const MAX_SOURCE_REQUEST_SIZE = 6144;
@@ -151,6 +152,7 @@ export function computeSharpnessMask(
   let maximumScore = 0;
 
   for (let y = 4; y < height - 4; y += 1) {
+    const tileRow = (y >> FOCUS_TILE_SHIFT) * tileColumns;
     for (let x = 4; x < width - 4; x += 1) {
       const index = y * width + x;
       const left = index - 1;
@@ -190,7 +192,7 @@ export function computeSharpnessMask(
         filtered[bottomLeft] +
         filtered[bottom] * 2 +
         filtered[bottomRight];
-      const gradient = Math.hypot(horizontal, vertical) / 8;
+      const gradient = Math.sqrt(horizontal * horizontal + vertical * vertical) / 8;
       // A soft, high-contrast silhouette can have a large gradient while its
       // transition spans several pixels. Compare the central slope with the
       // contrast across the same edge at a wider scale.
@@ -211,7 +213,7 @@ export function computeSharpnessMask(
         luma[index] * 4 - luma[left] - luma[right] - luma[top] - luma[bottom]
       );
       const rawGradient = Math.abs(luma[left] - luma[right]) + Math.abs(luma[top] - luma[bottom]);
-      const tile = Math.floor(y / FOCUS_TILE_EDGE) * tileColumns + Math.floor(x / FOCUS_TILE_EDGE);
+      const tile = tileRow + (x >> FOCUS_TILE_SHIFT);
       tileLaplacian[tile] += rawLaplacian;
       tileGradient[tile] += rawGradient;
 
@@ -234,7 +236,8 @@ export function computeSharpnessMask(
   const percentile98 = percentileFromHistogram(histogram, validPixels, 0.98);
   const threshold = Math.max(MIN_ABSOLUTE_SHARPNESS, percentile88, mean + deviation * 0.65);
   const supportThreshold = Math.max(MIN_ABSOLUTE_SHARPNESS * 0.55, threshold * 0.55);
-  const coreMask = new Uint8Array(pixelCount);
+  const rgba = new Uint8ClampedArray(pixelCount * 4);
+  const intensityRange = Math.max(8, percentile98 - threshold, maximumScore - threshold);
   const tileFocus = new Uint8Array(tileLaplacian.length);
   for (let tile = 0; tile < tileFocus.length; tile += 1) {
     tileFocus[tile] =
@@ -243,10 +246,11 @@ export function computeSharpnessMask(
   let highlightedPixels = 0;
 
   for (let y = 1; y < height - 1; y += 1) {
+    const tileRow = (y >> FOCUS_TILE_SHIFT) * tileColumns;
     for (let x = 1; x < width - 1; x += 1) {
       const index = y * width + x;
       if (scores[index] < threshold) continue;
-      const tile = Math.floor(y / FOCUS_TILE_EDGE) * tileColumns + Math.floor(x / FOCUS_TILE_EDGE);
+      const tile = tileRow + (x >> FOCUS_TILE_SHIFT);
       if (!tileFocus[tile]) continue;
 
       let supportingNeighbors = 0;
@@ -260,8 +264,26 @@ export function computeSharpnessMask(
       }
 
       if (supportingNeighbors >= 2) {
-        coreMask[index] = 1;
         highlightedPixels += 1;
+        const strength = clamp((scores[index] - threshold) / intensityRange, 0, 1);
+        const pixelIndex = index * 4;
+        rgba[pixelIndex] = 255;
+        rgba[pixelIndex + 1] = 55;
+        rgba[pixelIndex + 2] = 92;
+        rgba[pixelIndex + 3] = Math.round(170 + strength * 85);
+
+        // A one-pixel halo keeps focus peaking visible after the mask is
+        // scaled to the preview without filling broad soft gradients.
+        for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+          for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+            const neighborPixelIndex = (index + offsetY * width + offsetX) * 4;
+            if (rgba[neighborPixelIndex + 3] >= 72) continue;
+            rgba[neighborPixelIndex] = 255;
+            rgba[neighborPixelIndex + 1] = 55;
+            rgba[neighborPixelIndex + 2] = 92;
+            rgba[neighborPixelIndex + 3] = 72;
+          }
+        }
       }
     }
   }
@@ -269,37 +291,6 @@ export function computeSharpnessMask(
   const minimumUsefulPixels = Math.max(6, Math.floor(validPixels * 0.00005));
   if (highlightedPixels < minimumUsefulPixels) {
     return emptyMask();
-  }
-
-  const rgba = new Uint8ClampedArray(pixelCount * 4);
-  const intensityRange = Math.max(8, percentile98 - threshold, maximumScore - threshold);
-
-  for (let y = 1; y < height - 1; y += 1) {
-    for (let x = 1; x < width - 1; x += 1) {
-      const index = y * width + x;
-      if (!coreMask[index]) continue;
-
-      const strength = clamp((scores[index] - threshold) / intensityRange, 0, 1);
-      const pixelIndex = index * 4;
-      rgba[pixelIndex] = 255;
-      rgba[pixelIndex + 1] = 55;
-      rgba[pixelIndex + 2] = 92;
-      rgba[pixelIndex + 3] = Math.round(170 + strength * 85);
-
-      // A one-pixel halo keeps focus peaking visible after the analysis mask is
-      // scaled to the preview, without turning broad soft gradients into fills.
-      for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
-        for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
-          const neighborIndex = index + offsetY * width + offsetX;
-          const neighborPixelIndex = neighborIndex * 4;
-          if (rgba[neighborPixelIndex + 3] >= 72) continue;
-          rgba[neighborPixelIndex] = 255;
-          rgba[neighborPixelIndex + 1] = 55;
-          rgba[neighborPixelIndex + 2] = 92;
-          rgba[neighborPixelIndex + 3] = 72;
-        }
-      }
-    }
   }
 
   return {
