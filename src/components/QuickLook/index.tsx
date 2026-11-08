@@ -20,7 +20,11 @@ import { FileThumbnail } from "@/components/FileThumbnail";
 import { FocusRegionOverlay } from "@/components/FocusRegionOverlay";
 import { SharpnessInspectorToolbar } from "@/components/SharpnessInspectorToolbar";
 import { SharpnessSelectionOverlay } from "@/components/SharpnessSelectionOverlay";
-import { getLargestCachedFileThumbnail, loadFileThumbnail } from "@/lib/iconCache";
+import {
+  getFileThumbnailCacheKey,
+  getLargestCachedFileThumbnail,
+  loadFileThumbnail,
+} from "@/lib/iconCache";
 import { useCameraAfMetadata } from "@/hooks/useCameraAfMetadata";
 import { useSharpnessInspector } from "@/hooks/useSharpnessInspector";
 import { usePhotoMetadata } from "@/hooks/usePhotoMetadata";
@@ -69,6 +73,8 @@ const MIN_IMAGE_ZOOM = 1;
 const THUMBNAIL_SIZE_STEPS = [384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192];
 const MIN_SCROLL_ADJUST_DELTA = 0.5;
 const MAX_RAW_PREVIEW_SIZE = 8192;
+const ARW_INTERACTIVE_PREVIEW_SIZE = 4096;
+const ARW_GESTURE_PREVIEW_SIZE = 1536;
 const RAW_EXTENSIONS = new Set(RAW_IMAGE_EXTENSIONS);
 const DIALOG_FOCUSABLE_SELECTOR = [
   "button:not([disabled])",
@@ -110,6 +116,9 @@ interface ZoomGestureAnchor {
 }
 
 function applyLiveZoomTransform(frame: HTMLDivElement, scale: number, anchor: ZoomGestureAnchor) {
+  if (frame.querySelector(".quick-look-interaction-image")) {
+    frame.dataset.zooming = "true";
+  }
   frame.style.transformOrigin = `${anchor.originX}px ${anchor.originY}px`;
   frame.style.transform = `translate3d(0, 0, 0) scale(${scale})`;
   frame.style.willChange = "transform";
@@ -118,6 +127,7 @@ function applyLiveZoomTransform(frame: HTMLDivElement, scale: number, anchor: Zo
 
 function clearLiveZoomTransform(frame: HTMLDivElement | null) {
   if (!frame) return;
+  delete frame.dataset.zooming;
   frame.style.removeProperty("transform");
   frame.style.removeProperty("transform-origin");
   frame.style.removeProperty("will-change");
@@ -292,11 +302,13 @@ interface ZoomableImagePreviewProps {
   viewportSize: { width: number; height: number };
   imageDimensions: ImageDimensions | null;
   nativePreviewSrc: string | null;
+  interactionPreviewSrc: string | null;
   minimapSrc: string | null;
   fallbackSrc: string | null;
   fileSrc: string | null;
   useNativeImagePreview: boolean;
   progressivePreviewRequestSize: number;
+  sharpnessAutoReady: boolean;
   onImageLoadDimensions: (image: HTMLImageElement) => void;
   onBrowserImageError: () => void;
   onZoomDisplayChange: (zoom: number) => void;
@@ -308,6 +320,7 @@ interface ZoomableImagePreviewProps {
 interface ZoomableImageElementProps {
   entry: FileEntry;
   src: string;
+  interactionSrc?: string | null;
   renderedImageSize: { width: number; height: number } | null;
   frameRef: (node: HTMLDivElement | null) => void;
   onLoad: (image: HTMLImageElement) => void;
@@ -320,6 +333,7 @@ interface ZoomableImageElementProps {
 const ZoomableImageElement = memo(function ZoomableImageElement({
   entry,
   src,
+  interactionSrc,
   renderedImageSize,
   frameRef,
   onLoad,
@@ -345,19 +359,29 @@ const ZoomableImageElement = memo(function ZoomableImageElement({
   };
 
   return (
-    <div ref={frameRef} className="relative shrink-0" style={frameStyle}>
+    <div ref={frameRef} className="quick-look-image-frame relative shrink-0" style={frameStyle}>
       <img
         key={entry.path}
         src={src}
         alt={entry.name}
         width={renderedImageSize?.width}
         height={renderedImageSize?.height}
-        className={`${renderedImageSize ? "h-full w-full" : "h-auto max-h-full w-auto max-w-full"} rounded-lg shadow-lg select-none`}
+        className={`quick-look-full-image ${renderedImageSize ? "h-full w-full" : "h-auto max-h-full w-auto max-w-full"} rounded-lg select-none`}
         decoding="async"
         draggable={false}
         onLoad={(event) => onLoad(event.currentTarget)}
         onError={onError}
       />
+      {interactionSrc && renderedImageSize ? (
+        <img
+          src={interactionSrc}
+          alt=""
+          aria-hidden="true"
+          className="quick-look-interaction-image pointer-events-none absolute inset-0 h-full w-full rounded-lg select-none"
+          decoding="async"
+          draggable={false}
+        />
+      ) : null}
       {focusRegions.map((region) => (
         <FocusRegionOverlay
           key={`${region.x}-${region.y}-${region.width}-${region.height}`}
@@ -381,11 +405,13 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
   viewportSize,
   imageDimensions,
   nativePreviewSrc,
+  interactionPreviewSrc,
   minimapSrc,
   fallbackSrc,
   fileSrc,
   useNativeImagePreview,
   progressivePreviewRequestSize,
+  sharpnessAutoReady,
   onImageLoadDimensions,
   onBrowserImageError,
   onZoomDisplayChange,
@@ -430,11 +456,11 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
   const handleDisplayedImageLoad = useCallback(
     (image: HTMLImageElement) => {
       onImageLoadDimensions(image);
-      if (canInspectSharpness) {
+      if (canInspectSharpness && sharpnessAutoReady) {
         registerSharpnessPreviewImage(image);
       }
     },
-    [canInspectSharpness, onImageLoadDimensions, registerSharpnessPreviewImage]
+    [canInspectSharpness, onImageLoadDimensions, registerSharpnessPreviewImage, sharpnessAutoReady]
   );
 
   const imageViewportSize = useMemo(() => {
@@ -444,7 +470,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
 
     return {
       width: Math.max(320, Math.floor(viewportSize.width * 0.92)),
-      height: Math.max(240, Math.floor(viewportSize.height * 0.82)),
+      height: Math.max(240, Math.floor(viewportSize.height * 0.58)),
     };
   }, [previewViewport, viewportSize.height, viewportSize.width]);
 
@@ -705,7 +731,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
         }
 
         onCommittedZoomChange(finalZoom);
-      }, 72);
+      }, 500);
 
       if (zoomAnimationFrameRef.current !== null) {
         return;
@@ -821,6 +847,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
               <ZoomableImageElement
                 entry={entry}
                 src={nativePreviewSrc}
+                interactionSrc={interactionPreviewSrc}
                 renderedImageSize={renderedImageSize}
                 frameRef={registerZoomFrame}
                 onLoad={handleDisplayedImageLoad}
@@ -845,7 +872,9 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
                 <FileThumbnail
                   entry={entry}
                   size={320}
-                  requestSizeOverride={progressivePreviewRequestSize}
+                  requestSizeOverride={
+                    entry.extension?.toLowerCase() === "arw" ? 512 : progressivePreviewRequestSize
+                  }
                   className={`${renderedImageSize ? "h-full w-full" : "h-auto max-h-full w-auto max-w-full"} rounded-lg object-contain shadow-lg`}
                   fallbackClassName="text-muted-foreground h-40 w-40"
                   onImageLoad={handleDisplayedImageLoad}
@@ -949,11 +978,26 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
   const [useNativeImagePreview, setUseNativeImagePreview] = useState(false);
   const [imageDimensions, setImageDimensions] = useState<ImageDimensions | null>(null);
   const [nativePreviewSrc, setNativePreviewSrc] = useState<string | null>(null);
+  const [interactionPreviewSrc, setInteractionPreviewSrc] = useState<string | null>(null);
   const [viewportSize, setViewportSize] = useState(() => ({
     width: typeof window === "undefined" ? 1440 : window.innerWidth,
     height: typeof window === "undefined" ? 900 : window.innerHeight,
   }));
   const [committedZoom, setCommittedZoom] = useState(1);
+  const zoomSourceTimerRef = useRef<number | null>(null);
+  const [customDialogSize, setCustomDialogSize] = useState<ImageDimensions | null>(null);
+  const embeddedArwJpegLoadedRef = useRef(false);
+  const embeddedArwJpegAttemptedRef = useRef(false);
+  const embeddedArwJpegLoadingRef = useRef(false);
+  const activeEntryIdentityRef = useRef(entryIdentity);
+  activeEntryIdentityRef.current = entryIdentity;
+  const resizeStartRef = useRef<{
+    pointerId: number;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null>(null);
   const nativePreviewSizeRef = useRef(0);
   const nativePreviewTargetSizeRef = useRef(0);
   const zoomIndicatorRef = useRef<HTMLSpanElement | null>(null);
@@ -1001,7 +1045,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
 
     switch (previewType) {
       case "image":
-        return "h-[min(92vh,64rem)] w-[min(96vw,96rem)]";
+        return "max-h-[96vh] max-w-[98vw]";
       case "pdf":
       case "video":
         return "h-[min(92vh,64rem)] w-[min(96vw,96rem)]";
@@ -1041,6 +1085,10 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
       return;
     }
 
+    // RAW pages already request a large current frame and a sharpness source.
+    // Neighbor prefetch competes for external-disk reads during interaction.
+    if (isRawImage) return;
+
     const candidates = [previousEntry, nextEntry].filter((candidate): candidate is FileEntry =>
       Boolean(candidate && !candidate.is_dir && isImageFile(candidate.extension))
     );
@@ -1077,7 +1125,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
       window.clearTimeout(timeoutId);
       controller.abort();
     };
-  }, [entry, nextEntry, previewType, previousEntry]);
+  }, [entry, isRawImage, nextEntry, previewType, previousEntry]);
 
   const nativePreviewRequestSize = useMemo(() => {
     if (previewType !== "image" || !entryPath) {
@@ -1170,44 +1218,32 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
   }, [entryModified, entryPath, entrySize]);
 
   const dialogStyle = useMemo<CSSProperties | undefined>(() => {
-    if (previewType !== "image" || !imageDimensions) {
+    if (previewType !== "image") {
       return undefined;
     }
-
-    const HEADER_HEIGHT = 48;
-    const DETAILS_HEIGHT = 170;
-    const CONTENT_PADDING_X = 10;
-    const CONTENT_PADDING_Y = 10;
-    const BORDER = 1;
-    const MIN_DIALOG_WIDTH = 240;
-    const MIN_DIALOG_HEIGHT = 320;
-    const maxDialogWidth = Math.max(320, Math.floor(viewportSize.width * 0.96));
-    const maxDialogHeight = Math.max(260, Math.floor(viewportSize.height * 0.92));
-    const maxContentWidth = Math.max(120, maxDialogWidth - CONTENT_PADDING_X - BORDER);
-    const maxContentHeight = Math.max(
-      120,
-      maxDialogHeight - HEADER_HEIGHT - DETAILS_HEIGHT - CONTENT_PADDING_Y - BORDER
-    );
-
-    const scale = Math.min(
-      maxContentWidth / imageDimensions.width,
-      maxContentHeight / imageDimensions.height
-    );
-
-    const contentWidth = Math.round(imageDimensions.width * scale);
-    const contentHeight = Math.round(imageDimensions.height * scale);
-
+    const maxDialogHeight = Math.max(240, viewportSize.height - 84);
     return {
-      width: `${Math.min(maxDialogWidth, Math.max(MIN_DIALOG_WIDTH, contentWidth + CONTENT_PADDING_X + BORDER))}px`,
-      height: `${Math.min(
-        maxDialogHeight,
-        Math.max(
-          MIN_DIALOG_HEIGHT,
-          contentHeight + HEADER_HEIGHT + DETAILS_HEIGHT + CONTENT_PADDING_Y + BORDER
-        )
-      )}px`,
+      width: `${Math.min(customDialogSize?.width ?? viewportSize.width * 0.96, viewportSize.width * 0.98)}px`,
+      height: `${Math.min(customDialogSize?.height ?? viewportSize.height * 0.9, maxDialogHeight)}px`,
     };
-  }, [imageDimensions, previewType, viewportSize.height, viewportSize.width]);
+  }, [customDialogSize, previewType, viewportSize.height, viewportSize.width]);
+
+  const scheduleZoomSourceUpgrade = useCallback((zoom: number) => {
+    if (embeddedArwJpegLoadedRef.current) return;
+    if (zoomSourceTimerRef.current !== null) window.clearTimeout(zoomSourceTimerRef.current);
+    zoomSourceTimerRef.current = window.setTimeout(() => {
+      zoomSourceTimerRef.current = null;
+      setCommittedZoom(zoom);
+    }, 420);
+  }, []);
+
+  const finishDialogResize = useCallback((pointerId: number) => {
+    const start = resizeStartRef.current;
+    if (!start || start.pointerId !== pointerId) return;
+    resizeStartRef.current = null;
+    const dialog = dialogRef.current;
+    if (dialog) setCustomDialogSize({ width: dialog.offsetWidth, height: dialog.offsetHeight });
+  }, []);
 
   const updateImageDimensions = useCallback((nextDimensions: ImageDimensions) => {
     if (nextDimensions.width <= 0 || nextDimensions.height <= 0) return;
@@ -1231,6 +1267,14 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     setUseNativeImagePreview(false);
     setImageDimensions(null);
     setNativePreviewSrc(null);
+    setInteractionPreviewSrc(null);
+    embeddedArwJpegLoadedRef.current = false;
+    embeddedArwJpegAttemptedRef.current = false;
+    embeddedArwJpegLoadingRef.current = false;
+    if (zoomSourceTimerRef.current !== null) {
+      window.clearTimeout(zoomSourceTimerRef.current);
+      zoomSourceTimerRef.current = null;
+    }
     setCommittedZoom(1);
     nativePreviewSizeRef.current = 0;
     nativePreviewTargetSizeRef.current = 0;
@@ -1391,9 +1435,23 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
 
     let cancelled = false;
     const controller = new AbortController();
-    const cachePrefix = `file:${entryPath}:${entryModified}:${entrySize}:`;
-    const progressiveCacheKey = `${cachePrefix}${progressivePreviewRequestSize}`;
-    const fullCacheKey = `${cachePrefix}${nativePreviewRequestSize}`;
+    // Sony ARW contains a full-resolution camera JPEG. Reuse it for the
+    // fitted preview instead of demosaicing the RAW twice on open.
+    const preferEmbeddedPreview = entryExtension.toLowerCase() === "arw";
+    const progressiveCacheKey = getFileThumbnailCacheKey(
+      entryPath,
+      entryModified,
+      entrySize,
+      progressivePreviewRequestSize,
+      preferEmbeddedPreview
+    );
+    const fullCacheKey = getFileThumbnailCacheKey(
+      entryPath,
+      entryModified,
+      entrySize,
+      nativePreviewRequestSize,
+      preferEmbeddedPreview
+    );
 
     const applyPreviewSource = (src: string, requestSize: number) => {
       if (cancelled || requestSize < nativePreviewSizeRef.current) return;
@@ -1419,10 +1477,10 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
         cacheKey,
         entryPath,
         requestSize,
-        true,
+        !preferEmbeddedPreview,
         controller.signal,
         "interactive",
-        false,
+        preferEmbeddedPreview,
         false
       )
         .then((base64) => {
@@ -1438,6 +1496,45 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     };
 
     const loadFullPreview = () => loadPreview(fullCacheKey, nativePreviewRequestSize);
+    if (preferEmbeddedPreview) {
+      if (embeddedArwJpegLoadedRef.current) return () => controller.abort();
+      if (embeddedArwJpegLoadingRef.current) return () => controller.abort();
+      if (!embeddedArwJpegAttemptedRef.current) {
+        embeddedArwJpegAttemptedRef.current = true;
+        embeddedArwJpegLoadingRef.current = true;
+        const requestedEntryIdentity = entryIdentity;
+        void invoke<string | null>("get_arw_embedded_jpeg", {
+          path: entryPath,
+          maxPixelSize: ARW_INTERACTIVE_PREVIEW_SIZE,
+        })
+          .then((base64) => {
+            if (activeEntryIdentityRef.current !== requestedEntryIdentity) return;
+            embeddedArwJpegLoadingRef.current = false;
+            if (base64) {
+              embeddedArwJpegLoadedRef.current = true;
+              applyPreviewSource(`data:image/jpeg;base64,${base64}`, ARW_INTERACTIVE_PREVIEW_SIZE);
+              void invoke<string | null>("get_arw_embedded_jpeg", {
+                path: entryPath,
+                maxPixelSize: ARW_GESTURE_PREVIEW_SIZE,
+              })
+                .then((gestureBase64) => {
+                  if (gestureBase64 && activeEntryIdentityRef.current === requestedEntryIdentity) {
+                    setInteractionPreviewSrc(`data:image/jpeg;base64,${gestureBase64}`);
+                  }
+                })
+                .catch(() => {});
+            } else {
+              void loadFullPreview();
+            }
+          })
+          .catch(() => {
+            if (activeEntryIdentityRef.current !== requestedEntryIdentity) return;
+            embeddedArwJpegLoadingRef.current = false;
+            void loadFullPreview();
+          });
+        return () => {};
+      }
+    }
     const availableSize = Math.max(
       nativePreviewSizeRef.current,
       nativePreviewTargetSizeRef.current
@@ -1446,7 +1543,10 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     // Decode at most one useful upgrade at a time. Small zoom and resize
     // changes reuse the current frame; a new native decode starts only after
     // a meaningful resolution step.
-    if (shouldUpgradeNativePreview(availableSize, progressivePreviewRequestSize)) {
+    if (
+      !preferEmbeddedPreview &&
+      shouldUpgradeNativePreview(availableSize, progressivePreviewRequestSize)
+    ) {
       void loadPreview(progressiveCacheKey, progressivePreviewRequestSize).finally(() => {
         if (!cancelled) void loadFullPreview();
       });
@@ -1468,6 +1568,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     entryModified,
     entryPath,
     entrySize,
+    isRawImage,
     nativePreviewRequestSize,
     previewType,
     progressivePreviewRequestSize,
@@ -1591,15 +1692,20 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
                 viewportSize={viewportSize}
                 imageDimensions={imageDimensions}
                 nativePreviewSrc={nativePreviewSrc}
+                interactionPreviewSrc={interactionPreviewSrc}
                 minimapSrc={cachedNativePreview?.src ?? null}
                 fallbackSrc={fallbackSrc}
                 fileSrc={fileSrc}
                 useNativeImagePreview={useNativeImagePreview}
                 progressivePreviewRequestSize={progressivePreviewRequestSize}
+                sharpnessAutoReady={
+                  entryExtension.toLowerCase() !== "arw" ||
+                  nativePreviewSizeRef.current >= nativePreviewRequestSize
+                }
                 onImageLoadDimensions={handleImageLoadDimensions}
                 onBrowserImageError={handleBrowserImageError}
                 onZoomDisplayChange={updateZoomIndicator}
-                onCommittedZoomChange={setCommittedZoom}
+                onCommittedZoomChange={scheduleZoomSourceUpgrade}
                 focusAnalysis={photoAnalysis?.get(entry.path)?.focusAnalysis ?? null}
                 cameraAfMetadata={cameraAfMetadata}
               />
@@ -1718,12 +1824,12 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 px-3 pt-16 pb-3"
       onClick={onClose}
     >
       <div
         ref={dialogRef}
-        className={`bg-background/80 text-foreground animate-in fade-in zoom-in-95 relative flex ${dialogSizeClass} flex-col overflow-hidden rounded-lg border border-black/8 shadow-xl backdrop-blur-md motion-reduce:animate-none`}
+        className={`bg-background text-foreground relative flex ${dialogSizeClass} flex-col overflow-hidden rounded-lg border border-black/8 shadow-xl`}
         style={dialogStyle}
         role="dialog"
         aria-modal="true"
@@ -1787,10 +1893,77 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
 
         {/* Content */}
         <div
-          className={`flex w-full flex-1 flex-col items-center justify-center overflow-hidden ${contentPaddingClass}`}
+          className={`flex min-h-0 w-full flex-1 flex-col items-center justify-center overflow-hidden ${contentPaddingClass}`}
         >
           {renderPreview()}
         </div>
+        {previewType === "image" ? (
+          <button
+            type="button"
+            aria-label={t("common.quick_look.resize")}
+            title={t("common.quick_look.resize")}
+            className="text-muted-foreground/70 hover:text-foreground focus-visible:ring-primary absolute right-0 bottom-0 z-40 flex h-8 w-8 cursor-nwse-resize items-end justify-end rounded-tl-lg p-1.5 focus-visible:ring-2"
+            onClick={(event) => event.stopPropagation()}
+            onPointerDown={(event) => {
+              if (event.button !== 0 || !dialogRef.current) return;
+              event.preventDefault();
+              event.stopPropagation();
+              const dialog = dialogRef.current;
+              resizeStartRef.current = {
+                pointerId: event.pointerId,
+                x: event.clientX,
+                y: event.clientY,
+                width: dialog.offsetWidth,
+                height: dialog.offsetHeight,
+              };
+              event.currentTarget.setPointerCapture(event.pointerId);
+            }}
+            onPointerMove={(event) => {
+              const start = resizeStartRef.current;
+              const dialog = dialogRef.current;
+              if (!start || !dialog || start.pointerId !== event.pointerId) return;
+              const width = Math.min(
+                viewportSize.width * 0.98,
+                Math.max(480, start.width + 2 * (event.clientX - start.x))
+              );
+              const height = Math.min(
+                Math.max(240, viewportSize.height - 84),
+                Math.max(420, start.height + 2 * (event.clientY - start.y))
+              );
+              dialog.style.width = `${width}px`;
+              dialog.style.height = `${height}px`;
+            }}
+            onPointerUp={(event) => finishDialogResize(event.pointerId)}
+            onPointerCancel={(event) => finishDialogResize(event.pointerId)}
+            onKeyDown={(event) => {
+              const step = event.shiftKey ? 80 : 24;
+              const widthDelta =
+                event.key === "ArrowRight" ? step : event.key === "ArrowLeft" ? -step : 0;
+              const heightDelta =
+                event.key === "ArrowDown" ? step : event.key === "ArrowUp" ? -step : 0;
+              if (!widthDelta && !heightDelta) return;
+              event.preventDefault();
+              event.stopPropagation();
+              const dialog = dialogRef.current;
+              if (!dialog) return;
+              setCustomDialogSize({
+                width: Math.min(
+                  viewportSize.width * 0.98,
+                  Math.max(480, dialog.offsetWidth + widthDelta)
+                ),
+                height: Math.min(
+                  Math.max(240, viewportSize.height - 84),
+                  Math.max(420, dialog.offsetHeight + heightDelta)
+                ),
+              });
+            }}
+          >
+            <span
+              aria-hidden="true"
+              className="block h-3 w-3 border-r-2 border-b-2 border-current"
+            />
+          </button>
+        ) : null}
       </div>
     </div>
   );

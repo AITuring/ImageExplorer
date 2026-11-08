@@ -18,6 +18,100 @@ static uint32_t imageexplorer_tiff_u32(const uint8_t *bytes, BOOL littleEndian) 
         : (uint32_t)bytes[0] << 24 | (uint32_t)bytes[1] << 16 | (uint32_t)bytes[2] << 8 | (uint32_t)bytes[3];
 }
 
+// Return the camera's original JPEG bytes. The Quick Look image can then stay
+// at native resolution without repeatedly PNG-encoding a new frame on zoom.
+uint8_t *imageexplorer_arw_embedded_jpeg(const char *path, uint32_t maxPixelSize, size_t *length) {
+    if (path == NULL || length == NULL) return NULL;
+    *length = 0;
+    @autoreleasepool {
+        NSString *filePath = [NSString stringWithUTF8String:path];
+        if (filePath == nil || ![filePath.pathExtension.lowercaseString isEqualToString:@"arw"]) return NULL;
+        NSData *file = [NSData dataWithContentsOfFile:filePath options:NSDataReadingMappedIfSafe error:nil];
+        if (file.length < 8) return NULL;
+        const uint8_t *bytes = file.bytes;
+        BOOL littleEndian = bytes[0] == 'I' && bytes[1] == 'I';
+        if (!littleEndian && !(bytes[0] == 'M' && bytes[1] == 'M')) return NULL;
+        if (imageexplorer_tiff_u16(bytes + 2, littleEndian) != 42) return NULL;
+
+        uint32_t ifd = imageexplorer_tiff_u32(bytes + 4, littleEndian);
+        uint32_t bestOffset = 0, bestLength = 0;
+        for (int depth = 0; depth < 16 && ifd != 0; depth++) {
+            if ((uint64_t)ifd + 2 > file.length) break;
+            uint16_t count = imageexplorer_tiff_u16(bytes + ifd, littleEndian);
+            uint64_t end = (uint64_t)ifd + 2 + (uint64_t)count * 12 + 4;
+            if (end > file.length) break;
+            uint32_t jpegOffset = 0, jpegLength = 0;
+            for (uint16_t entry = 0; entry < count; entry++) {
+                const uint8_t *tag = bytes + ifd + 2 + (uint64_t)entry * 12;
+                uint16_t id = imageexplorer_tiff_u16(tag, littleEndian);
+                if ((id == 0x0201 || id == 0x0202) &&
+                    imageexplorer_tiff_u16(tag + 2, littleEndian) == 4 &&
+                    imageexplorer_tiff_u32(tag + 4, littleEndian) == 1) {
+                    uint32_t value = imageexplorer_tiff_u32(tag + 8, littleEndian);
+                    if (id == 0x0201) jpegOffset = value;
+                    else jpegLength = value;
+                }
+            }
+            if (jpegLength > bestLength && jpegLength >= 100000 &&
+                (uint64_t)jpegOffset + jpegLength <= file.length &&
+                bytes[jpegOffset] == 0xff && bytes[jpegOffset + 1] == 0xd8) {
+                bestOffset = jpegOffset;
+                bestLength = jpegLength;
+            }
+            ifd = imageexplorer_tiff_u32(bytes + end - 4, littleEndian);
+        }
+        if (!bestLength) return NULL;
+        if (maxPixelSize > 0) {
+            NSData *jpeg = [file subdataWithRange:NSMakeRange(bestOffset, bestLength)];
+            CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)jpeg, NULL);
+            if (source != NULL) {
+                NSDictionary *properties = CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(source, 0, NULL));
+                NSNumber *pixelWidth = properties[(id)kCGImagePropertyPixelWidth];
+                NSNumber *pixelHeight = properties[(id)kCGImagePropertyPixelHeight];
+                if (MAX(pixelWidth.unsignedIntegerValue, pixelHeight.unsignedIntegerValue) > maxPixelSize) {
+                    NSDictionary *options = @{
+                        (id)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+                        (id)kCGImageSourceCreateThumbnailWithTransform: @YES,
+                        (id)kCGImageSourceThumbnailMaxPixelSize: @(maxPixelSize),
+                    };
+                    CGImageRef image = CGImageSourceCreateThumbnailAtIndex(source, 0, (__bridge CFDictionaryRef)options);
+                    if (image != NULL) {
+                        CFMutableDataRef data = CFDataCreateMutable(kCFAllocatorDefault, 0);
+                        CGImageDestinationRef destination = data == NULL ? NULL :
+                            CGImageDestinationCreateWithData(data, CFSTR("public.jpeg"), 1, NULL);
+                        if (destination != NULL) {
+                            NSDictionary *encodeOptions = @{(id)kCGImageDestinationLossyCompressionQuality: @0.9};
+                            CGImageDestinationAddImage(destination, image, (__bridge CFDictionaryRef)encodeOptions);
+                            if (CGImageDestinationFinalize(destination)) {
+                                CFIndex dataLength = CFDataGetLength(data);
+                                uint8_t *result = malloc((size_t)dataLength);
+                                if (result != NULL) {
+                                    CFDataGetBytes(data, CFRangeMake(0, dataLength), result);
+                                    *length = (size_t)dataLength;
+                                }
+                                CFRelease(destination);
+                                CFRelease(data);
+                                CGImageRelease(image);
+                                CFRelease(source);
+                                return result;
+                            }
+                            CFRelease(destination);
+                        }
+                        if (data != NULL) CFRelease(data);
+                        CGImageRelease(image);
+                    }
+                }
+                CFRelease(source);
+            }
+        }
+        uint8_t *result = malloc(bestLength);
+        if (result == NULL) return NULL;
+        memcpy(result, bytes + bestOffset, bestLength);
+        *length = bestLength;
+        return result;
+    }
+}
+
 // Sony ARW stores a full-resolution JPEG in a later TIFF IFD. ImageIO's
 // thumbnail API instead picks the much smaller 1616px camera preview, which
 // loses the focus difference between nearby parts of a small subject.
@@ -209,6 +303,11 @@ uint8_t *imageexplorer_quicklook_thumbnail(
         CGImageRef image = NULL;
         if (preferEmbedded) {
             image = imageexplorer_create_arw_full_jpeg(fileURL, size);
+            // A few ARWs omit the full JPEG. Keep the high-resolution RAW
+            // path for those files rather than enlarging a small thumbnail.
+            if (image == NULL && size >= 2048 && [fileURL.pathExtension.lowercaseString isEqualToString:@"arw"]) {
+                image = imageexplorer_create_coreimage_raw_preview(fileURL, size);
+            }
         }
         if (!preferEmbedded) {
             image = imageexplorer_create_coreimage_raw_preview(fileURL, size);

@@ -863,7 +863,13 @@ fn parse_sips_u32(output: &str, key: &str) -> Option<u32> {
 }
 
 #[tauri::command]
-pub fn read_image_dimensions(path: String) -> Result<ImageDimensions, String> {
+pub async fn read_image_dimensions(path: String) -> Result<ImageDimensions, String> {
+    tauri::async_runtime::spawn_blocking(move || read_image_dimensions_blocking(path))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn read_image_dimensions_blocking(path: String) -> Result<ImageDimensions, String> {
     let path_obj = Path::new(&path);
     if !path_obj.exists() {
         return Err("File does not exist".to_string());
@@ -1455,7 +1461,13 @@ fn read_sony_camera_af_metadata(path: &str) -> Option<CameraAfMetadata> {
 }
 
 #[tauri::command]
-pub fn read_camera_af_metadata(path: String) -> Result<Option<CameraAfMetadata>, String> {
+pub async fn read_camera_af_metadata(path: String) -> Result<Option<CameraAfMetadata>, String> {
+    tauri::async_runtime::spawn_blocking(move || read_camera_af_metadata_blocking(path))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn read_camera_af_metadata_blocking(path: String) -> Result<Option<CameraAfMetadata>, String> {
     let path_obj = Path::new(&path);
     if !path_obj.exists() || !path_obj.is_file() {
         return Ok(None);
@@ -1543,7 +1555,13 @@ mod sony_camera_af_tests {
 /// RAW decoding off the React thread and gracefully returns `None` when the
 /// importer does not expose metadata for a particular file.
 #[tauri::command]
-pub fn read_image_metadata(path: String) -> Result<Option<ImageMetadata>, String> {
+pub async fn read_image_metadata(path: String) -> Result<Option<ImageMetadata>, String> {
+    tauri::async_runtime::spawn_blocking(move || read_image_metadata_blocking(path))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn read_image_metadata_blocking(path: String) -> Result<Option<ImageMetadata>, String> {
     let path_obj = Path::new(&path);
     if !path_obj.exists() || !path_obj.is_file() {
         return Ok(None);

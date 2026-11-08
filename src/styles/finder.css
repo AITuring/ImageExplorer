@@ -596,6 +596,18 @@ button:focus-visible,
   min-width: 640px;
 }
 
+.quick-look-interaction-image {
+  visibility: hidden;
+}
+
+.quick-look-image-frame[data-zooming="true"] .quick-look-full-image {
+  visibility: hidden;
+}
+
+.quick-look-image-frame[data-zooming="true"] .quick-look-interaction-image {
+  visibility: visible;
+}
+
 .quick-look-metadata {
   width: 100%;
   padding: 10px 12px 8px;

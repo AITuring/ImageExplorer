@@ -355,6 +355,29 @@ fn generate_quicklook_thumbnail_in_process(
     Some(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub async fn get_arw_embedded_jpeg(path: String, max_pixel_size: u32) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        extern "C" {
+            fn imageexplorer_arw_embedded_jpeg(path: *const std::ffi::c_char, max_pixel_size: u32, length: *mut usize) -> *mut u8;
+            fn imageexplorer_free_thumbnail(buffer: *mut u8);
+        }
+        let path = CString::new(path).map_err(|error| error.to_string())?;
+        let mut length = 0usize;
+        let buffer = unsafe { imageexplorer_arw_embedded_jpeg(path.as_ptr(), max_pixel_size, &mut length) };
+        if buffer.is_null() || length == 0 {
+            return Ok(None);
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(buffer, length) };
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        unsafe { imageexplorer_free_thumbnail(buffer) };
+        Ok(Some(encoded))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 /// 扫描指定目录下的应用
 fn scan_apps_in_dir(dir: &Path) -> Vec<InstalledApp> {
     let mut apps = Vec::new();

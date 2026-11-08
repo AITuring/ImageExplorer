@@ -15,6 +15,8 @@ use commands::apps::{
     get_installed_apps, get_recommended_apps, get_sf_symbol, get_terminal_apps,
     open_in_terminal_with, open_native_quick_look, open_with,
 };
+#[cfg(target_os = "macos")]
+use commands::apps::get_arw_embedded_jpeg;
 use commands::clipboard::{consume_cut_file_clipboard, read_file_clipboard, write_file_clipboard};
 use commands::drag::start_native_file_drag;
 use commands::fs::{
@@ -873,6 +875,8 @@ pub fn run() {
             get_recommended_apps,
             get_app_icon,
             get_file_thumbnail,
+            #[cfg(target_os = "macos")]
+            get_arw_embedded_jpeg,
             get_file_type_icon,
             open_with,
             open_in_terminal_with,

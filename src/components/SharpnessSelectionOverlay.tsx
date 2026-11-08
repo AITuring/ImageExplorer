@@ -171,7 +171,7 @@ export function SharpnessSelectionOverlay({
           aria-hidden="true"
           width={result.width}
           height={result.height}
-          className="pointer-events-none absolute z-20 drop-shadow-[0_0_1px_rgba(0,0,0,0.9)]"
+          className="pointer-events-none absolute z-20"
           style={selectionStyle(selection ?? FULL_IMAGE_RECT)}
         />
       ) : null}

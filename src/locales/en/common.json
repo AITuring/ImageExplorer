@@ -34,6 +34,7 @@
       "minimap": "Minimap, drag to move the preview area",
       "preview": "Quick Look",
       "close": "Close preview",
+      "resize": "Drag to resize preview",
       "previous": "Previous item",
       "next": "Next item",
       "open": "Open",
