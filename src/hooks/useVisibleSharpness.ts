@@ -18,7 +18,7 @@ function keyFor(entry: FileEntry) {
   return `${entry.path}\u0000${entry.modified ?? 0}\u0000${entry.size}`;
 }
 
-function isAnalyzable(entry: FileEntry) {
+export function isSharpnessAnalyzable(entry: FileEntry) {
   return !entry.is_dir && IMAGE_TYPES.has((entry.extension ?? "").toLowerCase());
 }
 
@@ -53,15 +53,26 @@ async function measure(entry: FileEntry, signal: AbortSignal): Promise<VisibleSh
 
 export function useVisibleSharpness(entries: FileEntry[], enabled: boolean) {
   const signature = useMemo(
-    () => entries.filter(isAnalyzable).map(keyFor).join("\u001f"),
+    () => entries.filter(isSharpnessAnalyzable).map(keyFor).join("\u001f"),
     [entries]
   );
-  const [version, setVersion] = useState(0);
+  const [snapshot, setSnapshot] = useState<{
+    signature: string;
+    verdicts: Map<string, VisibleSharpness>;
+  }>({ signature: "", verdicts: new Map() });
 
   useEffect(() => {
     if (!enabled) return;
     const controller = new AbortController();
-    const pending = entries.filter((entry) => isAnalyzable(entry) && !results.has(keyFor(entry)));
+    const verdicts = new Map<string, VisibleSharpness>();
+    for (const entry of entries) {
+      const cached = results.get(keyFor(entry));
+      if (cached) verdicts.set(entry.path, cached);
+    }
+    setSnapshot({ signature, verdicts: new Map(verdicts) });
+    const pending = entries.filter(
+      (entry) => isSharpnessAnalyzable(entry) && !results.has(keyFor(entry))
+    );
     let next = 0;
     const worker = async () => {
       while (!controller.signal.aborted && next < pending.length) {
@@ -78,22 +89,19 @@ export function useVisibleSharpness(entries: FileEntry[], enabled: boolean) {
         results.delete(key);
         results.set(key, verdict);
         while (results.size > MAX_RESULTS) results.delete(results.keys().next().value!);
-        setVersion((current) => current + 1);
+        verdicts.set(entry.path, verdict);
+        setSnapshot({ signature, verdicts: new Map(verdicts) });
       }
     };
     void worker();
     return () => controller.abort();
   }, [enabled, entries, signature]);
 
-  return useMemo(() => {
-    void version;
-    const visible = new Map<string, VisibleSharpness>();
-    if (enabled) {
-      for (const entry of entries) {
-        const result = results.get(keyFor(entry));
-        if (result) visible.set(entry.path, result);
-      }
-    }
-    return visible;
-  }, [enabled, entries, version]);
+  return useMemo(
+    () =>
+      enabled && snapshot.signature === signature
+        ? snapshot.verdicts
+        : new Map<string, VisibleSharpness>(),
+    [enabled, signature, snapshot]
+  );
 }

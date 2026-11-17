@@ -169,5 +169,13 @@
     "symlink": "Symbolic link",
     "symlink_value": "Symbolic Link",
     "symlink_target": "Link target"
+  },
+  "folder_sharpness": {
+    "title": "Possibly blurry photos",
+    "close": "Collapse sharpness results",
+    "hint": "Click a photo to locate and select it in its folder. Review the original to confirm this estimate.",
+    "scanning": "Checking sharpness {{done}} / {{total}}",
+    "summary": "Possibly blurry: {{count}} · Unavailable: {{unavailable}}",
+    "unavailable": "Could not analyze {{count}} photos; these are not classified as blurry."
   }
 }

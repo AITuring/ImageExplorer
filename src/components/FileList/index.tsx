@@ -21,6 +21,7 @@ import { useFileEntries } from "./hooks/useFileEntries";
 import { useFileRename } from "./hooks/useFileRename";
 import { useQuickLook } from "./hooks/useQuickLook";
 import { usePhotoAnalysis } from "@/hooks/usePhotoAnalysis";
+import { FolderSharpnessPanel } from "@/components/FolderSharpnessPanel";
 import { useVisibleSharpness } from "@/hooks/useVisibleSharpness";
 import { getPhotoGroupColor } from "@/lib/photoAnalysis";
 import { FileListHeader } from "./components/FileListHeader";
@@ -407,18 +408,18 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   );
   const listStart = listVirtualizer.range?.startIndex ?? 0;
   const listEnd = listVirtualizer.range?.endIndex ?? -1;
-  const sharpnessEntries = useMemo(
+  const folderScanEntries = useMemo(
     () =>
-      viewMode === "list"
-        ? sortedEntries.slice(listStart, listEnd + 1)
-        : viewMode === "icon"
-          ? gridViewportEntries
-          : [],
-    [gridViewportEntries, listEnd, listStart, sortedEntries, viewMode]
+      entries.filter(
+        (entry) =>
+          currentPath.startsWith(SMART_FOLDER_PREFIX) ||
+          (entry.path.slice(0, entry.path.lastIndexOf("/")) || "/") === currentPath
+      ),
+    [entries, currentPath]
   );
   const visibleSharpness = useVisibleSharpness(
-    sharpnessEntries,
-    !quickLookEntry && (viewMode === "list" || (photoAnalysisEnabled && viewMode === "icon"))
+    folderScanEntries,
+    !loading && !error && !quickLookEntry
   );
 
   const photoAnalysisEnabledForFolder = photoAnalysisEnabled;
@@ -717,7 +718,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       >
         <div
           data-view={viewMode}
-          className={`finder-files h-full overflow-hidden transition-colors ${
+          className={`finder-files relative h-full overflow-hidden transition-colors ${
             isFileDragOver ? "ring-primary/30 ring-2 ring-inset" : ""
           }`}
           tabIndex={0}
@@ -725,6 +726,24 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
           onDragLeave={handleFileContainerDragLeave}
           onDrop={handleFileContainerDrop}
         >
+          <FolderSharpnessPanel
+            key={currentPath}
+            entries={folderScanEntries}
+            verdicts={visibleSharpness}
+            enabled={!loading && !error}
+            onLocate={(entry) => {
+              const parent = entry.path.slice(0, entry.path.lastIndexOf("/")) || "/";
+              if (parent !== currentPath || viewMode === "column") {
+                onNavigate(parent, entry.path);
+                return;
+              }
+              const index = sortedEntries.findIndex((item) => item.path === entry.path);
+              selectSingle(entry.path, index);
+              if (viewMode === "list") listVirtualizer.scrollToIndex(index, { align: "center" });
+              else
+                gridVirtualizer.scrollToIndex(Math.floor(index / gridColumns), { align: "center" });
+            }}
+          />
           {viewMode === "column" ? (
             <FileColumnView
               currentPath={currentPath}

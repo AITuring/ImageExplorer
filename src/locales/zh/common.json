@@ -169,5 +169,13 @@
     "symlink": "符号链接",
     "symlink_value": "Symbolic Link",
     "symlink_target": "链接目标"
+  },
+  "folder_sharpness": {
+    "title": "疑似不清晰的图片",
+    "close": "收起清晰度结果",
+    "hint": "点击图片可定位到所在文件夹并选中。结果为初步估计，建议查看原图确认。",
+    "scanning": "清晰度扫描 {{done}} / {{total}}",
+    "summary": "疑似不清晰 {{count}} 张 · 无法分析 {{unavailable}} 张",
+    "unavailable": "{{count}} 张无法分析，未归入不清晰图片。"
   }
 }
