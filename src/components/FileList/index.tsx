@@ -27,11 +27,17 @@ import { getPhotoGroupColor } from "@/lib/photoAnalysis";
 import { FileListHeader } from "./components/FileListHeader";
 import { FileListItem } from "./components/FileListItem";
 import { FileGridItem } from "./components/FileGridItem";
-import { FileColumnView, type ColumnSelectionContext } from "./components/FileColumnView";
+import {
+  FileColumnView,
+  type ColumnNavigationHandle,
+  type ColumnSelectionContext,
+} from "./components/FileColumnView";
 import { BatchRenameDialog } from "@/components/BatchRenameDialog";
 import { readFileDragData } from "@/lib/dragData";
 import { makeNativeFileDragGestureHandlers } from "@/lib/nativeFileDragGesture";
 import { isPermissionDeniedError, requestDirectoryAccess } from "@/lib/directoryAccess";
+import { settingsManager } from "@/lib/store";
+import { useStatusBar } from "@/stores/statusBar";
 
 /** 列表视图固定行高 */
 const LIST_ITEM_HEIGHT = 32;
@@ -103,11 +109,13 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   const { viewMode } = useViewMode();
   // Photo details and analysis are available automatically in every view.
   const photoAnalysisEnabled = true;
-  const { addTab, activeTab } = useTabs();
+  const { addTab, activeTab, goBack, goForward, canGoBack, canGoForward } = useTabs();
+  const setStatusBar = useStatusBar((state) => state.setStatus);
   const [legacyTabNumberShortcuts] = useSetting<boolean>("legacy_cmd_number_tabs", false);
   const [gridColumns, setGridColumns] = useState(6);
   const [columnSelectionContext, setColumnSelectionContext] =
     useState<ColumnSelectionContext | null>(null);
+  const columnNavRef = useRef<ColumnNavigationHandle | null>(null);
 
   // 1. 数据加载
   const { entries, showHiddenFiles, loading, error, loadEntries } = useFileEntries(currentPath);
@@ -183,6 +191,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     handleCopy,
     handleCut,
     handlePaste,
+    handleDuplicate,
     handleDelete,
     handleCompress,
     handleExtract,
@@ -219,6 +228,22 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     forceCustomImagePreview: viewMode === "icon" && photoAnalysisEnabled,
   });
 
+  const scrollToIndexRef = useRef<(index: number) => void>(() => undefined);
+
+  const handleOpenParent = useCallback(() => {
+    if (!currentPath || currentPath === "/" || currentPath.startsWith(SMART_FOLDER_PREFIX)) return;
+    const trimmed = currentPath.replace(/\/+$/, "");
+    const slashIndex = trimmed.lastIndexOf("/");
+    const parentPath = slashIndex <= 0 ? "/" : trimmed.slice(0, slashIndex);
+    if (parentPath !== currentPath) {
+      onNavigate(parentPath, trimmed);
+    }
+  }, [currentPath, onNavigate]);
+
+  const handleToggleHiddenFiles = useCallback(() => {
+    void settingsManager.set("show_hidden_files", !showHiddenFiles);
+  }, [showHiddenFiles]);
+
   // 7. 键盘快捷键
   const fileCommands = useFileKeyboardShortcuts({
     selectedPath,
@@ -231,6 +256,16 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     canMutate,
     legacyTabNumberShortcuts,
     openEntry: handleOpen,
+    onOpenParent: handleOpenParent,
+    onGoBack: goBack,
+    onGoForward: goForward,
+    canGoBack,
+    canGoForward,
+    onToggleHiddenFiles: handleToggleHiddenFiles,
+    onScrollToIndex: (index) => scrollToIndexRef.current(index),
+    onColumnNavigateLeft: () => columnNavRef.current?.navigateLeft() ?? false,
+    onColumnNavigateRight: () => columnNavRef.current?.navigateRight() ?? Promise.resolve(false),
+    onColumnFocusEntry: (entry) => columnNavRef.current?.focusEntry(entry) ?? Promise.resolve(),
     selectAll,
     selectSingle,
     selectRange,
@@ -239,6 +274,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     handleCut,
     handlePaste,
     handlePasteAsMove,
+    handleDuplicate,
+    handleGetInfo,
     handleDelete,
     handleNewFile,
     handleNewFolder,
@@ -558,6 +595,33 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     [selectionEntries, selectedPathSet]
   );
 
+  useEffect(() => {
+    scrollToIndexRef.current = (index: number) => {
+      if (index < 0) return;
+      if (viewMode === "list") {
+        listVirtualizer.scrollToIndex(index, { align: "auto" });
+      } else if (viewMode === "icon") {
+        gridVirtualizer.scrollToIndex(Math.floor(index / gridColumns), { align: "auto" });
+      }
+    };
+  }, [gridColumns, gridVirtualizer, listVirtualizer, viewMode]);
+
+  useEffect(() => {
+    let selectedBytes = 0;
+    for (const entry of selectedFileEntries) {
+      if (!entry.is_dir && entry.size > 0) {
+        selectedBytes += entry.size;
+      }
+    }
+    setStatusBar({
+      path: currentPath,
+      totalCount: keyboardEntries.length,
+      selectedCount: selectedFileEntries.length,
+      selectedBytes,
+      loading,
+    });
+  }, [currentPath, keyboardEntries.length, loading, selectedFileEntries, setStatusBar]);
+
   const sortedEntriesRef = useRef(sortedEntries);
   const selectedPathSetRef = useRef(selectedPathSet);
   useEffect(() => {
@@ -663,6 +727,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       onCopy: handleCopy,
       onCut: handleCut,
       onPaste: handlePaste,
+      onDuplicate: handleDuplicate,
       onCopyPath: handleCopyPath,
       onDelete: handleDelete,
       onCompress: handleCompress,
@@ -688,6 +753,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       handleCopyPath,
       handleCut,
       handleDelete,
+      handleDuplicate,
       handleExtract,
       handleGetInfo,
       handleGoToLocation,
@@ -828,6 +894,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
               onSubmitRename={handleSubmitRename}
               onCancelRename={handleCancelRename}
               onContextChange={setColumnSelectionContext}
+              navigationRef={columnNavRef}
+              onSelectSingle={selectSingle}
               onClick={(entry, index, columnEntries, e) =>
                 handleClick(entry, index, e, columnEntries)
               }

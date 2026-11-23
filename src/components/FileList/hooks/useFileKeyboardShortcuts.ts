@@ -6,6 +6,9 @@ import type { ViewMode } from "@/stores/viewMode";
 import { registerKeyboardCommands } from "@/lib/keyboardShortcuts";
 import { isCommandEnabled, registerAppCommands, runCommand } from "@/lib/commands";
 import { viewModeCommands } from "@/lib/viewModeCommands";
+import { findTypeAheadMatch } from "./finderListModel";
+
+const TYPE_AHEAD_RESET_MS = 750;
 
 interface UseFileKeyboardShortcutsOptions {
   selectedPath: string | null;
@@ -18,6 +21,17 @@ interface UseFileKeyboardShortcutsOptions {
   canMutate: boolean;
   legacyTabNumberShortcuts: boolean;
   openEntry: (entry: FileEntry) => void;
+  // 导航与辅助
+  onOpenParent?: () => void;
+  onGoBack?: () => void;
+  onGoForward?: () => void;
+  canGoBack?: boolean;
+  canGoForward?: boolean;
+  onToggleHiddenFiles?: () => void;
+  onScrollToIndex?: (index: number) => void;
+  onColumnNavigateLeft?: () => boolean;
+  onColumnNavigateRight?: () => Promise<boolean>;
+  onColumnFocusEntry?: (entry: FileEntry) => Promise<void>;
   // 选择操作
   selectAll: (entries: FileEntry[]) => void;
   selectSingle: (path: string, index: number) => void;
@@ -28,6 +42,8 @@ interface UseFileKeyboardShortcutsOptions {
   handleCut: (entries: FileEntry[]) => void;
   handlePaste: () => Promise<void>;
   handlePasteAsMove: () => Promise<void>;
+  handleDuplicate: (entries: FileEntry[]) => Promise<void>;
+  handleGetInfo: (entry: FileEntry) => void;
   handleDelete: (entries: FileEntry[]) => Promise<void>;
   handleNewFile: () => Promise<void>;
   handleNewFolder: () => Promise<void>;
@@ -49,6 +65,7 @@ export function useFileKeyboardShortcuts(
 ): FileCommandActions {
   // Keep registered commands stable while their handlers read current selection and operations.
   const optionsRef = useRef(options);
+  const typeAheadRef = useRef({ buffer: "", lastTime: 0 });
 
   useEffect(() => {
     optionsRef.current = options;
@@ -57,11 +74,14 @@ export function useFileKeyboardShortcuts(
   const commands = useMemo<FileCommandActions>(() => {
     const getSelectedEntries = () => {
       const current = optionsRef.current;
-      return current.entries.filter((entry) => current.selectedPaths.includes(entry.path));
+      if (current.selectedPaths.length === 0) return [];
+      const selectedSet = new Set(current.selectedPaths);
+      return current.entries.filter((entry) => selectedSet.has(entry.path));
     };
 
     const getSelectedEntry = () => {
       const current = optionsRef.current;
+      if (!current.selectedPath) return undefined;
       return current.entries.find((entry) => entry.path === current.selectedPath);
     };
 
@@ -114,6 +134,22 @@ export function useFileKeyboardShortcuts(
         shortcut: "⌘⌥V",
         enabled: () => optionsRef.current.canMutate,
         run: () => optionsRef.current.handlePasteAsMove(),
+      },
+      duplicate: {
+        id: "file.duplicate",
+        shortcut: "⌘D",
+        enabled: (entries) =>
+          optionsRef.current.canMutate && (entries ?? getSelectedEntries()).length > 0,
+        run: (entries) => optionsRef.current.handleDuplicate(entries ?? getSelectedEntries()),
+      },
+      getInfo: {
+        id: "file.get-info",
+        shortcut: "⌘I",
+        enabled: (entry) => Boolean(entry ?? getSelectedEntry()),
+        run: (entry) => {
+          const target = entry ?? getSelectedEntry();
+          if (target) optionsRef.current.handleGetInfo(target);
+        },
       },
       delete: {
         id: "file.delete",
@@ -173,6 +209,7 @@ export function useFileKeyboardShortcuts(
           matches: (event) => event.key === "Escape",
           enabled: () => isCommandEnabled(commands.clearSelection),
           run: () => {
+            typeAheadRef.current = { buffer: "", lastTime: 0 };
             runCommand(commands.clearSelection);
           },
         },
@@ -215,6 +252,24 @@ export function useFileKeyboardShortcuts(
           },
         },
         {
+          id: "file.duplicate",
+          scope: "file-view",
+          matches: (event) => matchesModifiedKey(event, "d"),
+          enabled: () => isCommandEnabled(commands.duplicate),
+          run: () => {
+            runCommand(commands.duplicate);
+          },
+        },
+        {
+          id: "file.get-info",
+          scope: "file-view",
+          matches: (event) => matchesModifiedKey(event, "i"),
+          enabled: () => isCommandEnabled(commands.getInfo),
+          run: () => {
+            runCommand(commands.getInfo);
+          },
+        },
+        {
           id: "file.undo-last-operation",
           scope: "file-view",
           matches: (event) => matchesModifiedKey(event, "z"),
@@ -244,10 +299,64 @@ export function useFileKeyboardShortcuts(
         {
           id: "file.open",
           scope: "file-view",
-          matches: (event) => matchesModifiedKey(event, "o"),
+          matches: (event) =>
+            matchesModifiedKey(event, "o") ||
+            (isModifierPressed(event) &&
+              !event.shiftKey &&
+              !event.altKey &&
+              event.key === "ArrowDown"),
           enabled: () => isCommandEnabled(commands.open),
           run: () => {
             runCommand(commands.open);
+          },
+        },
+        {
+          id: "file.open-parent",
+          scope: "file-view",
+          matches: (event) =>
+            isModifierPressed(event) && !event.shiftKey && !event.altKey && event.key === "ArrowUp",
+          enabled: () => Boolean(optionsRef.current.onOpenParent),
+          run: () => {
+            optionsRef.current.onOpenParent?.();
+          },
+        },
+        {
+          id: "file.history-back",
+          scope: "file-view",
+          matches: (event) =>
+            isModifierPressed(event) &&
+            !event.shiftKey &&
+            !event.altKey &&
+            event.code === "BracketLeft",
+          enabled: () => Boolean(optionsRef.current.canGoBack && optionsRef.current.onGoBack),
+          run: () => {
+            optionsRef.current.onGoBack?.();
+          },
+        },
+        {
+          id: "file.history-forward",
+          scope: "file-view",
+          matches: (event) =>
+            isModifierPressed(event) &&
+            !event.shiftKey &&
+            !event.altKey &&
+            event.code === "BracketRight",
+          enabled: () => Boolean(optionsRef.current.canGoForward && optionsRef.current.onGoForward),
+          run: () => {
+            optionsRef.current.onGoForward?.();
+          },
+        },
+        {
+          id: "file.toggle-hidden",
+          scope: "file-view",
+          matches: (event) =>
+            isModifierPressed(event) &&
+            event.shiftKey &&
+            !event.altKey &&
+            (event.code === "Period" || event.key === "." || event.key === ">"),
+          enabled: () => Boolean(optionsRef.current.onToggleHiddenFiles),
+          run: () => {
+            optionsRef.current.onToggleHiddenFiles?.();
           },
         },
         {
@@ -280,6 +389,27 @@ export function useFileKeyboardShortcuts(
           },
         },
         {
+          id: "file.column-navigate",
+          scope: "file-view",
+          matches: (event) =>
+            optionsRef.current.viewMode === "column" &&
+            !isModifierPressed(event) &&
+            !event.altKey &&
+            !event.shiftKey &&
+            (event.key === "ArrowLeft" || event.key === "ArrowRight"),
+          enabled: () =>
+            Boolean(
+              optionsRef.current.onColumnNavigateLeft || optionsRef.current.onColumnNavigateRight
+            ),
+          run: async (event) => {
+            if (event.key === "ArrowLeft") {
+              optionsRef.current.onColumnNavigateLeft?.();
+            } else {
+              await optionsRef.current.onColumnNavigateRight?.();
+            }
+          },
+        },
+        {
           id: "file.move-selection",
           scope: "file-view",
           matches: (event) =>
@@ -309,10 +439,71 @@ export function useFileKeyboardShortcuts(
               currentIndex < 0
                 ? 0
                 : Math.max(0, Math.min(current.sortedEntries.length - 1, currentIndex + step));
+            const nextEntry = current.sortedEntries[newIndex];
+            if (!nextEntry) return;
             if (event.shiftKey) {
               current.selectRange(current.sortedEntries, newIndex);
             } else {
-              current.selectSingle(current.sortedEntries[newIndex].path, newIndex);
+              current.selectSingle(nextEntry.path, newIndex);
+              if (current.viewMode === "column") {
+                void current.onColumnFocusEntry?.(nextEntry);
+              }
+            }
+            current.onScrollToIndex?.(newIndex);
+          },
+        },
+        {
+          id: "file.type-ahead",
+          scope: "file-view",
+          priority: -10,
+          matches: (event) => {
+            if (isModifierPressed(event) || event.altKey) return false;
+            if (event.key.length !== 1) return false;
+            // Reserve leading Space for Quick Look; allow Space inside a multi-character query.
+            const now = Date.now();
+            const activeBuffer =
+              now - typeAheadRef.current.lastTime <= TYPE_AHEAD_RESET_MS
+                ? typeAheadRef.current.buffer
+                : "";
+            if (event.key === " " && activeBuffer.length === 0) return false;
+            return true;
+          },
+          enabled: () =>
+            !optionsRef.current.editingPath && optionsRef.current.sortedEntries.length > 0,
+          run: (event) => {
+            const current = optionsRef.current;
+            const now = Date.now();
+            const isExpired = now - typeAheadRef.current.lastTime > TYPE_AHEAD_RESET_MS;
+            const prevBuffer = isExpired ? "" : typeAheadRef.current.buffer;
+            const pressed = event.key;
+            const isRepeatSingle =
+              prevBuffer.length === 1 &&
+              prevBuffer.toLocaleLowerCase() === pressed.toLocaleLowerCase();
+            const nextQuery = isRepeatSingle ? pressed : prevBuffer + pressed;
+
+            typeAheadRef.current = { buffer: nextQuery, lastTime: now };
+
+            const currentIndex = current.selectedPath
+              ? current.sortedEntries.findIndex((entry) => entry.path === current.selectedPath)
+              : -1;
+            let matchIndex = findTypeAheadMatch(
+              current.sortedEntries,
+              nextQuery,
+              currentIndex,
+              isRepeatSingle
+            );
+            // If multi-char prefix has no match, restart search with just the pressed character.
+            if (matchIndex < 0 && nextQuery.length > 1) {
+              typeAheadRef.current = { buffer: pressed, lastTime: now };
+              matchIndex = findTypeAheadMatch(current.sortedEntries, pressed, currentIndex, false);
+            }
+            if (matchIndex >= 0) {
+              const target = current.sortedEntries[matchIndex];
+              current.selectSingle(target.path, matchIndex);
+              if (current.viewMode === "column") {
+                void current.onColumnFocusEntry?.(target);
+              }
+              current.onScrollToIndex?.(matchIndex);
             }
           },
         },

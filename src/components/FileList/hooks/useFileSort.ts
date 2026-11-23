@@ -1,8 +1,9 @@
 import { startTransition, useCallback, useDeferredValue, useMemo, useState } from "react";
 import { FileEntry } from "@/types";
 import type { SortDirection, SortField } from "@/types";
+import { compareFileNames, sortFileEntries } from "./finderListModel";
 
-const FILE_NAME_COLLATOR = new Intl.Collator();
+export { compareFileNames, sortFileEntries };
 
 export function useFileSort(entries: FileEntry[]) {
   const [sortField, setSortField] = useState<SortField>("name");
@@ -33,43 +34,10 @@ export function useFileSort(entries: FileEntry[]) {
     [sortField]
   );
 
-  const sortedEntries = useMemo(() => {
-    if (deferredEntries.length <= 1) return deferredEntries;
-    const direction = sortDirection === "asc" ? 1 : -1;
-    const next = deferredEntries.slice();
-
-    // Array.prototype.sort is guaranteed stable in modern JS engines, so we can
-    // sort a shallow copy directly without allocating N wrapper objects + a
-    // second output array on 100k-entry directories.
-    if (sortField === "name") {
-      next.sort((a, b) => {
-        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
-        return FILE_NAME_COLLATOR.compare(a.name, b.name) * direction;
-      });
-    } else if (sortField === "kind") {
-      next.sort((a, b) => {
-        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
-        return FILE_NAME_COLLATOR.compare(getEntryKind(a), getEntryKind(b)) * direction;
-      });
-    } else if (sortField === "size") {
-      next.sort((a, b) => {
-        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
-        return ((a.size || 0) - (b.size || 0)) * direction;
-      });
-    } else if (sortField === "date") {
-      next.sort((a, b) => {
-        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
-        return ((a.modified || 0) - (b.modified || 0)) * direction;
-      });
-    } else {
-      next.sort((a, b) => {
-        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
-        return ((a.created || 0) - (b.created || 0)) * direction;
-      });
-    }
-
-    return next;
-  }, [deferredEntries, sortField, sortDirection]);
+  const sortedEntries = useMemo(
+    () => sortFileEntries(deferredEntries, sortField, sortDirection),
+    [deferredEntries, sortField, sortDirection]
+  );
 
   return {
     sortField,
@@ -78,12 +46,6 @@ export function useFileSort(entries: FileEntry[]) {
     handleArrange,
     sortedEntries,
   };
-}
-
-function getEntryKind(entry: FileEntry) {
-  if (entry.is_dir) return "folder";
-  if (entry.is_package && entry.package_type) return entry.package_type;
-  return entry.extension || "file";
 }
 
 export type { SortField, SortDirection };

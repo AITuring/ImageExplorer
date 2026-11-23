@@ -11,6 +11,7 @@ import { isTerminalOperationStatus } from "@/hooks/useOperationCenter";
 import { invalidateCache } from "@/lib/entriesCache";
 import {
   enqueueCompressOperation,
+  enqueueDuplicateOperation,
   enqueueExtractOperation,
   enqueueFileOperation,
 } from "@/lib/fileOperations";
@@ -133,6 +134,22 @@ export function useFileOperations({
     }
   }, [clipboard, currentPath, t]);
 
+  const handleDuplicate = useCallback(
+    async (entries: FileEntry[]) => {
+      if (entries.length === 0) return;
+      try {
+        await enqueueDuplicateOperation(
+          entries.map((entry) => entry.path),
+          currentPath
+        );
+      } catch (error) {
+        console.error("Failed to enqueue duplicate operation:", error);
+        alert(t("file_list.error_operation", { error: String(error) }));
+      }
+    },
+    [currentPath, t]
+  );
+
   const handleDelete = useCallback(
     async (entries: FileEntry[]) => {
       try {
@@ -236,6 +253,7 @@ export function useFileOperations({
     handleCut,
     handlePaste,
     handlePasteAsMove,
+    handleDuplicate,
     handleDelete,
     handleCompress,
     handleExtract,

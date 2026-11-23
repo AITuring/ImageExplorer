@@ -43,6 +43,15 @@ export async function enqueueFileOperation({ kind, paths, destDir }: EnqueueFile
   });
 }
 
+export function enqueueDuplicateOperation(paths: string[], destDir: string) {
+  if (paths.length === 0) return Promise.resolve(null);
+  return invoke<string>("start_copy_operation", {
+    paths,
+    destDir,
+    conflictPolicy: "keep_both" as FileOperationConflictPolicy,
+  });
+}
+
 function parentPath(path: string): string {
   const separatorIndex = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   return separatorIndex > 0 ? path.slice(0, separatorIndex) : path.slice(0, 1);

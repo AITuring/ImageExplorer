@@ -334,17 +334,26 @@ button:focus-visible,
   display: flex;
   flex-shrink: 0;
   align-items: center;
-  gap: 3px;
+  justify-content: space-between;
+  gap: 8px;
   height: 29px;
   padding: 0 12px;
-  overflow-x: auto;
-  scrollbar-width: none;
+  overflow: hidden;
   border-top: 1px solid hsl(var(--border) / 55%);
   background: rgb(var(--finder-chrome) / 78%);
   -webkit-backdrop-filter: blur(24px) saturate(1.3);
   backdrop-filter: blur(24px) saturate(1.3);
   color: hsl(var(--muted-foreground));
   font-size: 11px;
+}
+.finder-pathbar-breadcrumbs {
+  scrollbar-width: none;
+}
+.finder-pathbar-breadcrumbs::-webkit-scrollbar {
+  display: none;
+}
+.finder-statusbar-meta {
+  border-left: 1px solid hsl(var(--border) / 55%);
 }
 .finder-pathbar button {
   display: flex;

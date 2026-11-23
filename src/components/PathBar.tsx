@@ -1,50 +1,146 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { ChevronRight, Folder, HardDrive } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { SMART_FOLDER_PREFIX } from "@/constants/config";
+import { useStatusBar } from "@/stores/statusBar";
+import { formatFileSize } from "@/utils/format";
+import { isTerminalOperationStatus } from "@/hooks/useOperationCenter";
+import type { FileOperationSnapshot } from "@/types";
+
+interface DiskSpace {
+  path: string;
+  available_bytes: number | null;
+}
 
 interface PathBarProps {
   path: string;
   onNavigate: (path: string) => void;
 }
 
-/** Keep ancestor navigation available without crowding the title toolbar. */
+/** Keep ancestor navigation and Finder-style status metrics in the bottom bar. */
 export function PathBar({ path, onNavigate }: PathBarProps) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLElement>(null);
   const segments = path.split("/").filter(Boolean);
+  const { path: statusPath, totalCount, selectedCount, selectedBytes, loading } = useStatusBar();
+  const [availableBytes, setAvailableBytes] = useState<number | null>(null);
+  const isSmartFolder = path.startsWith(SMART_FOLDER_PREFIX);
 
   useEffect(() => {
     const element = scrollRef.current;
     if (element) element.scrollLeft = element.scrollWidth;
   }, [path]);
 
-  return (
-    <nav ref={scrollRef} className="finder-pathbar" aria-label={t("nav.path")}>
-      <button
-        type="button"
-        onClick={() => onNavigate("/")}
-        title="/"
-        aria-label={t("nav.computer")}
-      >
-        <HardDrive size={13} aria-hidden="true" />
-      </button>
-      {segments.map((name, index) => {
-        const destination = "/" + segments.slice(0, index + 1).join("/");
-        return (
-          <span className="flex shrink-0 items-center gap-1" key={destination}>
-            <ChevronRight size={11} className="opacity-40" aria-hidden="true" />
-            <button
-              type="button"
-              onClick={() => onNavigate(destination)}
-              title={destination}
-              aria-current={index === segments.length - 1 ? "location" : undefined}
-            >
-              <Folder size={13} aria-hidden="true" />
-              <span className="max-w-48 truncate">{name}</span>
-            </button>
-          </span>
+  useEffect(() => {
+    if (!path || isSmartFolder) return;
+
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    const refreshDiskSpace = async () => {
+      try {
+        const result = await invoke<DiskSpace>("get_disk_space", { path });
+        if (!cancelled) {
+          setAvailableBytes(result.available_bytes);
+        }
+      } catch {
+        if (!cancelled) setAvailableBytes(null);
+      }
+    };
+
+    void refreshDiskSpace();
+
+    void listen<FileOperationSnapshot>("file-operation-updated", (event) => {
+      if (!cancelled && isTerminalOperationStatus(event.payload.status)) {
+        void refreshDiskSpace();
+      }
+    }).then((dispose) => {
+      if (cancelled) {
+        dispose();
+      } else {
+        unlisten = dispose;
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [isSmartFolder, path]);
+
+  const displayedAvailableBytes = !path || isSmartFolder ? null : availableBytes;
+  const hasMatchingStatus = statusPath === path && !loading;
+
+  const statusText = (() => {
+    const parts: string[] = [];
+    if (hasMatchingStatus) {
+      if (selectedCount > 0) {
+        const selectionBase = t("file_list.status_selected", {
+          selected: selectedCount,
+          total: totalCount,
+        });
+        parts.push(
+          selectedBytes > 0 ? `${selectionBase} (${formatFileSize(selectedBytes)})` : selectionBase
         );
-      })}
-    </nav>
+      } else {
+        parts.push(t("file_list.items_count", { count: totalCount }));
+      }
+    }
+    if (displayedAvailableBytes !== null) {
+      parts.push(
+        t("file_list.status_available", {
+          size: formatFileSize(displayedAvailableBytes),
+        })
+      );
+    }
+    return parts.join(" · ");
+  })();
+
+  return (
+    <div className="finder-pathbar">
+      <nav
+        ref={scrollRef}
+        className="finder-pathbar-breadcrumbs flex min-w-0 flex-1 items-center gap-[3px] overflow-x-auto"
+        aria-label={t("nav.path")}
+      >
+        <button
+          type="button"
+          onClick={() => onNavigate("/")}
+          title="/"
+          aria-label={t("nav.computer")}
+        >
+          <HardDrive size={13} aria-hidden="true" />
+        </button>
+        {!isSmartFolder &&
+          segments.map((name, index) => {
+            const destination = "/" + segments.slice(0, index + 1).join("/");
+            return (
+              <span className="flex shrink-0 items-center gap-1" key={destination}>
+                <ChevronRight size={11} className="opacity-40" aria-hidden="true" />
+                <button
+                  type="button"
+                  onClick={() => onNavigate(destination)}
+                  title={destination}
+                  aria-current={index === segments.length - 1 ? "location" : undefined}
+                >
+                  <Folder size={13} aria-hidden="true" />
+                  <span className="max-w-48 truncate">{name}</span>
+                </button>
+              </span>
+            );
+          })}
+      </nav>
+      {statusText && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="finder-statusbar-meta shrink-0 pl-3 text-[11px] whitespace-nowrap tabular-nums opacity-85"
+        >
+          {statusText}
+        </div>
+      )}
+    </div>
   );
 }

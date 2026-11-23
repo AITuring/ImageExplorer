@@ -26,6 +26,7 @@ import { useFileInfoDialog } from "@/stores/fileInfoDialog";
 import { useLocations } from "@/stores/locations";
 import { usePhotoAnalysisProgress } from "@/stores/photoAnalysisProgress";
 import { isCommandEnabled, runCommand } from "@/lib/commands";
+import { registerKeyboardCommands } from "@/lib/keyboardShortcuts";
 import { viewModeCommands } from "@/lib/viewModeCommands";
 import { PhotoAnalysisProgressIndicator } from "@/components/PhotoAnalysisProgressIndicator";
 import {
@@ -101,6 +102,8 @@ export function TopBar({ onNavigate }: TopBarProps) {
   );
 
   const inputRef = useRef<HTMLInputElement>(null);
+  const cancelledEditRef = useRef(false);
+  const [homeDir, setHomeDir] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [showResults, setShowResults] = useState(false);
   const [selectedSearchPaths, setSelectedSearchPaths] = useState<string[]>([]);
@@ -116,6 +119,34 @@ export function TopBar({ onNavigate }: TopBarProps) {
   useEffect(() => {
     setEditValue(currentPath);
   }, [currentPath]);
+
+  useEffect(() => {
+    invoke<string>("get_home_dir")
+      .then(setHomeDir)
+      .catch(() => undefined);
+  }, []);
+
+  // Finder ⌘⇧G（前往文件夹）快捷键
+  useEffect(
+    () =>
+      registerKeyboardCommands([
+        {
+          id: "nav.go-to-folder",
+          scope: "file-view",
+          matches: (event) =>
+            (event.metaKey || event.ctrlKey) &&
+            event.shiftKey &&
+            !event.altKey &&
+            event.key.toLowerCase() === "g",
+          run: () => {
+            cancelledEditRef.current = false;
+            setEditValue(currentPath);
+            setIsEditing(true);
+          },
+        },
+      ]),
+    [currentPath]
+  );
 
   // 组件卸载时清除搜索防抖
   useEffect(() => {
@@ -576,10 +607,32 @@ export function TopBar({ onNavigate }: TopBarProps) {
   const pathSegments = currentPath.split("/").filter(Boolean);
 
   const handleSubmit = () => {
-    setIsEditing(false);
-    if (editValue && editValue !== currentPath) {
-      navigateTo(editValue);
+    if (cancelledEditRef.current) {
+      cancelledEditRef.current = false;
+      setIsEditing(false);
+      return;
     }
+    setIsEditing(false);
+    const trimmed = editValue.trim();
+    if (!trimmed) {
+      setEditValue(currentPath);
+      return;
+    }
+    const expanded =
+      homeDir && (trimmed === "~" || trimmed.startsWith("~/"))
+        ? `${homeDir}${trimmed.slice(1)}`
+        : trimmed;
+    if (expanded && expanded !== currentPath) {
+      navigateTo(expanded);
+    } else {
+      setEditValue(currentPath);
+    }
+  };
+
+  const handleCancelEdit = () => {
+    cancelledEditRef.current = true;
+    setEditValue(currentPath);
+    setIsEditing(false);
   };
 
   // 文本输入框的操作
@@ -681,7 +734,15 @@ export function TopBar({ onNavigate }: TopBarProps) {
                 value={editValue}
                 onChange={(e) => setEditValue(e.target.value)}
                 onBlur={handleSubmit}
-                onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    handleSubmit();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    handleCancelEdit();
+                  }
+                }}
                 className="bg-accent/50 h-8 w-full rounded-md border-none px-3 text-sm shadow-[0_0_0_2px_rgba(0,0,0,0.08)] outline-none"
                 autoFocus
               />

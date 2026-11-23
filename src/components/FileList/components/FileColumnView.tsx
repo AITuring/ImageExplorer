@@ -7,6 +7,7 @@ import { ChevronRight } from "lucide-react";
 import { FileEntry } from "@/types";
 import { CompactFileThumbnail } from "./CompactFileThumbnail";
 import { filterHiddenEntries } from "@/utils/file";
+import { sortFileEntries } from "../hooks/useFileSort";
 import { readFileDragData } from "@/lib/dragData";
 import { makeNativeFileDragGestureHandlers } from "@/lib/nativeFileDragGesture";
 import { AppContextMenu } from "@/components/AppContextMenu";
@@ -16,6 +17,12 @@ import { Input } from "@/components/ui/input";
 import type { FileActions } from "@/types";
 
 const COLUMN_ROW_HEIGHT = 32;
+
+export interface ColumnNavigationHandle {
+  navigateLeft: () => boolean;
+  navigateRight: () => Promise<boolean>;
+  focusEntry: (entry: FileEntry) => Promise<void>;
+}
 
 export interface ColumnSelectionContext {
   rootPath: string;
@@ -36,6 +43,8 @@ interface FileColumnViewProps {
   onSubmitRename: () => void;
   onCancelRename: () => void;
   onContextChange: (context: ColumnSelectionContext | null) => void;
+  navigationRef?: React.RefObject<ColumnNavigationHandle | null>;
+  onSelectSingle: (path: string, index: number) => void;
   onClick: (
     entry: FileEntry,
     index: number,
@@ -244,6 +253,8 @@ export function FileColumnView({
   onSubmitRename,
   onCancelRename,
   onContextChange,
+  navigationRef,
+  onSelectSingle,
   onClick,
   onDoubleClick,
   onNavigate,
@@ -290,10 +301,11 @@ export function FileColumnView({
     return () => cancelAnimationFrame(frame);
   }, [editingPath]);
 
-  // 加载目录内容
+  // 加载目录内容（使用与 Finder 一致的自然排序）
   const loadColumn = useCallback(async (path: string): Promise<FileEntry[]> => {
     try {
-      return await invoke<FileEntry[]>("get_entries", { path, forceRefresh: false });
+      const raw = await invoke<FileEntry[]>("get_entries", { path, forceRefresh: false });
+      return sortFileEntries(raw, "name", "asc");
     } catch {
       return [];
     }
@@ -437,15 +449,15 @@ export function FileColumnView({
     return undefined;
   }, [columns, focusedPath, hasCurrentRoot, selectedPathSet]);
 
-  // 选中文件夹时展开新列（使用函数式更新避免 columns 依赖）
-  const handleSelect = useCallback(
-    async (columnIndex: number, entry: FileEntry, entryIndex: number, e: React.MouseEvent) => {
-      const requestId = selectionRequests.current.begin();
-      setActiveColumnIndex(columnIndex);
-      onClick(entry, entryIndex, columns[columnIndex]?.entries ?? [], e);
+  const isBrowsableDirectory = (entry: FileEntry) =>
+    entry.is_dir && !(entry.is_package && entry.package_type === "app");
 
+  const focusEntryInColumn = useCallback(
+    async (columnIndex: number, entry: FileEntry) => {
+      const requestId = selectionRequests.current.begin();
       let newEntries: FileEntry[] = [];
-      if (entry.is_dir) {
+      const browsable = isBrowsableDirectory(entry);
+      if (browsable) {
         newEntries = filterHiddenEntries(await loadColumn(entry.path), showHiddenFiles);
       }
 
@@ -454,13 +466,12 @@ export function FileColumnView({
         if (!prev[columnIndex]) return prev;
         const newColumns = prev.slice(0, columnIndex + 1);
         newColumns[columnIndex] = { ...newColumns[columnIndex], selectedPath: entry.path };
-        if (entry.is_dir) {
+        if (browsable) {
           newColumns.push({ path: entry.path, entries: newEntries, selectedPath: null });
         }
         return newColumns;
       });
 
-      // 自动滚动到最右侧
       requestAnimationFrame(() => {
         scrollContainerRef.current?.scrollTo({
           left: scrollContainerRef.current.scrollWidth,
@@ -468,8 +479,104 @@ export function FileColumnView({
         });
       });
     },
-    [columns, loadColumn, onClick, showHiddenFiles]
+    [loadColumn, showHiddenFiles]
   );
+
+  // 选中文件夹时展开新列（使用函数式更新避免 columns 依赖）
+  const handleSelect = useCallback(
+    async (columnIndex: number, entry: FileEntry, entryIndex: number, e: React.MouseEvent) => {
+      setActiveColumnIndex(columnIndex);
+      onClick(entry, entryIndex, columns[columnIndex]?.entries ?? [], e);
+      await focusEntryInColumn(columnIndex, entry);
+    },
+    [columns, focusEntryInColumn, onClick]
+  );
+
+  // 暴露分栏视图的键盘左右/上下导航能力
+  useEffect(() => {
+    if (!navigationRef) return;
+    navigationRef.current = {
+      navigateLeft: () => {
+        if (activeColumnIndex <= 0) return false;
+        const parentIndex = activeColumnIndex - 1;
+        const parentColumn = columns[parentIndex];
+        if (!parentColumn) return false;
+        setActiveColumnIndex(parentIndex);
+        const targetPath = parentColumn.selectedPath ?? parentColumn.entries[0]?.path;
+        if (targetPath) {
+          const entryIndex = parentColumn.entries.findIndex((entry) => entry.path === targetPath);
+          if (entryIndex >= 0) {
+            onSelectSingle(targetPath, entryIndex);
+          }
+        }
+        return true;
+      },
+      navigateRight: async () => {
+        const currentColumn = columns[activeColumnIndex];
+        if (!currentColumn) return false;
+        const targetPath = focusedPath ?? currentColumn.selectedPath;
+        const entry = currentColumn.entries.find((item) => item.path === targetPath);
+        if (!entry || !isBrowsableDirectory(entry)) return false;
+
+        const existingChild = columns[activeColumnIndex + 1];
+        let childEntries: FileEntry[];
+        if (existingChild && existingChild.path === entry.path) {
+          childEntries = existingChild.entries;
+        } else {
+          const requestId = selectionRequests.current.begin();
+          childEntries = filterHiddenEntries(await loadColumn(entry.path), showHiddenFiles);
+          if (!selectionRequests.current.isCurrent(requestId)) return false;
+          setColumns((prev) => {
+            if (!prev[activeColumnIndex]) return prev;
+            const next = prev.slice(0, activeColumnIndex + 1);
+            next[activeColumnIndex] = { ...next[activeColumnIndex], selectedPath: entry.path };
+            next.push({
+              path: entry.path,
+              entries: childEntries,
+              selectedPath: childEntries[0]?.path ?? null,
+            });
+            return next;
+          });
+        }
+
+        if (childEntries.length === 0) return true;
+
+        const nextColIndex = activeColumnIndex + 1;
+        const firstChild = childEntries[0];
+        setActiveColumnIndex(nextColIndex);
+        onSelectSingle(firstChild.path, 0);
+        setColumns((prev) => {
+          if (!prev[nextColIndex]) return prev;
+          const next = prev.slice(0, nextColIndex + 1);
+          next[nextColIndex] = { ...next[nextColIndex], selectedPath: firstChild.path };
+          return next;
+        });
+
+        requestAnimationFrame(() => {
+          scrollContainerRef.current?.scrollTo({
+            left: scrollContainerRef.current.scrollWidth,
+            behavior: "smooth",
+          });
+        });
+        return true;
+      },
+      focusEntry: async (entry: FileEntry) => {
+        await focusEntryInColumn(activeColumnIndex, entry);
+      },
+    };
+    return () => {
+      navigationRef.current = null;
+    };
+  }, [
+    activeColumnIndex,
+    columns,
+    focusEntryInColumn,
+    focusedPath,
+    loadColumn,
+    navigationRef,
+    onSelectSingle,
+    showHiddenFiles,
+  ]);
 
   // 双击文件夹时导航
   const handleDoubleClick = useCallback(

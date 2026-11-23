@@ -473,9 +473,11 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
     invoke<string>("get_home_dir").then(setHome).catch(console.error);
   }, []);
 
-  // Finder 的“位置”会随磁盘插拔更新；轻量轮询可以覆盖 USB、网络卷和弹出操作。
+  // Finder 的“位置”由 macOS NSWorkspace 卷挂载/卸载通知实时推送更新，
+  // 并在窗口重新聚焦时做兜底同步，彻底消除每 3 秒一次的后台轮询唤醒。
   useEffect(() => {
     let cancelled = false;
+    let unlisten: (() => void) | undefined;
 
     const refreshMountedVolumes = async () => {
       try {
@@ -490,11 +492,22 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
     };
 
     void refreshMountedVolumes();
-    const interval = window.setInterval(refreshMountedVolumes, 3000);
+    window.addEventListener("focus", refreshMountedVolumes);
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) => listen("volumes-changed", () => void refreshMountedVolumes()))
+      .then((dispose) => {
+        if (cancelled) {
+          dispose();
+        } else {
+          unlisten = dispose;
+        }
+      })
+      .catch((error) => console.error("Failed to listen for volume events:", error));
 
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshMountedVolumes);
+      unlisten?.();
     };
   }, []);
 

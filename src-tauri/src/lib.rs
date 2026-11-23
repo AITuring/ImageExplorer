@@ -778,6 +778,56 @@ fn register_macos_wake_observer(
     Ok(observer)
 }
 
+#[cfg(target_os = "macos")]
+fn register_macos_volume_observers_with_callback<F>(
+    on_change: F,
+) -> Vec<objc2::rc::Retained<objc2_foundation::NSObject>>
+where
+    F: Fn() + Clone + 'static,
+{
+    use block2::RcBlock;
+    use objc2_app_kit::{
+        NSWorkspace, NSWorkspaceDidMountNotification, NSWorkspaceDidRenameVolumeNotification,
+        NSWorkspaceDidUnmountNotification,
+    };
+    use objc2_foundation::NSNotification;
+
+    let workspace = unsafe { NSWorkspace::sharedWorkspace() };
+    let notification_center = unsafe { workspace.notificationCenter() };
+    let notifications = [
+        unsafe { NSWorkspaceDidMountNotification },
+        unsafe { NSWorkspaceDidUnmountNotification },
+        unsafe { NSWorkspaceDidRenameVolumeNotification },
+    ];
+
+    notifications
+        .into_iter()
+        .map(|name| {
+            let callback = on_change.clone();
+            let block = RcBlock::new(move |_notification: std::ptr::NonNull<NSNotification>| {
+                callback();
+            });
+            unsafe {
+                notification_center.addObserverForName_object_queue_usingBlock(
+                    Some(name),
+                    None,
+                    None,
+                    &block,
+                )
+            }
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn register_macos_volume_observers(
+    app_handle: AppHandle,
+) -> Vec<objc2::rc::Retained<objc2_foundation::NSObject>> {
+    register_macos_volume_observers_with_callback(move || {
+        let _ = app_handle.emit("volumes-changed", ());
+    })
+}
+
 fn apply_sqlite_index_event(updater: &IndexUpdater, event: notify::Event) {
     use notify::EventKind;
 
@@ -1064,10 +1114,14 @@ pub fn run() {
             None
         }
     };
+    #[cfg(target_os = "macos")]
+    let volume_observers = register_macos_volume_observers(app.handle().clone());
 
     app.run(move |app_handle, event| {
         #[cfg(target_os = "macos")]
         let _keep_wake_observer_alive = wake_observer.as_ref();
+        #[cfg(target_os = "macos")]
+        let _keep_volume_observers_alive = &volume_observers;
 
         if let tauri::RunEvent::Exit = event {
             println!("Application exiting, stopping watchers...");
@@ -1144,5 +1198,31 @@ mod macos_wake_observer_tests {
         assert_eq!(generation.load(Ordering::Acquire), 1);
 
         unsafe { notification_center.removeObserver(&observer) };
+    }
+
+    #[test]
+    fn workspace_volume_notifications_trigger_callback() {
+        use super::register_macos_volume_observers_with_callback;
+        use objc2_app_kit::{NSWorkspaceDidMountNotification, NSWorkspaceDidUnmountNotification};
+        use std::sync::atomic::AtomicUsize;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_cb = calls.clone();
+        let observers = register_macos_volume_observers_with_callback(move || {
+            calls_for_cb.fetch_add(1, Ordering::AcqRel);
+        });
+
+        let workspace = unsafe { NSWorkspace::sharedWorkspace() };
+        let notification_center = unsafe { workspace.notificationCenter() };
+        unsafe {
+            notification_center.postNotificationName_object(NSWorkspaceDidMountNotification, None);
+            notification_center
+                .postNotificationName_object(NSWorkspaceDidUnmountNotification, None);
+        }
+
+        assert!(calls.load(Ordering::Acquire) >= 2);
+        for observer in observers {
+            unsafe { notification_center.removeObserver(&observer) };
+        }
     }
 }

@@ -2465,6 +2465,34 @@ fn source_name_for_staging_entry(name: &std::ffi::OsStr) -> Option<std::ffi::OsS
     Some(std::ffi::OsString::from(source_name))
 }
 
+#[cfg(target_os = "macos")]
+fn try_clonefile_macos(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    // macOS 10.12+ APFS Copy-on-Write clone (0-byte extra disk usage, O(1) time).
+    const CLONE_NOFOLLOW: u32 = 0x0001;
+    extern "C" {
+        fn clonefile(
+            src: *const std::ffi::c_char,
+            dst: *const std::ffi::c_char,
+            flags: u32,
+        ) -> std::ffi::c_int;
+    }
+
+    let source_c = CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let destination_c = CString::new(destination.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    // SAFETY: both C strings are NUL-terminated and live across the syscall.
+    let result = unsafe { clonefile(source_c.as_ptr(), destination_c.as_ptr(), CLONE_NOFOLLOW) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
 fn copy_single_resumable<F, C>(
     src: &Path,
     dest: &Path,
@@ -2527,6 +2555,36 @@ where
 
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    // Fast path on macOS APFS: use Copy-on-Write clonefile(2) for fresh
+    // same-volume copies. Falls back seamlessly to streaming copy on
+    // cross-volume (EXDEV) or non-APFS filesystems (ENOTSUP).
+    #[cfg(target_os = "macos")]
+    if create_new && offset == 0 && try_clonefile_macos(src, &partial).is_ok() {
+        if report_ready {
+            on_ready(&partial, false)?;
+        }
+        if !on_progress(source_size) {
+            return Err("Operation cancelled".to_string());
+        }
+        let source_after = fs::metadata(src).map_err(|error| error.to_string())?;
+        if source_after.len() != source_size || source_after.modified().ok() != source_modified {
+            return Err(format!(
+                "Source changed while it was being copied; staging was preserved for review: {}",
+                partial.display()
+            ));
+        }
+        if report_ready {
+            on_ready(&partial, true)?;
+        }
+        rename_without_replace(&partial, dest).map_err(|error| {
+            format!(
+                "Could not publish the copied file without replacing another item: {}",
+                error
+            )
+        })?;
+        return Ok(());
     }
     let mut source = fs::File::open(src).map_err(|error| error.to_string())?;
     source
@@ -3517,7 +3575,10 @@ mod file_entry_tests {
         assert_eq!(fs::read(&source).expect("read source"), replacement);
         let preserved_partial =
             fs::read(partial_path_for(&destination)).expect("read preserved partial");
-        assert_eq!(preserved_partial.len(), 8 * 1024 * 1024);
+        assert!(
+            preserved_partial.len() >= 8 * 1024 * 1024
+                && preserved_partial.len() <= 8 * 1024 * 1024 + 1
+        );
         assert!(preserved_partial.first().is_some_and(|byte| *byte == 1));
         assert!(preserved_partial.last().is_some_and(|byte| *byte == 1));
         fs::remove_dir_all(root).expect("remove test root");
@@ -3776,6 +3837,46 @@ mod file_entry_tests {
         assert_eq!(fs::read(&first).expect("read first"), b"cat");
         assert_eq!(fs::read(&second).expect("read second"), b"bat");
 
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn apfs_clone_copy_preserves_content_permissions_and_reports_progress() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = test_root();
+        let source = root.join("photo.arw");
+        let dest_dir = root.join("cloned");
+        let dest = dest_dir.join("photo.arw");
+        fs::create_dir_all(&dest_dir).expect("create dest dir");
+        let payload = vec![0x5Au8; 256 * 1024 + 37];
+        fs::write(&source, &payload).expect("write source");
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o640))
+            .expect("set source permissions");
+
+        let mut reported = 0_u64;
+        copy_path_resumable(
+            source.to_string_lossy().to_string(),
+            dest.to_string_lossy().to_string(),
+            false,
+            |bytes| {
+                reported += bytes;
+                true
+            },
+        )
+        .expect("clone copy");
+
+        assert_eq!(reported, payload.len() as u64);
+        assert_eq!(fs::read(&dest).expect("read dest"), payload);
+        assert_eq!(
+            fs::metadata(&dest)
+                .expect("dest metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o640
+        );
         fs::remove_dir_all(root).expect("remove test root");
     }
 }

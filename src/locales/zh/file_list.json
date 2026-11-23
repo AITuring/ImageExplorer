@@ -9,6 +9,8 @@
   "empty_folder": "此文件夹为空",
   "empty_smart_folder": "未找到此类文件 (请确保已索引)",
   "items_count": "{{count}} 项",
+  "status_selected": "已选 {{selected}} / {{total}} 项",
+  "status_available": "{{size}} 可用",
   "untitled_file": "未命名文件",
   "untitled_folder": "未命名文件夹",
   "error_paste": "粘贴失败: {{error}}",

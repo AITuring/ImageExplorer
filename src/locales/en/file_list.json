@@ -9,6 +9,8 @@
   "empty_folder": "This folder is empty",
   "empty_smart_folder": "No files found (Check indexing logic)",
   "items_count": "{{count}} items",
+  "status_selected": "{{selected}} of {{total}} selected",
+  "status_available": "{{size}} available",
   "untitled_file": "untitled",
   "untitled_folder": "untitled folder",
   "error_paste": "Failed to paste: {{error}}",

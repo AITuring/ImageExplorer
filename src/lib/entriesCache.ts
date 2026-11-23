@@ -18,20 +18,33 @@ const CACHE_TTL = 5 * 60 * 1000;
 // 最大缓存条目数
 const MAX_CACHE_SIZE = 50;
 
+export interface CachedEntriesResult {
+  entries: FileEntry[];
+  ageMs: number;
+}
+
 /**
- * 获取缓存的文件列表
+ * 获取缓存的文件列表及其缓存时长
  */
-export function getCachedEntries(path: string): FileEntry[] | null {
+export function getCachedEntriesWithAge(path: string): CachedEntriesResult | null {
   const entry = cache.get(path);
   if (!entry) return null;
 
+  const ageMs = Date.now() - entry.timestamp;
   // 检查是否过期
-  if (Date.now() - entry.timestamp > CACHE_TTL) {
+  if (ageMs > CACHE_TTL) {
     cache.delete(path);
     return null;
   }
 
-  return entry.entries;
+  return { entries: entry.entries, ageMs };
+}
+
+/**
+ * 获取缓存的文件列表
+ */
+export function getCachedEntries(path: string): FileEntry[] | null {
+  return getCachedEntriesWithAge(path)?.entries ?? null;
 }
 
 /**

@@ -166,6 +166,8 @@ export interface FileCommandActions {
   cut: AppCommand<FileEntry[] | undefined>;
   paste: AppCommand<void>;
   pasteAsMove: AppCommand<void>;
+  duplicate: AppCommand<FileEntry[] | undefined>;
+  getInfo: AppCommand<FileEntry | undefined>;
   delete: AppCommand<FileEntry[] | undefined>;
   rename: AppCommand<FileEntry | undefined>;
   newFile: AppCommand<void>;
@@ -187,6 +189,7 @@ export interface FileActions {
   onCopy: (entries: FileEntry[]) => void;
   onCut: (entries: FileEntry[]) => void;
   onPaste: () => void;
+  onDuplicate?: (entries: FileEntry[]) => void;
   onCopyPath: (entry: FileEntry) => void;
   onDelete: (entries: FileEntry[]) => void;
   onCompress?: (entries: FileEntry[]) => void;

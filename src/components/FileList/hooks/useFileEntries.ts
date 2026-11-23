@@ -3,10 +3,33 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { FileEntry } from "@/types";
 import { SMART_FOLDER_PREFIX, DIR_CHANGE_DEBOUNCE_MS } from "@/constants/config";
-import { getCachedEntries, setCachedEntries, invalidateCache } from "@/lib/entriesCache";
+import { getCachedEntriesWithAge, setCachedEntries, invalidateCache } from "@/lib/entriesCache";
 import { filterHiddenEntries } from "@/utils/file";
 import { useSetting } from "@/hooks/useSetting";
 import { RequestGeneration } from "@/lib/requestGeneration";
+
+/** Cached directory snapshots newer than this skip redundant silent refetches on Back/Forward. */
+const FRESH_CACHE_WINDOW_MS = 1500;
+
+function areEntrySnapshotsEqual(previous: FileEntry[], next: FileEntry[]): boolean {
+  if (previous.length !== next.length) return false;
+  for (let index = 0; index < previous.length; index += 1) {
+    const left = previous[index];
+    const right = next[index];
+    if (
+      left.path !== right.path ||
+      left.name !== right.name ||
+      left.size !== right.size ||
+      left.modified !== right.modified ||
+      left.is_dir !== right.is_dir ||
+      left.is_hidden !== right.is_hidden ||
+      left.readonly !== right.readonly
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
 
 interface UseFileEntriesResult {
   entries: FileEntry[];
@@ -49,7 +72,12 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
         // 跨窗口移动可能让旧请求在新请求之后返回；只接受最后一次加载结果，
         // 避免旧目录快照把已经完成的移动重新画回列表。
         if (!loadRequestRef.current.isCurrent(requestId)) return;
-        setAllEntries(result);
+        setAllEntries((current) => {
+          if (!showLoading && !forceRefresh && areEntrySnapshotsEqual(current, result)) {
+            return current;
+          }
+          return result;
+        });
         // 缓存完整结果，显示偏好只在渲染边界应用
         setCachedEntries(currentPath, result);
       } catch (e) {
@@ -80,12 +108,14 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
     let watchStarted = false;
 
     // 优先使用缓存
-    const cached = getCachedEntries(currentPath);
+    const cached = getCachedEntriesWithAge(currentPath);
     if (cached) {
-      setAllEntries(cached);
+      setAllEntries(cached.entries);
       setLoading(false);
-      // 后台静默刷新
-      loadEntries(false);
+      // 刚访问过的目录已有 watcher 保障实时性，跳过冗余的二次 IPC 刷新
+      if (cached.ageMs >= FRESH_CACHE_WINDOW_MS) {
+        loadEntries(false);
+      }
     } else {
       loadEntries();
     }
