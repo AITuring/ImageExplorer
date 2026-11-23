@@ -51,6 +51,15 @@ pub struct CachedPhotoMetadataRecord {
     pub metadata_json: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PhotoCullingRecord {
+    pub path: String,
+    pub rating: u8,
+    /// `"none"`, `"pick"`, or `"reject"`
+    pub flag: String,
+}
+
 pub struct PhotoCacheStore {
     read_conn: Arc<Mutex<Connection>>,
     write_conn: Arc<Mutex<Connection>>,
@@ -410,6 +419,99 @@ impl PhotoCacheStore {
         tx.commit()
             .map_err(|error| format!("Failed to commit metadata cache: {error}"))
     }
+
+    pub fn get_culling_states(&self, paths: &[String]) -> Result<Vec<PhotoCullingRecord>, String> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let conn = self
+            .read_conn
+            .lock()
+            .map_err(|error| format!("Failed to acquire culling state read lock: {error}"))?;
+        let mut results = Vec::new();
+
+        for chunk in paths.chunks(LOOKUP_CHUNK_SIZE) {
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            let sql = format!(
+                "SELECT path, rating, flag FROM photo_culling_state WHERE path IN ({placeholders})"
+            );
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|error| format!("Failed to prepare culling state query: {error}"))?;
+            let params: Vec<&dyn rusqlite::ToSql> = chunk
+                .iter()
+                .map(|path| path as &dyn rusqlite::ToSql)
+                .collect();
+
+            let rows = stmt
+                .query_map(params.as_slice(), |row| {
+                    let rating: i64 = row.get(1)?;
+                    Ok(PhotoCullingRecord {
+                        path: row.get(0)?,
+                        rating: rating.clamp(0, 5) as u8,
+                        flag: row.get(2)?,
+                    })
+                })
+                .map_err(|error| format!("Failed to query culling states: {error}"))?;
+
+            for row in rows {
+                results
+                    .push(row.map_err(|error| format!("Failed to decode culling state: {error}"))?);
+            }
+        }
+
+        Ok(results)
+    }
+
+    pub fn set_culling_states(&self, records: &[PhotoCullingRecord]) -> Result<(), String> {
+        if records.is_empty() {
+            return Ok(());
+        }
+
+        let now = now_seconds();
+        let mut conn = self
+            .write_conn
+            .lock()
+            .map_err(|error| format!("Failed to acquire culling state write lock: {error}"))?;
+        let tx = conn
+            .transaction()
+            .map_err(|error| format!("Failed to start culling state transaction: {error}"))?;
+
+        {
+            let mut upsert = tx
+                .prepare(
+                    "INSERT OR REPLACE INTO photo_culling_state (path, rating, flag, updated_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                )
+                .map_err(|error| format!("Failed to prepare culling upsert: {error}"))?;
+            let mut delete = tx
+                .prepare("DELETE FROM photo_culling_state WHERE path = ?1")
+                .map_err(|error| format!("Failed to prepare culling delete: {error}"))?;
+
+            for record in records {
+                let rating = record.rating.min(5);
+                let flag = match record.flag.as_str() {
+                    "pick" => "pick",
+                    "reject" => "reject",
+                    _ => "none",
+                };
+
+                if rating == 0 && flag == "none" {
+                    delete
+                        .execute([&record.path])
+                        .map_err(|error| format!("Failed to delete culling state: {error}"))?;
+                } else {
+                    upsert
+                        .execute(rusqlite::params![record.path, i64::from(rating), flag, now])
+                        .map_err(|error| format!("Failed to save culling state: {error}"))?;
+                }
+            }
+        }
+
+        tx.commit()
+            .map_err(|error| format!("Failed to commit culling states: {error}"))
+    }
 }
 
 fn now_seconds() -> i64 {
@@ -609,5 +711,51 @@ mod tests {
             )
             .expect("get stale metadata");
         assert!(stale.is_empty());
+    }
+
+    #[test]
+    fn culling_state_round_trips_and_clears_default_entries() {
+        let store = store();
+        store
+            .set_culling_states(&[
+                super::PhotoCullingRecord {
+                    path: "/photos/keep.arw".to_string(),
+                    rating: 5,
+                    flag: "pick".to_string(),
+                },
+                super::PhotoCullingRecord {
+                    path: "/photos/drop.arw".to_string(),
+                    rating: 1,
+                    flag: "reject".to_string(),
+                },
+            ])
+            .expect("save culling states");
+
+        let loaded = store
+            .get_culling_states(&[
+                "/photos/keep.arw".to_string(),
+                "/photos/drop.arw".to_string(),
+            ])
+            .expect("load culling states");
+        assert_eq!(loaded.len(), 2);
+
+        store
+            .set_culling_states(&[super::PhotoCullingRecord {
+                path: "/photos/drop.arw".to_string(),
+                rating: 0,
+                flag: "none".to_string(),
+            }])
+            .expect("clear default culling state");
+
+        let after_clear = store
+            .get_culling_states(&[
+                "/photos/keep.arw".to_string(),
+                "/photos/drop.arw".to_string(),
+            ])
+            .expect("reload culling states");
+        assert_eq!(after_clear.len(), 1);
+        assert_eq!(after_clear[0].path, "/photos/keep.arw");
+        assert_eq!(after_clear[0].rating, 5);
+        assert_eq!(after_clear[0].flag, "pick");
     }
 }

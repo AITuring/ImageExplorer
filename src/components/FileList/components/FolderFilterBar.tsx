@@ -1,11 +1,22 @@
 import { memo } from "react";
-import { Filter, Layers, X } from "lucide-react";
+import {
+  Check,
+  FileCode2,
+  Filter,
+  FolderOutput,
+  Layers,
+  Sparkles,
+  Star,
+  X,
+  XCircle,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { FINDER_TAG_PRESETS } from "@/lib/finderTags";
 import {
   DEFAULT_FOLDER_FILTER,
   hasActiveFolderFilter,
   type FolderFilterState,
+  type FolderFlagFilter,
   type FolderFormatFilter,
   type FolderSharpnessFilter,
 } from "@/lib/folderFilter";
@@ -16,6 +27,12 @@ interface FolderFilterBarProps {
   totalCount: number;
   filteredCount: number;
   pairCount: number;
+  cameraOptions?: string[];
+  lensOptions?: string[];
+  burstGroupCount?: number;
+  onAutoPickBest?: () => void;
+  onExportXmp?: () => void;
+  onExportFiltered?: () => void;
   inputRef?: React.RefObject<HTMLInputElement | null>;
   onClose?: () => void;
 }
@@ -26,6 +43,12 @@ export const FolderFilterBar = memo(function FolderFilterBar({
   totalCount,
   filteredCount,
   pairCount,
+  cameraOptions = [],
+  lensOptions = [],
+  burstGroupCount = 0,
+  onAutoPickBest,
+  onExportXmp,
+  onExportFiltered,
   inputRef,
   onClose,
 }: FolderFilterBarProps) {
@@ -38,12 +61,15 @@ export const FolderFilterBar = memo(function FolderFilterBar({
   const setSharpness = (sharpness: FolderSharpnessFilter) =>
     onChange({ ...filter, sharpness: filter.sharpness === sharpness ? "all" : sharpness });
 
+  const setFlag = (flag: FolderFlagFilter) =>
+    onChange({ ...filter, flag: filter.flag === flag ? "all" : flag });
+
   const toggleTag = (tagId: string) =>
     onChange({ ...filter, tagId: filter.tagId === tagId ? null : tagId });
 
   return (
     <div className="border-border/50 bg-muted/25 mb-2 flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs">
-      <div className="relative flex min-w-36 flex-1 items-center sm:max-w-52">
+      <div className="relative flex min-w-32 flex-1 items-center sm:max-w-44">
         <Filter className="text-muted-foreground pointer-events-none absolute left-2 h-3.5 w-3.5" />
         <input
           ref={inputRef}
@@ -141,6 +167,61 @@ export const FolderFilterBar = memo(function FolderFilterBar({
 
       <span className="bg-border/60 h-3.5 w-[1px]" aria-hidden="true" />
 
+      {/* Culling Flag & Min Rating */}
+      <div
+        className="flex items-center gap-1"
+        role="group"
+        aria-label={t("file_list.culling.pick")}
+      >
+        <button
+          type="button"
+          aria-pressed={filter.flag === "pick"}
+          onClick={() => setFlag("pick")}
+          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] transition-colors ${
+            filter.flag === "pick"
+              ? "bg-emerald-500/20 font-medium text-emerald-700 dark:text-emerald-300"
+              : "text-muted-foreground hover:bg-accent"
+          }`}
+        >
+          <Check className="h-3 w-3" aria-hidden="true" />
+          {t("file_list.culling.pick")}
+        </button>
+        <button
+          type="button"
+          aria-pressed={filter.flag === "reject"}
+          onClick={() => setFlag("reject")}
+          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] transition-colors ${
+            filter.flag === "reject"
+              ? "bg-destructive/20 text-destructive font-medium"
+              : "text-muted-foreground hover:bg-accent"
+          }`}
+        >
+          <XCircle className="h-3 w-3" aria-hidden="true" />
+          {t("file_list.culling.reject")}
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            onChange({ ...filter, minRating: filter.minRating >= 5 ? 0 : filter.minRating + 1 })
+          }
+          aria-pressed={filter.minRating > 0}
+          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] transition-colors ${
+            filter.minRating > 0
+              ? "bg-amber-500/20 font-medium text-amber-700 dark:text-amber-300"
+              : "text-muted-foreground hover:bg-accent"
+          }`}
+        >
+          <Star className="h-3 w-3 fill-current" aria-hidden="true" />
+          <span>
+            {filter.minRating > 0
+              ? t("file_list.culling.rating_min", { count: filter.minRating })
+              : t("file_list.culling.rating_any")}
+          </span>
+        </button>
+      </div>
+
+      <span className="bg-border/60 h-3.5 w-[1px]" aria-hidden="true" />
+
       {/* Finder Tag color filter dots */}
       <div className="flex items-center gap-1" role="group" aria-label={t("tags.section")}>
         {FINDER_TAG_PRESETS.map((preset) => {
@@ -165,6 +246,38 @@ export const FolderFilterBar = memo(function FolderFilterBar({
         })}
       </div>
 
+      {/* Dynamic EXIF Camera / Lens dropdowns when metadata is available */}
+      {cameraOptions.length > 1 && (
+        <select
+          value={filter.cameraModel ?? ""}
+          onChange={(event) => onChange({ ...filter, cameraModel: event.target.value || null })}
+          aria-label={t("file_list.details.model")}
+          className="bg-background/80 border-border/60 h-6 max-w-36 rounded border px-1.5 text-[11px] outline-none"
+        >
+          <option value="">{t("file_list.culling.camera_all")}</option>
+          {cameraOptions.map((model) => (
+            <option key={model} value={model}>
+              {model}
+            </option>
+          ))}
+        </select>
+      )}
+      {lensOptions.length > 1 && (
+        <select
+          value={filter.lensModel ?? ""}
+          onChange={(event) => onChange({ ...filter, lensModel: event.target.value || null })}
+          aria-label={t("file_list.details.lens")}
+          className="bg-background/80 border-border/60 h-6 max-w-40 rounded border px-1.5 text-[11px] outline-none"
+        >
+          <option value="">{t("file_list.culling.lens_all")}</option>
+          {lensOptions.map((lens) => (
+            <option key={lens} value={lens}>
+              {lens}
+            </option>
+          ))}
+        </select>
+      )}
+
       <span className="bg-border/60 h-3.5 w-[1px]" aria-hidden="true" />
 
       {/* RAW+JPG pair stacking toggle */}
@@ -182,6 +295,47 @@ export const FolderFilterBar = memo(function FolderFilterBar({
         <Layers className="h-3 w-3" aria-hidden="true" />
         <span>RAW+JPG{filter.pairRawJpeg && pairCount > 0 ? ` (${pairCount})` : ""}</span>
       </button>
+
+      {/* Auto-Pick Best for burst similarity groups */}
+      {burstGroupCount > 0 && onAutoPickBest && (
+        <button
+          type="button"
+          onClick={onAutoPickBest}
+          title={t("file_list.culling.auto_pick_best_hint")}
+          className="bg-primary/10 text-primary hover:bg-primary/20 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors"
+        >
+          <Sparkles className="h-3 w-3" aria-hidden="true" />
+          <span>
+            {t("file_list.culling.auto_pick_best")} ({burstGroupCount})
+          </span>
+        </button>
+      )}
+
+      {/* Export XMP sidecars */}
+      {onExportXmp && (
+        <button
+          type="button"
+          onClick={onExportXmp}
+          title={t("file_list.culling.export_xmp_hint")}
+          className="text-muted-foreground hover:bg-accent hover:text-foreground inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] transition-colors"
+        >
+          <FileCode2 className="h-3 w-3" aria-hidden="true" />
+          <span>{t("file_list.culling.export_xmp")}</span>
+        </button>
+      )}
+
+      {/* Export filtered photos to folder */}
+      {isActive && filteredCount > 0 && onExportFiltered && (
+        <button
+          type="button"
+          onClick={onExportFiltered}
+          title={t("file_list.culling.export_filtered_hint")}
+          className="bg-primary/15 text-primary hover:bg-primary/25 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors"
+        >
+          <FolderOutput className="h-3 w-3" aria-hidden="true" />
+          <span>{t("file_list.culling.export_filtered")}</span>
+        </button>
+      )}
 
       <div className="ml-auto flex items-center gap-2">
         {isActive && (

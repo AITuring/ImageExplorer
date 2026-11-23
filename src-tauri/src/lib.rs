@@ -12,6 +12,7 @@ mod raw_preview;
 mod thumb_disk_cache;
 mod thumb_protocol;
 mod trash_commands;
+mod xmp_sidecar;
 
 #[cfg(target_os = "macos")]
 use commands::apps::get_arw_embedded_jpeg;
@@ -36,7 +37,8 @@ use commands::search::{
 use commands::watcher::{stop_watching, unwatch_directory, watch_directory, WatcherState};
 use db::{
     CachedPhotoFeatureRecord, CachedPhotoMetadataRecord, CachedPhotoSharpnessRecord, Database,
-    IndexBuilder, IndexUpdater, PhotoCacheLookup, PhotoCacheStore, SearchEngine,
+    IndexBuilder, IndexUpdater, PhotoCacheLookup, PhotoCacheStore, PhotoCullingRecord,
+    SearchEngine,
 };
 use index::{create_shared_index, IndexedFile, SharedIndex};
 use operations::{
@@ -252,6 +254,85 @@ async fn save_cached_photo_sharpness(
     tauri::async_runtime::spawn_blocking(move || store.save_sharpness(&records, sharpness_version))
         .await
         .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn get_photo_culling_states(
+    database: tauri::State<'_, Option<SharedDatabase>>,
+    paths: Vec<String>,
+) -> Result<Vec<PhotoCullingRecord>, String> {
+    let Some(ref db) = *database.inner() else {
+        return Ok(Vec::new());
+    };
+    let store = PhotoCacheStore::new(db.read_connection(), db.connection());
+    tauri::async_runtime::spawn_blocking(move || store.get_culling_states(&paths))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn set_photo_culling_states(
+    database: tauri::State<'_, Option<SharedDatabase>>,
+    records: Vec<PhotoCullingRecord>,
+) -> Result<(), String> {
+    let Some(ref db) = *database.inner() else {
+        return Ok(());
+    };
+    let store = PhotoCacheStore::new(db.read_connection(), db.connection());
+    tauri::async_runtime::spawn_blocking(move || store.set_culling_states(&records))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn export_xmp_sidecars(
+    database: tauri::State<'_, Option<SharedDatabase>>,
+    paths: Vec<String>,
+) -> Result<usize, String> {
+    let culling_map: std::collections::HashMap<String, PhotoCullingRecord> =
+        if let Some(ref db) = *database.inner() {
+            let store = PhotoCacheStore::new(db.read_connection(), db.connection());
+            let lookup_paths = paths.clone();
+            tauri::async_runtime::spawn_blocking(move || store.get_culling_states(&lookup_paths))
+                .await
+                .map_err(|error| error.to_string())??
+                .into_iter()
+                .map(|record| (record.path.clone(), record))
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut written = 0usize;
+        let mut parents = std::collections::HashSet::new();
+        for raw_path in &paths {
+            let file_path = std::path::Path::new(raw_path);
+            if !file_path.is_file() {
+                continue;
+            }
+            let tags = commands::fs::read_file_tags(file_path);
+            let label = xmp_sidecar::finder_tags_to_xmp_label(&tags);
+            let (rating, flag) = culling_map
+                .get(raw_path)
+                .map(|r| (r.rating, r.flag.as_str()))
+                .unwrap_or((0, "none"));
+            if rating == 0 && flag == "none" && label.is_none() {
+                continue;
+            }
+            xmp_sidecar::write_xmp_sidecar(file_path, rating, flag, label)?;
+            written += 1;
+            if let Some(parent) = file_path.parent() {
+                parents.insert(parent.to_string_lossy().to_string());
+            }
+        }
+        for parent in parents {
+            cache::invalidate_dir_cache(&parent);
+        }
+        Ok(written)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// 搜索已索引的文件
@@ -1120,6 +1201,9 @@ pub fn run() {
             save_cached_photo_metadata,
             get_cached_photo_sharpness,
             save_cached_photo_sharpness,
+            get_photo_culling_states,
+            set_photo_culling_states,
+            export_xmp_sidecars,
             get_smart_files,
             get_index_status,
             open_url,

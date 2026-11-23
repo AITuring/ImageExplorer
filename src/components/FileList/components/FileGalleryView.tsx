@@ -1,10 +1,11 @@
-import { memo, useEffect, useMemo, useRef } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronLeft, ChevronRight, Columns2 } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Columns2, Star, XCircle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { FileActions, FileEntry } from "@/types";
 import { FileThumbnail } from "@/components/FileThumbnail";
 import { FinderTagDots } from "@/components/FinderTagDots";
+import { PhotoHistogram } from "@/components/PhotoHistogram";
 import { AppContextMenu } from "@/components/AppContextMenu";
 import { PhotoInspector } from "./PhotoInspector";
 import { SharpnessBadge } from "./PhotoDetails";
@@ -12,6 +13,8 @@ import { usePhotoMetadata } from "@/hooks/usePhotoMetadata";
 import { isAnalyzablePhoto } from "@/lib/photoAnalysis";
 import { preloadNeighborEntries } from "@/lib/imagePreload";
 import { FINDER_TAG_PRESETS, hasFinderTag } from "@/lib/finderTags";
+import { extractHistogramFromImageElement, type PhotoHistogramData } from "@/lib/histogramAnalysis";
+import { DEFAULT_CULLING_STATE, type PhotoCullingState, type PhotoFlag } from "@/lib/photoCulling";
 import type { VisibleSharpness } from "@/hooks/useVisibleSharpness";
 
 const FILMSTRIP_ITEM_WIDTH = 86;
@@ -23,10 +26,13 @@ interface FileGalleryViewProps {
   selectedFileEntries: FileEntry[];
   fileActions: FileActions;
   visibleSharpness: Map<string, VisibleSharpness>;
+  cullingMap?: ReadonlyMap<string, PhotoCullingState>;
   onSelect: (entry: FileEntry, index: number, event: React.MouseEvent) => void;
   onSelectSingle: (path: string, index: number) => void;
   onDoubleClick: (entry: FileEntry) => void;
   onToggleTag?: (entries: FileEntry[], tag: string) => void;
+  onSetRating?: (entry: FileEntry, rating: number) => void;
+  onSetFlag?: (entry: FileEntry, flag: PhotoFlag) => void;
   onCompare?: (entries: [FileEntry, FileEntry]) => void;
 }
 
@@ -34,6 +40,7 @@ const GalleryPreviewStage = memo(function GalleryPreviewStage({
   entry,
   positionLabel,
   verdict,
+  culling,
   canGoPrev,
   canGoNext,
   canCompare,
@@ -41,11 +48,14 @@ const GalleryPreviewStage = memo(function GalleryPreviewStage({
   onNext,
   onCompare,
   onToggleTag,
+  onSetRating,
+  onSetFlag,
   onDoubleClick,
 }: {
   entry: FileEntry;
   positionLabel: string;
   verdict?: VisibleSharpness;
+  culling: PhotoCullingState;
   canGoPrev: boolean;
   canGoNext: boolean;
   canCompare: boolean;
@@ -53,11 +63,60 @@ const GalleryPreviewStage = memo(function GalleryPreviewStage({
   onNext: () => void;
   onCompare?: () => void;
   onToggleTag?: (tag: string) => void;
+  onSetRating?: (rating: number) => void;
+  onSetFlag?: (flag: PhotoFlag) => void;
   onDoubleClick: (entry: FileEntry) => void;
 }) {
   const { t } = useTranslation();
   const metadata = usePhotoMetadata(entry, true);
   const isPhoto = isAnalyzablePhoto(entry);
+  const [showClippingOverlay, setShowClippingOverlay] = useState(false);
+  const [histogramState, setHistogramState] = useState<{
+    path: string;
+    histogram: PhotoHistogramData;
+    clippingMaskUrl: string | null;
+  } | null>(null);
+  const loadedImageRef = useRef<HTMLImageElement | null>(null);
+
+  const handlePreviewImageLoad = useCallback(
+    (img: HTMLImageElement) => {
+      loadedImageRef.current = img;
+      if (!isPhoto) return;
+      const extracted = extractHistogramFromImageElement(img, 256, showClippingOverlay);
+      if (extracted) {
+        setHistogramState({
+          path: entry.path,
+          histogram: extracted.histogram,
+          clippingMaskUrl: extracted.clippingMaskUrl,
+        });
+      }
+    },
+    [entry.path, isPhoto, showClippingOverlay]
+  );
+
+  const handleToggleClipping = useCallback(() => {
+    setShowClippingOverlay((prev) => {
+      const next = !prev;
+      const img = loadedImageRef.current;
+      if (next && img && isPhoto) {
+        const extracted = extractHistogramFromImageElement(img, 256, true);
+        if (extracted) {
+          setHistogramState({
+            path: entry.path,
+            histogram: extracted.histogram,
+            clippingMaskUrl: extracted.clippingMaskUrl,
+          });
+        }
+      }
+      return next;
+    });
+  }, [entry.path, isPhoto]);
+
+  const activeHistogram = histogramState?.path === entry.path ? histogramState.histogram : null;
+  const activeClippingUrl =
+    showClippingOverlay && histogramState?.path === entry.path
+      ? histogramState.clippingMaskUrl
+      : null;
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -67,14 +126,24 @@ const GalleryPreviewStage = memo(function GalleryPreviewStage({
           className="relative flex min-h-0 w-full flex-1 items-center justify-center"
           onDoubleClick={() => onDoubleClick(entry)}
         >
-          <FileThumbnail
-            key={entry.path}
-            entry={entry}
-            size={768}
-            requestSizeOverride={1600}
-            className="max-h-full max-w-full rounded-md object-contain shadow-sm"
-            fallbackClassName="h-28 w-28 text-muted-foreground"
-          />
+          <div className="relative flex max-h-full max-w-full items-center justify-center">
+            <FileThumbnail
+              key={entry.path}
+              entry={entry}
+              size={768}
+              requestSizeOverride={1600}
+              className="max-h-full max-w-full rounded-md object-contain shadow-sm"
+              fallbackClassName="h-28 w-28 text-muted-foreground"
+              onImageLoad={handlePreviewImageLoad}
+            />
+            {activeClippingUrl && (
+              <img
+                src={activeClippingUrl}
+                alt=""
+                className="pointer-events-none absolute inset-0 h-full w-full rounded-md object-contain"
+              />
+            )}
+          </div>
 
           {canGoPrev && (
             <button
@@ -136,6 +205,61 @@ const GalleryPreviewStage = memo(function GalleryPreviewStage({
               })}
             </div>
           )}
+          {isPhoto && onSetFlag && (
+            <div className="flex items-center gap-1 pl-1">
+              <button
+                type="button"
+                aria-pressed={culling.flag === "pick"}
+                title={`${t("file_list.culling.pick")} (P)`}
+                onClick={() => onSetFlag(culling.flag === "pick" ? "none" : "pick")}
+                className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] transition-colors ${
+                  culling.flag === "pick"
+                    ? "bg-emerald-500/20 font-medium text-emerald-700 dark:text-emerald-300"
+                    : "text-muted-foreground hover:bg-accent"
+                }`}
+              >
+                <Check className="h-3 w-3" aria-hidden="true" />
+                {t("file_list.culling.pick")}
+              </button>
+              <button
+                type="button"
+                aria-pressed={culling.flag === "reject"}
+                title={`${t("file_list.culling.reject")} (X)`}
+                onClick={() => onSetFlag(culling.flag === "reject" ? "none" : "reject")}
+                className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] transition-colors ${
+                  culling.flag === "reject"
+                    ? "bg-destructive/20 text-destructive font-medium"
+                    : "text-muted-foreground hover:bg-accent"
+                }`}
+              >
+                <XCircle className="h-3 w-3" aria-hidden="true" />
+                {t("file_list.culling.reject")}
+              </button>
+            </div>
+          )}
+          {isPhoto && onSetRating && (
+            <div
+              className="flex items-center gap-0.5 pl-1"
+              role="group"
+              aria-label={t("file_list.culling.rating_any")}
+            >
+              {[1, 2, 3, 4, 5].map((star) => (
+                <button
+                  key={star}
+                  type="button"
+                  onClick={() => onSetRating(culling.rating === star ? 0 : star)}
+                  aria-label={`${star}★`}
+                  className="text-muted-foreground p-0.5 transition-colors hover:text-amber-500"
+                >
+                  <Star
+                    className={`h-3.5 w-3.5 ${
+                      star <= culling.rating ? "fill-amber-400 text-amber-400" : ""
+                    }`}
+                  />
+                </button>
+              ))}
+            </div>
+          )}
           {canCompare && onCompare && (
             <button
               type="button"
@@ -149,11 +273,18 @@ const GalleryPreviewStage = memo(function GalleryPreviewStage({
         </div>
       </div>
 
-      {/* Right-side EXIF & metadata inspector */}
+      {/* Right-side RGB histogram + EXIF inspector */}
       <aside
-        className="border-border/50 hidden w-72 shrink-0 overflow-y-auto border-l p-4 lg:block"
+        className="border-border/50 hidden w-72 shrink-0 space-y-3 overflow-y-auto border-l p-4 lg:block"
         aria-label={t("file_list.preview")}
       >
+        {isPhoto && (
+          <PhotoHistogram
+            histogram={activeHistogram}
+            showClippingOverlay={showClippingOverlay}
+            onToggleClippingOverlay={handleToggleClipping}
+          />
+        )}
         <PhotoInspector key={entry.path} entry={entry} metadata={metadata} />
       </aside>
     </div>
@@ -167,10 +298,13 @@ export function FileGalleryView({
   selectedFileEntries,
   fileActions,
   visibleSharpness,
+  cullingMap,
   onSelect,
   onSelectSingle,
   onDoubleClick,
   onToggleTag,
+  onSetRating,
+  onSetFlag,
   onCompare,
 }: FileGalleryViewProps) {
   const { t } = useTranslation();
@@ -256,6 +390,7 @@ export function FileGalleryView({
             entry={activeEntry}
             positionLabel={`${activeIndex + 1} / ${entries.length}`}
             verdict={visibleSharpness.get(activeEntry.path)}
+            culling={cullingMap?.get(activeEntry.path) ?? DEFAULT_CULLING_STATE}
             canGoPrev={activeIndex > 0}
             canGoNext={activeIndex < entries.length - 1}
             canCompare={Boolean(comparePair && onCompare)}
@@ -269,6 +404,8 @@ export function FileGalleryView({
             }}
             onCompare={comparePair && onCompare ? () => onCompare(comparePair) : undefined}
             onToggleTag={onToggleTag ? (tag) => onToggleTag([activeEntry], tag) : undefined}
+            onSetRating={onSetRating ? (rating) => onSetRating(activeEntry, rating) : undefined}
+            onSetFlag={onSetFlag ? (flag) => onSetFlag(activeEntry, flag) : undefined}
             onDoubleClick={onDoubleClick}
           />
         </div>

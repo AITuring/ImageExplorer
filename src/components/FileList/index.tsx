@@ -11,6 +11,7 @@ import { QuickLook } from "@/components/QuickLook";
 import { SMART_FOLDER_PREFIX } from "@/constants/config";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentKeyboardCommandScope } from "@/lib/keyboardShortcuts";
 import { isRegisteredCommandEnabled } from "@/lib/commands";
 import { useFileSort } from "./hooks/useFileSort";
@@ -25,7 +26,15 @@ import { usePhotoAnalysis } from "@/hooks/usePhotoAnalysis";
 import { FolderSharpnessPanel } from "@/components/FolderSharpnessPanel";
 import { useVisibleSharpness } from "@/hooks/useVisibleSharpness";
 import { getPhotoGroupColor, isAnalyzablePhoto } from "@/lib/photoAnalysis";
-import { hydratePhotoMetadataCache } from "@/lib/photoMetadata";
+import {
+  getCachedPhotoMetadata,
+  hydratePhotoMetadataCache,
+  subscribeAnyPhotoMetadataUpdate,
+} from "@/lib/photoMetadata";
+import { usePhotoCulling } from "@/hooks/usePhotoCulling";
+import { exportXmpSidecars, updatePhotoCullingStates, type PhotoFlag } from "@/lib/photoCulling";
+import { computeAutoPickBest } from "@/lib/autoPickBest";
+import { enqueueFileOperation } from "@/lib/fileOperations";
 import {
   DEFAULT_FOLDER_FILTER,
   filterFolderEntries,
@@ -198,10 +207,40 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     viewportPriorityPaths
   );
 
-  const filteredEntries = useMemo(
-    () => filterFolderEntries(displayBaseEntries, folderFilter, visibleSharpness),
-    [displayBaseEntries, folderFilter, visibleSharpness]
-  );
+  const cullingMap = usePhotoCulling(entries);
+  const [metadataTick, setMetadataTick] = useState(0);
+  useEffect(() => {
+    return subscribeAnyPhotoMetadataUpdate(() => {
+      setMetadataTick((tick) => tick + 1);
+    });
+  }, []);
+
+  const { cameraOptions, lensOptions } = useMemo(() => {
+    void metadataTick;
+    const cameras = new Set<string>();
+    const lenses = new Set<string>();
+    for (const entry of displayBaseEntries) {
+      if (entry.is_dir) continue;
+      const meta = getCachedPhotoMetadata(entry);
+      if (meta?.model) cameras.add(meta.model);
+      if (meta?.lens) lenses.add(meta.lens);
+    }
+    return {
+      cameraOptions: [...cameras].sort(),
+      lensOptions: [...lenses].sort(),
+    };
+  }, [displayBaseEntries, metadataTick]);
+
+  const filteredEntries = useMemo(() => {
+    void metadataTick;
+    return filterFolderEntries(
+      displayBaseEntries,
+      folderFilter,
+      visibleSharpness,
+      cullingMap,
+      getCachedPhotoMetadata
+    );
+  }, [cullingMap, displayBaseEntries, folderFilter, metadataTick, visibleSharpness]);
 
   // 2. 排序
   const { sortField, sortDirection, handleSort, handleArrange, sortedEntries } =
@@ -954,6 +993,95 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   );
 
   // Loading 状态
+  const burstAutoPickPlan = useMemo(() => {
+    if (photoAnalysis.size === 0) {
+      return { groupCount: 0, bestPaths: [], rejectedPaths: [] };
+    }
+    const candidates = [];
+    for (const [path, record] of photoAnalysis) {
+      candidates.push({
+        path,
+        groupId: record.groupId,
+        focusConfidence: record.focusAnalysis.confidence,
+        focusKind: record.focusAnalysis.kind,
+        sharpnessVerdict: visibleSharpness.get(path),
+      });
+    }
+    return computeAutoPickBest(candidates);
+  }, [photoAnalysis, visibleSharpness]);
+
+  const handleSetRating = useCallback(
+    (target: FileEntry, rating: number) => {
+      const targets = expandPairedEntries([target], pairedCompanionsByPath);
+      void updatePhotoCullingStates(targets.map((item) => ({ path: item.path, rating })));
+    },
+    [pairedCompanionsByPath]
+  );
+
+  const handleSetFlag = useCallback(
+    (target: FileEntry, flag: PhotoFlag) => {
+      const targets = expandPairedEntries([target], pairedCompanionsByPath);
+      void updatePhotoCullingStates(targets.map((item) => ({ path: item.path, flag })));
+    },
+    [pairedCompanionsByPath]
+  );
+
+  const handleAutoPickBest = useCallback(() => {
+    if (burstAutoPickPlan.groupCount === 0) return;
+    const updates: Array<{ path: string; rating?: number; flag?: PhotoFlag }> = [];
+    for (const path of burstAutoPickPlan.bestPaths) {
+      updates.push({ path, flag: "pick", rating: 5 });
+    }
+    for (const path of burstAutoPickPlan.rejectedPaths) {
+      updates.push({ path, flag: "reject" });
+    }
+    void updatePhotoCullingStates(updates).then(() => {
+      alert(
+        t("file_list.culling.auto_pick_best_done", {
+          groups: burstAutoPickPlan.groupCount,
+          best: burstAutoPickPlan.bestPaths.length,
+          rejected: burstAutoPickPlan.rejectedPaths.length,
+        })
+      );
+    });
+  }, [burstAutoPickPlan, t]);
+
+  const handleExportXmp = useCallback(async () => {
+    const photoPaths = entries.filter(isAnalyzablePhoto).map((entry) => entry.path);
+    if (photoPaths.length === 0) return;
+    try {
+      const count = await exportXmpSidecars(photoPaths);
+      alert(
+        count > 0
+          ? t("file_list.culling.export_xmp_done", { count })
+          : t("file_list.culling.export_xmp_empty")
+      );
+      if (count > 0) loadEntries(true);
+    } catch (error) {
+      alert(t("file_list.error_operation", { error: String(error) }));
+    }
+  }, [entries, loadEntries, t]);
+
+  const handleExportFiltered = useCallback(async () => {
+    const expanded = expandPairedEntries(filteredEntries, pairedCompanionsByPath);
+    if (expanded.length === 0) return;
+    const selectedDest = await openFileDialog({
+      directory: true,
+      multiple: false,
+      defaultPath: currentPath.startsWith(SMART_FOLDER_PREFIX) ? undefined : currentPath,
+    });
+    if (typeof selectedDest !== "string" || !selectedDest) return;
+    try {
+      await enqueueFileOperation({
+        kind: "copy",
+        paths: expanded.map((entry) => entry.path),
+        destDir: selectedDest,
+      });
+    } catch (error) {
+      alert(t("file_list.error_operation", { error: String(error) }));
+    }
+  }, [currentPath, filteredEntries, pairedCompanionsByPath, t]);
+
   if (loading) {
     return (
       <div className="bg-background/60 flex h-full items-center justify-center">
@@ -1078,6 +1206,12 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                 totalCount={displayBaseEntries.length}
                 filteredCount={filteredEntries.length}
                 pairCount={pairingPreview.pairCount}
+                cameraOptions={cameraOptions}
+                lensOptions={lensOptions}
+                burstGroupCount={burstAutoPickPlan.groupCount}
+                onAutoPickBest={handleAutoPickBest}
+                onExportXmp={hasPhotosInFolder ? () => void handleExportXmp() : undefined}
+                onExportFiltered={() => void handleExportFiltered()}
                 inputRef={filterInputRef}
                 onClose={
                   !hasActiveFolderFilter(folderFilter)
@@ -1098,10 +1232,13 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
               selectedFileEntries={selectedFileEntries}
               fileActions={fileActions}
               visibleSharpness={visibleSharpness}
+              cullingMap={cullingMap}
               onSelect={(entry, index, event) => handleClick(entry, index, event)}
               onSelectSingle={selectSingle}
               onDoubleClick={handleOpen}
               onToggleTag={handleToggleTag}
+              onSetRating={handleSetRating}
+              onSetFlag={handleSetFlag}
               onCompare={(pair) => setComparePair(pair)}
             />
           ) : viewMode === "column" ? (
@@ -1336,8 +1473,11 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
           entry={quickLookEntry}
           entries={sortedEntries}
           photoAnalysis={photoAnalysis}
+          cullingState={quickLookEntry ? cullingMap.get(quickLookEntry.path) : undefined}
           onClose={() => setQuickLookEntry(null)}
           onToggleTag={(target, tag) => void handleToggleTag([target], tag)}
+          onSetRating={handleSetRating}
+          onSetFlag={handleSetFlag}
           onDelete={(target) => handleDelete([target])}
           onNavigate={(entry) => {
             const index = sortedEntries.findIndex((candidate) => candidate.path === entry.path);

@@ -74,12 +74,34 @@ function queueMetadataPersist(
   }
 }
 
+const anyMetadataSubscribers = new Set<() => void>();
+let anyMetadataNotifyScheduled = false;
+
+function scheduleAnyMetadataNotify() {
+  if (anyMetadataSubscribers.size === 0 || anyMetadataNotifyScheduled) return;
+  anyMetadataNotifyScheduled = true;
+  queueMicrotask(() => {
+    anyMetadataNotifyScheduled = false;
+    for (const listener of anyMetadataSubscribers) {
+      listener();
+    }
+  });
+}
+
 function notifyMetadataSubscribers(key: string, metadata: PhotoMetadata | null) {
+  scheduleAnyMetadataNotify();
   const listeners = metadataSubscribers.get(key);
   if (!listeners) return;
   for (const listener of listeners) {
     listener(metadata);
   }
+}
+
+export function subscribeAnyPhotoMetadataUpdate(listener: () => void): () => void {
+  anyMetadataSubscribers.add(listener);
+  return () => {
+    anyMetadataSubscribers.delete(listener);
+  };
 }
 
 export function subscribePhotoMetadataCache(

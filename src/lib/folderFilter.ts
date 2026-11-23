@@ -2,6 +2,7 @@ import { hasFinderTag } from "./finderTags.ts";
 
 export type FolderFormatFilter = "all" | "raw" | "jpeg" | "video";
 export type FolderSharpnessFilter = "all" | "sharp" | "soft";
+export type FolderFlagFilter = "all" | "pick" | "reject";
 
 export interface FolderFilterState {
   query: string;
@@ -9,6 +10,10 @@ export interface FolderFilterState {
   sharpness: FolderSharpnessFilter;
   tagId: string | null;
   pairRawJpeg: boolean;
+  minRating: number;
+  flag: FolderFlagFilter;
+  cameraModel: string | null;
+  lensModel: string | null;
 }
 
 export const DEFAULT_FOLDER_FILTER: FolderFilterState = {
@@ -17,6 +22,10 @@ export const DEFAULT_FOLDER_FILTER: FolderFilterState = {
   sharpness: "all",
   tagId: null,
   pairRawJpeg: false,
+  minRating: 0,
+  flag: "all",
+  cameraModel: null,
+  lensModel: null,
 };
 
 const RAW_EXTS = new Set([
@@ -49,12 +58,26 @@ export interface FilterableFolderEntry {
   tags?: string[];
 }
 
+export interface CullingStateLike {
+  rating: number;
+  flag: string;
+}
+
+export interface ExifMetadataLike {
+  model?: string | null;
+  lens?: string | null;
+}
+
 export function hasActiveFolderFilter(filter: FolderFilterState): boolean {
   return (
     filter.query.trim().length > 0 ||
     filter.format !== "all" ||
     filter.sharpness !== "all" ||
-    filter.tagId !== null
+    filter.tagId !== null ||
+    filter.minRating > 0 ||
+    filter.flag !== "all" ||
+    filter.cameraModel !== null ||
+    filter.lensModel !== null
   );
 }
 
@@ -67,7 +90,9 @@ function getEntryExtension(entry: FilterableFolderEntry): string {
 export function filterFolderEntries<T extends FilterableFolderEntry>(
   entries: T[],
   filter: FolderFilterState,
-  sharpnessMap?: ReadonlyMap<string, string>
+  sharpnessMap?: ReadonlyMap<string, string>,
+  cullingMap?: ReadonlyMap<string, CullingStateLike>,
+  metadataLookup?: (entry: T) => ExifMetadataLike | null | undefined
 ): T[] {
   if (!hasActiveFolderFilter(filter)) return entries;
 
@@ -94,6 +119,29 @@ export function filterFolderEntries<T extends FilterableFolderEntry>(
 
     if (filter.tagId !== null && !hasFinderTag(entry.tags, filter.tagId)) {
       return false;
+    }
+
+    if (filter.minRating > 0) {
+      if (entry.is_dir) return false;
+      const rating = cullingMap?.get(entry.path)?.rating ?? 0;
+      if (rating < filter.minRating) return false;
+    }
+
+    if (filter.flag !== "all") {
+      if (entry.is_dir) return false;
+      const flag = cullingMap?.get(entry.path)?.flag ?? "none";
+      if (flag !== filter.flag) return false;
+    }
+
+    if (filter.cameraModel !== null || filter.lensModel !== null) {
+      if (entry.is_dir) return false;
+      const meta = metadataLookup?.(entry);
+      if (filter.cameraModel !== null && meta?.model !== filter.cameraModel) {
+        return false;
+      }
+      if (filter.lensModel !== null && meta?.lens !== filter.lensModel) {
+        return false;
+      }
     }
 
     return true;

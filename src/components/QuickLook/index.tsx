@@ -14,10 +14,21 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
-import { X, ExternalLink, File, Loader2, ChevronLeft, ChevronRight } from "lucide-react";
+import {
+  X,
+  ExternalLink,
+  File,
+  Loader2,
+  ChevronLeft,
+  ChevronRight,
+  Check,
+  XCircle,
+  Star,
+} from "lucide-react";
 import { SmartIcon } from "@/components/SmartIcon";
 import { FileThumbnail } from "@/components/FileThumbnail";
 import { FocusRegionOverlay } from "@/components/FocusRegionOverlay";
+import { PhotoHistogram } from "@/components/PhotoHistogram";
 import { SharpnessInspectorToolbar } from "@/components/SharpnessInspectorToolbar";
 import { SharpnessSelectionOverlay } from "@/components/SharpnessSelectionOverlay";
 import {
@@ -55,14 +66,19 @@ import { formatFileSize, formatDate } from "@/utils/format";
 import { RAW_IMAGE_EXTENSIONS } from "@/constants/fileTypes";
 import { isInteractiveKeyboardTarget, shouldIgnoreKeyboardCommand } from "@/lib/keyboardShortcuts";
 import { FINDER_TAG_PRESETS } from "@/lib/finderTags";
+import { extractHistogramFromImageElement, type PhotoHistogramData } from "@/lib/histogramAnalysis";
+import { DEFAULT_CULLING_STATE, type PhotoCullingState, type PhotoFlag } from "@/lib/photoCulling";
 
 interface QuickLookProps {
   entry: FileEntry | null;
   entries: FileEntry[];
   photoAnalysis?: ReadonlyMap<string, PhotoAnalysisRecord>;
+  cullingState?: PhotoCullingState;
   onClose: () => void;
   onNavigate: (entry: FileEntry) => void;
   onToggleTag?: (entry: FileEntry, tag: string) => void;
+  onSetRating?: (entry: FileEntry, rating: number) => void;
+  onSetFlag?: (entry: FileEntry, flag: PhotoFlag) => void;
   onDelete?: (entry: FileEntry) => Promise<void>;
 }
 
@@ -974,12 +990,20 @@ export function QuickLook({
   entry,
   entries,
   photoAnalysis,
+  cullingState,
   onClose,
   onNavigate,
   onToggleTag,
+  onSetRating,
+  onSetFlag,
   onDelete,
 }: QuickLookProps) {
   const { t } = useTranslation();
+  const activeCulling = cullingState ?? DEFAULT_CULLING_STATE;
+  const [histogramRecord, setHistogramRecord] = useState<{
+    path: string;
+    histogram: PhotoHistogramData;
+  } | null>(null);
   const isOpen = Boolean(entry);
   const entryPath = entry?.path ?? null;
   const entryModified = entry?.modified ?? 0;
@@ -1376,6 +1400,45 @@ export function QuickLook({
       }
 
       if (
+        onSetFlag &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey &&
+        (e.key === "p" ||
+          e.key === "P" ||
+          e.key === "x" ||
+          e.key === "X" ||
+          e.key === "u" ||
+          e.key === "U")
+      ) {
+        e.preventDefault();
+        const lower = e.key.toLowerCase();
+        if (lower === "p") {
+          onSetFlag(entry, activeCulling.flag === "pick" ? "none" : "pick");
+        } else if (lower === "x") {
+          onSetFlag(entry, activeCulling.flag === "reject" ? "none" : "reject");
+        } else {
+          onSetFlag(entry, "none");
+        }
+        return;
+      }
+
+      if (
+        onSetRating &&
+        e.shiftKey &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        /^Digit[0-5]$/.test(e.code)
+      ) {
+        e.preventDefault();
+        const star = Number(e.code.slice(5));
+        onSetRating(entry, star === activeCulling.rating ? 0 : star);
+        return;
+      }
+
+      if (
         onDelete &&
         !entry.readonly &&
         (e.metaKey || e.ctrlKey) &&
@@ -1415,7 +1478,20 @@ export function QuickLook({
         (el as HTMLMediaElement).pause();
       });
     };
-  }, [canNavigate, entry, nextEntry, onClose, onDelete, onNavigate, onToggleTag, previousEntry]);
+  }, [
+    activeCulling.flag,
+    activeCulling.rating,
+    canNavigate,
+    entry,
+    nextEntry,
+    onClose,
+    onDelete,
+    onNavigate,
+    onSetFlag,
+    onSetRating,
+    onToggleTag,
+    previousEntry,
+  ]);
 
   useEffect(() => {
     // sips 不支持部分 RAW 格式，且在 macOS 上可能启动一个失败的子进程；
@@ -1652,7 +1728,29 @@ export function QuickLook({
     setError(null);
   }, [entryPath]);
 
+  // Compute compact RGB histogram from the thumbnail URL asynchronously without
+  // blocking QuickLook zoom/pan interactions.
+  useEffect(() => {
+    if (!entryPath || previewType !== "image") return;
+    const controller = new AbortController();
+    const url = buildFileThumbnailUrl(entryPath, entryModified, entrySize, 384, true, false);
+    void loadHtmlImage(url, controller.signal)
+      .then((img) => {
+        if (controller.signal.aborted) return;
+        const extracted = extractHistogramFromImageElement(img, 256, false);
+        if (extracted) {
+          setHistogramRecord({ path: entryPath, histogram: extracted.histogram });
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      controller.abort();
+    };
+  }, [entryModified, entryPath, entrySize, previewType]);
+
   if (!entry) return null;
+
+  const activeHistogram = histogramRecord?.path === entryPath ? histogramRecord.histogram : null;
 
   const renderPreview = () => {
     if (loading) {
@@ -1702,11 +1800,20 @@ export function QuickLook({
                 cameraAfMetadata={cameraAfMetadata}
               />
             </div>
-            <FocusAnalysisDetails
-              analysis={photoAnalysis?.get(entry.path)}
-              cameraAfMetadata={cameraAfMetadata}
-            />
-            <PhotoMetadataPanel metadata={photoMetadata} />
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0 flex-1 space-y-1">
+                <FocusAnalysisDetails
+                  analysis={photoAnalysis?.get(entry.path)}
+                  cameraAfMetadata={cameraAfMetadata}
+                />
+                <PhotoMetadataPanel metadata={photoMetadata} />
+              </div>
+              {activeHistogram && (
+                <div className="w-48 shrink-0">
+                  <PhotoHistogram histogram={activeHistogram} compact />
+                </div>
+              )}
+            </div>
           </div>
         );
 
@@ -1873,14 +1980,72 @@ export function QuickLook({
               <span ref={zoomIndicatorRef}>{previewType === "image" ? " 100%" : ""}</span>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={handleOpen}
-            className="text-primary hover:text-primary/80 focus-visible:ring-ring flex h-8 items-center gap-1 rounded-md px-1 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:outline-none"
-          >
-            <ExternalLink className="h-4 w-4" aria-hidden="true" />
-            {t("common.quick_look.open")}
-          </button>
+          <div className="flex items-center gap-2">
+            {previewType === "image" && onSetFlag && (
+              <div className="hidden items-center gap-1 sm:flex">
+                <button
+                  type="button"
+                  aria-pressed={activeCulling.flag === "pick"}
+                  title={`${t("file_list.culling.pick")} (P)`}
+                  onClick={() => onSetFlag(entry, activeCulling.flag === "pick" ? "none" : "pick")}
+                  className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs transition-colors ${
+                    activeCulling.flag === "pick"
+                      ? "bg-emerald-500/20 font-medium text-emerald-700 dark:text-emerald-300"
+                      : "text-muted-foreground hover:bg-accent"
+                  }`}
+                >
+                  <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={activeCulling.flag === "reject"}
+                  title={`${t("file_list.culling.reject")} (X)`}
+                  onClick={() =>
+                    onSetFlag(entry, activeCulling.flag === "reject" ? "none" : "reject")
+                  }
+                  className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs transition-colors ${
+                    activeCulling.flag === "reject"
+                      ? "bg-destructive/20 text-destructive font-medium"
+                      : "text-muted-foreground hover:bg-accent"
+                  }`}
+                >
+                  <XCircle className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+              </div>
+            )}
+            {previewType === "image" && onSetRating && (
+              <div
+                className="hidden items-center gap-0.5 md:flex"
+                title="⇧0–⇧5"
+                role="group"
+                aria-label={t("file_list.culling.rating_any")}
+              >
+                {[1, 2, 3, 4, 5].map((star) => (
+                  <button
+                    key={star}
+                    type="button"
+                    onClick={() => onSetRating(entry, activeCulling.rating === star ? 0 : star)}
+                    aria-label={`${star}★`}
+                    className="text-muted-foreground p-0.5 transition-colors hover:text-amber-500"
+                  >
+                    <Star
+                      className={`h-3.5 w-3.5 ${
+                        star <= activeCulling.rating ? "fill-amber-400 text-amber-400" : ""
+                      }`}
+                    />
+                  </button>
+                ))}
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={handleOpen}
+              className="text-primary hover:text-primary/80 focus-visible:ring-ring flex h-8 items-center gap-1 rounded-md px-1 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:outline-none"
+            >
+              <ExternalLink className="h-4 w-4" aria-hidden="true" />
+              {t("common.quick_look.open")}
+            </button>
+          </div>
         </div>
 
         {/* Content */}
