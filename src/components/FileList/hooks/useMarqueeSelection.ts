@@ -7,6 +7,13 @@ export interface MarqueeRect {
   height: number;
 }
 
+interface ContentBounds {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
 interface UseMarqueeSelectionOptions {
   containerRef: React.RefObject<HTMLDivElement | null>;
   enabled: boolean;
@@ -16,11 +23,15 @@ interface UseMarqueeSelectionOptions {
 }
 
 const DRAG_THRESHOLD_PX = 4;
+const AUTO_SCROLL_EDGE_PX = 36;
+const AUTO_SCROLL_MAX_SPEED_PX = 18;
 
 /**
  * Finder-style rubber-band marquee selection for scrollable icon/list containers.
- * Supports Cmd/Shift additive selection and works seamlessly with virtualized items
- * marked with `data-marquee-path`.
+ * - Supports Cmd/Shift additive selection.
+ * - Auto-scrolls smoothly when dragging near top/bottom edges.
+ * - Caches content-space bounding boxes during the drag so virtualized items
+ *   that unmount off-screen stay accurately selected/deselected.
  */
 export function useMarqueeSelection({
   containerRef,
@@ -57,7 +68,6 @@ export function useMarqueeSelection({
       }
 
       const rect = container.getBoundingClientRect();
-      // Ignore clicks on the native vertical/horizontal scrollbar track.
       if (
         event.clientX > rect.left + container.clientWidth ||
         event.clientY > rect.top + container.clientHeight
@@ -69,46 +79,103 @@ export function useMarqueeSelection({
       const baseSelection = additive ? selectedPathsRef.current.slice() : [];
       const startContentX = event.clientX - rect.left + container.scrollLeft;
       const startContentY = event.clientY - rect.top + container.scrollTop;
+      const seenItemBounds = new Map<string, ContentBounds>();
       let startedDragging = false;
       let rafId = 0;
       let latestClientX = event.clientX;
       let latestClientY = event.clientY;
+      let active = true;
 
-      const updateSelection = () => {
+      const computeAutoScrollDelta = (containerRect: DOMRect): number => {
+        if (latestClientY < containerRect.top + AUTO_SCROLL_EDGE_PX) {
+          const ratio = Math.min(
+            1,
+            (containerRect.top + AUTO_SCROLL_EDGE_PX - latestClientY) / AUTO_SCROLL_EDGE_PX
+          );
+          return -Math.max(4, Math.round(ratio * AUTO_SCROLL_MAX_SPEED_PX));
+        }
+        if (latestClientY > containerRect.bottom - AUTO_SCROLL_EDGE_PX) {
+          const ratio = Math.min(
+            1,
+            (latestClientY - (containerRect.bottom - AUTO_SCROLL_EDGE_PX)) / AUTO_SCROLL_EDGE_PX
+          );
+          return Math.max(4, Math.round(ratio * AUTO_SCROLL_MAX_SPEED_PX));
+        }
+        return 0;
+      };
+
+      const step = () => {
         rafId = 0;
+        if (!active) return;
+
         const containerRect = container.getBoundingClientRect();
         const currentContentX = latestClientX - containerRect.left + container.scrollLeft;
         const currentContentY = latestClientY - containerRect.top + container.scrollTop;
 
         const left = Math.min(startContentX, currentContentX);
         const top = Math.min(startContentY, currentContentY);
-        const width = Math.abs(currentContentX - startContentX);
-        const height = Math.abs(currentContentY - startContentY);
+        const right = Math.max(startContentX, currentContentX);
+        const bottom = Math.max(startContentY, currentContentY);
+        const width = right - left;
+        const height = bottom - top;
 
         if (!startedDragging && width < DRAG_THRESHOLD_PX && height < DRAG_THRESHOLD_PX) {
           return;
         }
         startedDragging = true;
-        setMarqueeRect({ left, top, width, height });
 
-        // Compute marquee box in viewport coordinates to test against mounted items.
-        const viewLeft = left - container.scrollLeft + containerRect.left;
-        const viewTop = top - container.scrollTop + containerRect.top;
-        const viewRight = viewLeft + width;
-        const viewBottom = viewTop + height;
+        // Auto-scroll when pointer approaches top/bottom container edge.
+        const scrollDelta = computeAutoScrollDelta(containerRect);
+        if (scrollDelta !== 0) {
+          const previousScrollTop = container.scrollTop;
+          container.scrollTop = Math.max(
+            0,
+            Math.min(
+              container.scrollHeight - container.clientHeight,
+              container.scrollTop + scrollDelta
+            )
+          );
+          if (container.scrollTop !== previousScrollTop) {
+            rafId = window.requestAnimationFrame(step);
+          }
+        }
 
-        const hitPaths: string[] = [];
+        const updatedContentY = latestClientY - containerRect.top + container.scrollTop;
+        const boxLeft = Math.min(startContentX, currentContentX);
+        const boxTop = Math.min(startContentY, updatedContentY);
+        const boxRight = Math.max(startContentX, currentContentX);
+        const boxBottom = Math.max(startContentY, updatedContentY);
+
+        setMarqueeRect({
+          left: boxLeft,
+          top: boxTop,
+          width: boxRight - boxLeft,
+          height: boxBottom - boxTop,
+        });
+
+        // Update cached content-space bounds for all currently mounted virtual items.
         const nodes = container.querySelectorAll<HTMLElement>("[data-marquee-path]");
         for (const node of nodes) {
+          const path = node.dataset.marqueePath;
+          if (!path) continue;
           const itemRect = node.getBoundingClientRect();
-          const intersects =
-            itemRect.right >= viewLeft &&
-            itemRect.left <= viewRight &&
-            itemRect.bottom >= viewTop &&
-            itemRect.top <= viewBottom;
-          if (intersects) {
-            const path = node.dataset.marqueePath;
-            if (path) hitPaths.push(path);
+          seenItemBounds.set(path, {
+            left: itemRect.left - containerRect.left + container.scrollLeft,
+            top: itemRect.top - containerRect.top + container.scrollTop,
+            right: itemRect.right - containerRect.left + container.scrollLeft,
+            bottom: itemRect.bottom - containerRect.top + container.scrollTop,
+          });
+        }
+
+        const hitPaths: string[] = [];
+        for (const [path, bounds] of seenItemBounds.entries()) {
+          if (
+            bounds.right >= boxLeft &&
+            bounds.left <= boxRight &&
+            bounds.bottom >= boxTop &&
+            bounds.top <= boxBottom
+          ) {
+            hitPaths.push(path);
           }
         }
 
@@ -120,11 +187,12 @@ export function useMarqueeSelection({
         latestClientX = moveEvent.clientX;
         latestClientY = moveEvent.clientY;
         if (rafId === 0) {
-          rafId = window.requestAnimationFrame(updateSelection);
+          rafId = window.requestAnimationFrame(step);
         }
       };
 
       const handleMouseUp = () => {
+        active = false;
         if (rafId !== 0) {
           window.cancelAnimationFrame(rafId);
           rafId = 0;

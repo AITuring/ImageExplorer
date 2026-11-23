@@ -5,7 +5,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useTabs } from "@/hooks/useTabs";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { TabItem } from "./TabItem";
 import { TabContextMenu } from "./TabContextMenu";
 import { NewTabButton } from "./NewTabButton";
@@ -250,7 +250,6 @@ export function TabBar() {
           dropHandledRef.current = true; // 跨窗口传输，标记为已处理
 
           // 通知源窗口关闭 Tab
-          const { emit } = await import("@tauri-apps/api/event");
           await emit("tab-transfer-complete", {
             tabId: tab.id,
             fromWindowId,

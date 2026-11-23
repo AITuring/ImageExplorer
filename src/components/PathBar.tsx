@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { ChevronRight, Folder, HardDrive } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { SMART_FOLDER_PREFIX } from "@/constants/config";
+import { getFinderTagColor, matchFinderTagPreset } from "@/lib/finderTags";
 import { useStatusBar } from "@/stores/statusBar";
 import { ICON_SIZE_MAX, ICON_SIZE_MIN, useViewMode } from "@/stores/viewMode";
 import { formatFileSize } from "@/utils/format";
@@ -29,6 +30,14 @@ export function PathBar({ path, onNavigate }: PathBarProps) {
   const { viewMode, iconSize, setIconSize } = useViewMode();
   const [availableBytes, setAvailableBytes] = useState<number | null>(null);
   const isSmartFolder = path.startsWith(SMART_FOLDER_PREFIX);
+  const tagSmartPrefix = `${SMART_FOLDER_PREFIX}tag:`;
+  const smartTagName = path.startsWith(tagSmartPrefix) ? path.slice(tagSmartPrefix.length) : null;
+  const smartTagPreset = smartTagName ? matchFinderTagPreset(smartTagName) : undefined;
+  const smartTagLabel = smartTagName
+    ? smartTagPreset
+      ? t(smartTagPreset.labelKey)
+      : smartTagName
+    : null;
 
   useEffect(() => {
     const element = scrollRef.current;
@@ -115,6 +124,17 @@ export function PathBar({ path, onNavigate }: PathBarProps) {
         >
           <HardDrive size={13} aria-hidden="true" />
         </button>
+        {smartTagName && smartTagLabel && (
+          <span className="flex shrink-0 items-center gap-1.5 px-1">
+            <ChevronRight size={11} className="opacity-40" aria-hidden="true" />
+            <span
+              className="h-2.5 w-2.5 rounded-full ring-1 ring-black/15 dark:ring-white/20"
+              style={{ backgroundColor: getFinderTagColor(smartTagName) }}
+              aria-hidden="true"
+            />
+            <span className="text-foreground font-medium">{smartTagLabel}</span>
+          </span>
+        )}
         {!isSmartFolder &&
           segments.map((name, index) => {
             const destination = "/" + segments.slice(0, index + 1).join("/");

@@ -28,6 +28,7 @@ interface FileGalleryViewProps {
 
 const GalleryPreviewStage = memo(function GalleryPreviewStage({
   entry,
+  positionLabel,
   verdict,
   canGoPrev,
   canGoNext,
@@ -36,6 +37,7 @@ const GalleryPreviewStage = memo(function GalleryPreviewStage({
   onDoubleClick,
 }: {
   entry: FileEntry;
+  positionLabel: string;
   verdict?: VisibleSharpness;
   canGoPrev: boolean;
   canGoNext: boolean;
@@ -91,6 +93,9 @@ const GalleryPreviewStage = memo(function GalleryPreviewStage({
         <div className="mt-2 flex max-w-full items-center gap-2">
           <FinderTagDots tags={entry.tags} size="md" />
           <span className="truncate text-sm font-medium">{entry.name}</span>
+          <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
+            {positionLabel}
+          </span>
           {isPhoto && <SharpnessBadge verdict={verdict} />}
         </div>
       </div>
@@ -171,6 +176,7 @@ export function FileGalleryView({
         <div className="flex min-h-0 flex-1 overflow-hidden">
           <GalleryPreviewStage
             entry={activeEntry}
+            positionLabel={`${activeIndex + 1} / ${entries.length}`}
             verdict={visibleSharpness.get(activeEntry.path)}
             canGoPrev={activeIndex > 0}
             canGoNext={activeIndex < entries.length - 1}
@@ -190,6 +196,13 @@ export function FileGalleryView({
       {/* Bottom virtualized horizontal filmstrip */}
       <div
         ref={filmstripRef}
+        onWheel={(event) => {
+          const el = filmstripRef.current;
+          if (!el) return;
+          if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+            el.scrollLeft += event.deltaY;
+          }
+        }}
         className="border-border/50 bg-muted/20 h-28 shrink-0 overflow-x-auto overflow-y-hidden border-t px-3 py-2"
         role="listbox"
         aria-label={t("common.view_gallery")}

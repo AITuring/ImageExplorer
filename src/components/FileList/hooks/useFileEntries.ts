@@ -178,10 +178,23 @@ export function useFileEntries(currentPath: string): UseFileEntriesResult {
       }
     };
 
+    const handleTagsUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ parentPath?: string }>).detail;
+      if (
+        detail?.parentPath === currentPath ||
+        currentPath.startsWith(`${SMART_FOLDER_PREFIX}tag:`)
+      ) {
+        invalidateCache(currentPath);
+        void loadEntries(false, true);
+      }
+    };
+    window.addEventListener("finder-tags-updated", handleTagsUpdated);
+
     setup().catch(console.error);
 
     return () => {
       cancelled = true;
+      window.removeEventListener("finder-tags-updated", handleTagsUpdated);
       // Requests from the previous directory cannot update the new location.
       requestGeneration.invalidate();
       unlistenDirChangeFn?.();

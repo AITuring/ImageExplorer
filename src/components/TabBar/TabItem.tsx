@@ -5,6 +5,8 @@
 import { X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
+import { SMART_FOLDER_PREFIX } from "@/constants/config";
+import { getFinderTagColor, matchFinderTagPreset } from "@/lib/finderTags";
 import type { Tab } from "@/types/tabs";
 
 interface TabItemProps {
@@ -50,6 +52,16 @@ export function TabItem({
 
   // 计算是否显示插入指示器
   const showInsertBefore = dragOverIndex === index && !isDragging;
+  const tagSmartPrefix = `${SMART_FOLDER_PREFIX}tag:`;
+  const smartTagName = tab.path.startsWith(tagSmartPrefix)
+    ? tab.path.slice(tagSmartPrefix.length)
+    : null;
+  const smartTagPreset = smartTagName ? matchFinderTagPreset(smartTagName) : undefined;
+  const displayTitle = smartTagName
+    ? smartTagPreset
+      ? t(smartTagPreset.labelKey)
+      : smartTagName
+    : tab.title;
 
   return (
     <div
@@ -65,7 +77,7 @@ export function TabItem({
         showInsertBefore && "ml-6"
       )}
       onClick={onSelect}
-      title={tab.path}
+      title={smartTagName ? displayTitle : tab.path}
       draggable
       onDragStart={(e) => onDragStart(e, index)}
       onDragOver={(e) => onDragOver(e, index)}
@@ -77,8 +89,16 @@ export function TabItem({
         <div className="bg-primary absolute top-1 bottom-1 -left-4 w-0.5 rounded-full" />
       )}
 
+      {smartTagName && (
+        <span
+          className="h-2.5 w-2.5 shrink-0 rounded-full ring-1 ring-black/15 dark:ring-white/20"
+          style={{ backgroundColor: getFinderTagColor(smartTagName) }}
+          aria-hidden="true"
+        />
+      )}
+
       {/* Tab 标题 */}
-      <span className="flex-1 truncate font-medium">{tab.title}</span>
+      <span className="flex-1 truncate font-medium">{displayTitle}</span>
 
       {/* 关闭按钮 */}
       {canClose && (

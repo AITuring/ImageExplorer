@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { emit } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { Loader2 } from "lucide-react";
 import { Sidebar } from "@/components/Sidebar";
 import { PathBar } from "@/components/PathBar";
@@ -117,7 +117,6 @@ function App() {
     let unlisten: () => void;
 
     const setupListener = async () => {
-      const { listen } = await import("@tauri-apps/api/event");
       unlisten = await listen<{ tabId: string; fromWindowId: string }>(
         "tab-transfer-complete",
         async (event) => {
@@ -157,7 +156,6 @@ function App() {
         addTransferredTab(payload.tab);
 
         // 通知源窗口关闭对应 Tab
-        const { emit } = await import("@tauri-apps/api/event");
         await emit("tab-transfer-complete", {
           tabId: payload.tab.id,
           fromWindowId: payload.fromWindowId,

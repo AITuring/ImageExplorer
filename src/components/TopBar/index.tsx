@@ -30,7 +30,7 @@ import { isCommandEnabled, runCommand } from "@/lib/commands";
 import { registerKeyboardCommands } from "@/lib/keyboardShortcuts";
 import { viewModeCommands } from "@/lib/viewModeCommands";
 import { PhotoAnalysisProgressIndicator } from "@/components/PhotoAnalysisProgressIndicator";
-import { matchFinderTagPreset } from "@/lib/finderTags";
+import { getFinderTagColor, matchFinderTagPreset } from "@/lib/finderTags";
 import { filterSearchResultsByKind, type SearchKindFilter } from "@/lib/searchFilter";
 import {
   enqueueCompressOperation,
@@ -112,6 +112,8 @@ export function TopBar({ onNavigate }: TopBarProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const cancelledEditRef = useRef(false);
   const [homeDir, setHomeDir] = useState("");
+  const [pathSuggestions, setPathSuggestions] = useState<string[]>([]);
+  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const [isSearching, setIsSearching] = useState(false);
   const [showResults, setShowResults] = useState(false);
   const [selectedSearchPaths, setSelectedSearchPaths] = useState<string[]>([]);
@@ -133,6 +135,51 @@ export function TopBar({ onNavigate }: TopBarProps) {
       .then(setHomeDir)
       .catch(() => undefined);
   }, []);
+
+  // Finder ⌘⇧G（前往文件夹）路径自动补全建议
+  useEffect(() => {
+    if (!isEditing) return;
+
+    let cancelled = false;
+    const raw = editValue.trim();
+    const expanded =
+      homeDir && (raw === "~" || raw.startsWith("~/")) ? `${homeDir}${raw.slice(1)}` : raw;
+    if (!expanded.startsWith("/")) {
+      return;
+    }
+
+    const lastSlash = expanded.lastIndexOf("/");
+    const parentDir = lastSlash <= 0 ? "/" : expanded.slice(0, lastSlash);
+    const prefix = expanded.slice(lastSlash + 1).toLowerCase();
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const entries = await invoke<FileEntry[]>("get_entries", {
+          path: parentDir,
+          forceRefresh: false,
+        });
+        if (cancelled) return;
+        const matches = entries
+          .filter(
+            (entry) =>
+              entry.is_dir &&
+              (showHiddenFiles || !entry.is_hidden) &&
+              entry.name.toLowerCase().startsWith(prefix)
+          )
+          .slice(0, 8)
+          .map((entry) => entry.path);
+        setPathSuggestions(matches);
+        setActiveSuggestionIndex(0);
+      } catch {
+        if (!cancelled) setPathSuggestions([]);
+      }
+    }, 80);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [editValue, homeDir, isEditing, showHiddenFiles]);
 
   // Finder ⌘⇧G（前往文件夹）快捷键
   useEffect(
@@ -614,14 +661,16 @@ export function TopBar({ onNavigate }: TopBarProps) {
 
   const pathSegments = currentPath.split("/").filter(Boolean);
 
-  const handleSubmit = () => {
+  const handleSubmit = (overridePath?: string) => {
     if (cancelledEditRef.current) {
       cancelledEditRef.current = false;
       setIsEditing(false);
+      setPathSuggestions([]);
       return;
     }
     setIsEditing(false);
-    const trimmed = editValue.trim();
+    setPathSuggestions([]);
+    const trimmed = (overridePath ?? editValue).trim();
     if (!trimmed) {
       setEditValue(currentPath);
       return;
@@ -640,6 +689,7 @@ export function TopBar({ onNavigate }: TopBarProps) {
   const handleCancelEdit = () => {
     cancelledEditRef.current = true;
     setEditValue(currentPath);
+    setPathSuggestions([]);
     setIsEditing(false);
   };
 
@@ -733,28 +783,81 @@ export function TopBar({ onNavigate }: TopBarProps) {
           </button>
         </div>
         {/* 地址栏 */}
-        <div className="finder-location flex min-w-0 flex-1 items-center">
+        <div className="finder-location relative flex min-w-0 flex-1 items-center">
           {isEditing ? (
-            <AppContextMenu type="text-input" textInputActions={textInputActions} asChild>
-              <input
-                ref={inputRef}
-                type="text"
-                value={editValue}
-                onChange={(e) => setEditValue(e.target.value)}
-                onBlur={handleSubmit}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    handleSubmit();
-                  } else if (e.key === "Escape") {
-                    e.preventDefault();
-                    handleCancelEdit();
-                  }
-                }}
-                className="bg-accent/50 h-8 w-full rounded-md border-none px-3 text-sm shadow-[0_0_0_2px_rgba(0,0,0,0.08)] outline-none"
-                autoFocus
-              />
-            </AppContextMenu>
+            <div className="relative w-full">
+              <AppContextMenu type="text-input" textInputActions={textInputActions} asChild>
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  onBlur={() => handleSubmit()}
+                  onKeyDown={(e) => {
+                    if (e.key === "Tab" && pathSuggestions.length > 0) {
+                      e.preventDefault();
+                      const chosen = pathSuggestions[activeSuggestionIndex] ?? pathSuggestions[0];
+                      if (chosen) {
+                        setEditValue(chosen.endsWith("/") ? chosen : `${chosen}/`);
+                      }
+                    } else if (e.key === "ArrowDown" && pathSuggestions.length > 0) {
+                      e.preventDefault();
+                      setActiveSuggestionIndex((idx) => (idx + 1) % pathSuggestions.length);
+                    } else if (e.key === "ArrowUp" && pathSuggestions.length > 0) {
+                      e.preventDefault();
+                      setActiveSuggestionIndex(
+                        (idx) => (idx - 1 + pathSuggestions.length) % pathSuggestions.length
+                      );
+                    } else if (e.key === "Enter") {
+                      e.preventDefault();
+                      const chosen =
+                        pathSuggestions.length > 0 &&
+                        pathSuggestions[activeSuggestionIndex] &&
+                        editValue.trim() !== currentPath &&
+                        !editValue.endsWith("/")
+                          ? pathSuggestions[activeSuggestionIndex]
+                          : undefined;
+                      handleSubmit(chosen);
+                    } else if (e.key === "Escape") {
+                      e.preventDefault();
+                      handleCancelEdit();
+                    }
+                  }}
+                  className="bg-accent/50 h-8 w-full rounded-md border-none px-3 text-sm shadow-[0_0_0_2px_rgba(0,0,0,0.08)] outline-none"
+                  autoFocus
+                />
+              </AppContextMenu>
+              {pathSuggestions.length > 0 && (
+                <ul
+                  role="listbox"
+                  className="finder-popover bg-popover text-popover-foreground absolute top-full left-0 z-[110] mt-1 max-h-56 w-full overflow-y-auto rounded-md border py-1 shadow-xl"
+                >
+                  {pathSuggestions.map((suggestion, index) => (
+                    <li
+                      key={suggestion}
+                      role="option"
+                      aria-selected={index === activeSuggestionIndex}
+                    >
+                      <button
+                        type="button"
+                        onMouseDown={(event) => {
+                          event.preventDefault();
+                          handleSubmit(suggestion);
+                        }}
+                        className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors ${
+                          index === activeSuggestionIndex
+                            ? "bg-accent text-accent-foreground"
+                            : "hover:bg-accent/60"
+                        }`}
+                      >
+                        <Folder className="text-muted-foreground h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate font-mono">{suggestion}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           ) : (
             <AppContextMenu type="text-input" textInputActions={addressBarActions} asChild>
               <button
@@ -764,7 +867,19 @@ export function TopBar({ onNavigate }: TopBarProps) {
                 title={currentPath}
                 aria-label={t("nav.edit_path")}
               >
-                <Folder className="h-4 w-4 shrink-0" aria-hidden="true" />
+                {currentPath.startsWith(`${SMART_FOLDER_PREFIX}tag:`) ? (
+                  <span
+                    className="h-3 w-3 shrink-0 rounded-full ring-1 ring-black/15 dark:ring-white/20"
+                    style={{
+                      backgroundColor: getFinderTagColor(
+                        currentPath.slice(`${SMART_FOLDER_PREFIX}tag:`.length)
+                      ),
+                    }}
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <Folder className="h-4 w-4 shrink-0" aria-hidden="true" />
+                )}
                 <span className="truncate">
                   {currentPath.startsWith(`${SMART_FOLDER_PREFIX}tag:`)
                     ? (() => {

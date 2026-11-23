@@ -117,6 +117,11 @@ export function FileInfoDialog() {
         const parent = details.path.slice(0, details.path.lastIndexOf("/")) || "/";
         invalidateCache(parent);
         setLoadedEntry({ ...details, tags: updatedTags });
+        window.dispatchEvent(
+          new CustomEvent("finder-tags-updated", {
+            detail: { parentPath: parent, path: details.path },
+          })
+        );
       } catch (error) {
         console.error("Failed to toggle Finder tag:", error);
       }

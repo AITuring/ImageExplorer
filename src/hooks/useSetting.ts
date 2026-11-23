@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { settingsManager } from "@/lib/store";
 
 export function useSetting<T>(key: string, defaultValue: T): [T, (val: T) => Promise<void>] {
@@ -15,7 +16,6 @@ export function useSetting<T>(key: string, defaultValue: T): [T, (val: T) => Pro
       }
 
       // 2. 监听变更
-      const { listen } = await import("@tauri-apps/api/event");
       unlisten = await listen<{ key: string; value: T }>("setting-changed", (event) => {
         if (event.payload.key === key) {
           console.log(`[useSetting] Sync received for ${key}:`, event.payload.value);

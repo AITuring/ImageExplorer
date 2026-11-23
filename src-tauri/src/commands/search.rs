@@ -268,8 +268,38 @@ fn mdfind_tag_aliases(tag: &str) -> Vec<String> {
     names
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SmartFileEntry {
+    pub name: String,
+    pub name_lower: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub size: u64,
+    pub modified: Option<u64>,
+    pub extension: Option<String>,
+    pub is_hidden: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+}
+
+impl From<IndexedFile> for SmartFileEntry {
+    fn from(file: IndexedFile) -> Self {
+        Self {
+            name: file.name,
+            name_lower: file.name_lower,
+            path: file.path,
+            is_dir: file.is_dir,
+            size: file.size,
+            modified: file.modified,
+            extension: file.extension,
+            is_hidden: file.is_hidden,
+            tags: Vec::new(),
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
-fn find_files_by_finder_tag(tag: &str, limit: usize) -> Result<Vec<IndexedFile>, String> {
+fn find_files_by_finder_tag(tag: &str, limit: usize) -> Result<Vec<SmartFileEntry>, String> {
     use std::time::UNIX_EPOCH;
 
     let aliases = mdfind_tag_aliases(tag);
@@ -322,7 +352,8 @@ fn find_files_by_finder_tag(tag: &str, limit: usize) -> Result<Vec<IndexedFile>,
             path.extension()
                 .map(|value| value.to_string_lossy().to_string())
         };
-        results.push(IndexedFile {
+        let tags = crate::commands::fs::read_file_tags(path);
+        results.push(SmartFileEntry {
             name_lower: name.to_lowercase(),
             is_hidden: name.starts_with('.'),
             name,
@@ -331,6 +362,7 @@ fn find_files_by_finder_tag(tag: &str, limit: usize) -> Result<Vec<IndexedFile>,
             size: if is_dir { 0 } else { metadata.len() },
             modified,
             extension,
+            tags,
         });
     }
     Ok(results)
@@ -342,7 +374,7 @@ pub async fn get_smart_files(
     database: tauri::State<'_, Option<SharedDatabase>>,
     category: String,
     limit: Option<usize>,
-) -> Result<Vec<IndexedFile>, String> {
+) -> Result<Vec<SmartFileEntry>, String> {
     let limit_val = limit.unwrap_or(200);
 
     // Finder 标签智能视图：smart://tag:<TagName>
@@ -401,10 +433,10 @@ pub async fn get_smart_files(
         .await
         .map_err(|e| e.to_string())??;
 
-        // 转换为 IndexedFile 格式
-        let results: Vec<IndexedFile> = sqlite_results
+        // 转换为 SmartFileEntry 格式
+        let results: Vec<SmartFileEntry> = sqlite_results
             .into_iter()
-            .map(|r| IndexedFile {
+            .map(|r| SmartFileEntry {
                 name: r.name,
                 name_lower: r.name_lower,
                 path: r.path,
@@ -413,6 +445,7 @@ pub async fn get_smart_files(
                 modified: r.modified.map(|m| m as u64),
                 extension: r.extension,
                 is_hidden: r.is_hidden,
+                tags: Vec::new(),
             })
             .collect();
 
@@ -427,7 +460,13 @@ pub async fn get_smart_files(
         let index = index
             .read()
             .map_err(|error| format!("Category index lock failed: {error}"))?;
-        Ok::<_, String>(index.filter_by_extensions(&extensions, limit_val))
+        Ok::<_, String>(
+            index
+                .filter_by_extensions(&extensions, limit_val)
+                .into_iter()
+                .map(SmartFileEntry::from)
+                .collect(),
+        )
     })
     .await
     .map_err(|e| e.to_string())??;
