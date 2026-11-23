@@ -512,6 +512,47 @@ impl PhotoCacheStore {
         tx.commit()
             .map_err(|error| format!("Failed to commit culling states: {error}"))
     }
+
+    pub fn cache_row_counts(&self) -> Result<(u64, u64, u64, u64), String> {
+        let conn = self
+            .read_conn
+            .lock()
+            .map_err(|error| format!("Failed to acquire photo cache read lock: {error}"))?;
+        let count_table = |table: &str| -> Result<u64, String> {
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .map_err(|error| format!("Failed to count {table}: {error}"))?;
+            Ok(count.max(0) as u64)
+        };
+        Ok((
+            count_table("photo_analysis_cache")?,
+            count_table("photo_sharpness_cache")?,
+            count_table("photo_metadata_cache")?,
+            count_table("photo_culling_state")?,
+        ))
+    }
+
+    /// Clear recomputable photo analysis, sharpness, and EXIF caches while
+    /// preserving user-authored star ratings & Pick/Reject culling decisions.
+    pub fn clear_computed_caches(&self) -> Result<(), String> {
+        let mut conn = self
+            .write_conn
+            .lock()
+            .map_err(|error| format!("Failed to acquire photo cache write lock: {error}"))?;
+        let tx = conn
+            .transaction()
+            .map_err(|error| format!("Failed to start cache clear transaction: {error}"))?;
+        tx.execute_batch(
+            "DELETE FROM photo_analysis_cache;
+             DELETE FROM photo_sharpness_cache;
+             DELETE FROM photo_metadata_cache;",
+        )
+        .map_err(|error| format!("Failed to clear computed photo caches: {error}"))?;
+        tx.commit()
+            .map_err(|error| format!("Failed to commit cache clear: {error}"))
+    }
 }
 
 fn now_seconds() -> i64 {
@@ -757,5 +798,36 @@ mod tests {
         assert_eq!(after_clear[0].path, "/photos/keep.arw");
         assert_eq!(after_clear[0].rating, 5);
         assert_eq!(after_clear[0].flag, "pick");
+    }
+
+    #[test]
+    fn clear_computed_caches_preserves_user_culling_state() {
+        let store = store();
+        store
+            .save_sharpness(
+                &[CachedPhotoSharpnessRecord {
+                    path: "/photos/keep.arw".to_string(),
+                    modified: 100,
+                    file_size: 2048,
+                    verdict: "sharp".to_string(),
+                }],
+                1,
+            )
+            .expect("save sharpness");
+        store
+            .set_culling_states(&[super::PhotoCullingRecord {
+                path: "/photos/keep.arw".to_string(),
+                rating: 5,
+                flag: "pick".to_string(),
+            }])
+            .expect("save culling");
+
+        store
+            .clear_computed_caches()
+            .expect("clear computed caches");
+
+        let (analysis, sharpness, metadata, culling) =
+            store.cache_row_counts().expect("cache row counts");
+        assert_eq!((analysis, sharpness, metadata, culling), (0, 0, 0, 1));
     }
 }

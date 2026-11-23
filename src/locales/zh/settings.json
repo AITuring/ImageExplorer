@@ -55,6 +55,15 @@
     "status_authorized": "已授权",
     "status_denied": "未授权",
     "open_settings": "打开系统设置",
-    "full_disk_access_note": "注意：授权更改可能需要重启应用才能生效。"
+    "full_disk_access_note": "注意：授权更改可能需要重启应用才能生效。",
+    "cache_title": "缓存管理",
+    "cache_desc": "查看并清理本地缩略图磁盘缓存和照片分析缓存（不会删除你的星级评分与精选标记）。",
+    "thumb_cache_label": "磁盘缩略图缓存",
+    "thumb_cache_detail": "{{used}} / {{budget}}（{{files}} 个缓存文件）",
+    "clear_thumb_cache": "清理缩略图",
+    "photo_cache_label": "照片分析与 EXIF 缓存",
+    "photo_cache_detail": "数据库 {{dbSize}} · 特征 {{analysis}} · 清晰度 {{sharpness}} · EXIF {{metadata}}（保留 {{culling}} 条选片记录）",
+    "clear_photo_cache": "清理分析缓存",
+    "cache_cleared": "已清理完成"
   }
 }

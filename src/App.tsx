@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ChevronLeft, ChevronRight, ChevronUp, Loader2, X } from "lucide-react";
 import { Sidebar } from "@/components/Sidebar";
 import { PathBar } from "@/components/PathBar";
@@ -57,7 +58,14 @@ function App() {
   const hydrateLocations = useLocations((state) => state.hydrate);
   const addRecentLocation = useLocations((state) => state.addRecentLocation);
   const locationsHydrated = useLocations((state) => state.hydrated);
-  const [fileToSelect, setFileToSelect] = useState<string | null>(null);
+  const [pendingFileSelection, setPendingFileSelection] = useState<{
+    tabId: string | undefined;
+    path: string;
+  } | null>(null);
+  const fileToSelect =
+    pendingFileSelection && pendingFileSelection.tabId === activeTab?.id
+      ? pendingFileSelection.path
+      : null;
   const [secondaryFileToSelect, setSecondaryFileToSelect] = useState<string | null>(null);
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const splitView = useSplitView();
@@ -123,10 +131,10 @@ function App() {
         // original backend message and a retry action when appropriate.
         console.error("Failed to request directory access:", error);
       }
-      setFileToSelect(selectFile ?? null);
+      setPendingFileSelection(selectFile ? { tabId: activeTab?.id, path: selectFile } : null);
       navigate(path, selectFile);
     },
-    [navigate, t]
+    [activeTab?.id, navigate, t]
   );
 
   const handleSecondaryNavigate = useCallback(
@@ -184,10 +192,6 @@ function App() {
     [splitView]
   );
 
-  useEffect(() => {
-    setFileToSelect(null);
-  }, [activeTab?.id]);
-
   // 监听跨窗口 Tab 移动完成事件（关闭源 Tab 或窗口）
   useEffect(() => {
     let unlisten: () => void;
@@ -203,7 +207,6 @@ function App() {
 
             // 如果这是最后一个 Tab，关闭整个窗口
             if (tabs.length === 1) {
-              const { getCurrentWindow } = await import("@tauri-apps/api/window");
               const currentWindow = getCurrentWindow();
               await currentWindow.close();
             } else {
@@ -308,7 +311,6 @@ function App() {
         }
 
         // 检查是否有 URL 参数传入的初始路径或 Tab
-        const { windowManager } = await import("@/lib/windowManager");
         const initialTab = windowManager.getInitialTab();
         const initialPath = windowManager.getInitialPath();
 

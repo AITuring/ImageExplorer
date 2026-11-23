@@ -5,17 +5,11 @@
 import { useEffect, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useTabs } from "./useTabs";
-import {
-  getCurrentKeyboardCommandScope,
-  registerKeyboardCommands,
-} from "@/lib/keyboardShortcuts";
+import { getCurrentKeyboardCommandScope, registerKeyboardCommands } from "@/lib/keyboardShortcuts";
 import { useSetting } from "@/hooks/useSetting";
-import {
-  registerAppCommands,
-  runRegisteredCommand,
-  type AppCommand,
-} from "@/lib/commands";
+import { registerAppCommands, runRegisteredCommand, type AppCommand } from "@/lib/commands";
 import { editCommands } from "@/lib/editCommands";
+import { windowManager } from "@/lib/windowManager";
 
 function isModifierPressed(event: KeyboardEvent): boolean {
   return event.metaKey || event.ctrlKey;
@@ -38,7 +32,6 @@ export function useTabShortcuts() {
       id: "window.new",
       enabled: () => getCurrentKeyboardCommandScope() === "file-view",
       run: async () => {
-        const { windowManager } = await import("@/lib/windowManager");
         await windowManager.createWindow({ path: activeTab?.path });
       },
     }),
@@ -124,10 +117,7 @@ export function useTabShortcuts() {
         id: "tabs.switch-by-number",
         scope: "file-view",
         matches: (event) =>
-          isModifierPressed(event) &&
-          !event.shiftKey &&
-          !event.altKey &&
-          /^[1-9]$/.test(event.key),
+          isModifierPressed(event) && !event.shiftKey && !event.altKey && /^[1-9]$/.test(event.key),
         enabled: () => legacyTabNumberShortcuts,
         run: (event) => {
           const targetIndex = Number.parseInt(event.key, 10) - 1;
@@ -136,13 +126,5 @@ export function useTabShortcuts() {
         },
       },
     ]);
-  }, [
-    tabs,
-    activeTabId,
-    activeTab,
-    addTab,
-    closeTab,
-    setActiveTab,
-    legacyTabNumberShortcuts,
-  ]);
+  }, [tabs, activeTabId, activeTab, addTab, closeTab, setActiveTab, legacyTabNumberShortcuts]);
 }

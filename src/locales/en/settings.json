@@ -55,6 +55,15 @@
     "status_authorized": "Authorized",
     "status_denied": "Denied",
     "open_settings": "Open System Settings",
-    "full_disk_access_note": "Note: Changes may require an app restart to take effect."
+    "full_disk_access_note": "Note: Changes may require an app restart to take effect.",
+    "cache_title": "Cache Management",
+    "cache_desc": "Inspect and clear local thumbnail disk cache and computed photo caches (your star ratings and Pick/Reject flags are always preserved).",
+    "thumb_cache_label": "Disk Thumbnail Cache",
+    "thumb_cache_detail": "{{used}} / {{budget}} ({{files}} cached files)",
+    "clear_thumb_cache": "Clear Thumbnails",
+    "photo_cache_label": "Photo Analysis & EXIF Cache",
+    "photo_cache_detail": "DB {{dbSize}} · Features {{analysis}} · Sharpness {{sharpness}} · EXIF {{metadata}} ({{culling}} culling records preserved)",
+    "clear_photo_cache": "Clear Analysis Cache",
+    "cache_cleared": "Cleared"
   }
 }

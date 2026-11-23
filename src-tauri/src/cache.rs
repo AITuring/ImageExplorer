@@ -294,6 +294,21 @@ pub fn set_thumb_bytes_cache(key: String, bytes: Vec<u8>) -> CachedImageBytes {
     image
 }
 
+/// 清空 L1 内存缩略图与图标缓存
+pub fn clear_thumb_memory_cache() {
+    let mut thumb_cache = THUMB_BYTES_CACHE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    thumb_cache.entries.clear();
+    thumb_cache.order.clear();
+    thumb_cache.total_bytes = 0;
+
+    let mut icon_cache = ICON_CACHE.lock().unwrap_or_else(|error| error.into_inner());
+    icon_cache.entries.clear();
+    icon_cache.order.clear();
+    icon_cache.total_bytes = 0;
+}
+
 /// 淘汰过期条目，如果仍超限则移除最旧的条目
 fn evict_cache<T>(cache: &DashMap<String, CacheEntry<T>>, ttl: Duration, max_size: usize) {
     // 先移除过期条目

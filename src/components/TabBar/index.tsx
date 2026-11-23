@@ -4,6 +4,7 @@
  */
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useTabs } from "@/hooks/useTabs";
+import { windowManager } from "@/lib/windowManager";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { emit, listen } from "@tauri-apps/api/event";
 import { TabItem } from "./TabItem";
@@ -175,7 +176,6 @@ export function TabBar() {
               setDragOverIndex(null);
               return;
             }
-            const { windowManager } = await import("@/lib/windowManager");
             // 始终检查 drop 位置是否在已有窗口上（解决重叠窗口的场景）
             const targetWindowId = await windowManager.findWindowAtPosition(screenX, screenY);
 

@@ -18,10 +18,27 @@ import {
   Keyboard,
   Eye,
   EyeOff,
+  Database,
+  Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
+import { message as showMessageDialog } from "@tauri-apps/plugin-dialog";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { openWithService, type InstalledApp } from "@/lib/openWith";
+import { clearIconCache } from "@/lib/iconCache";
+import { formatFileSize } from "@/utils/format";
+
+interface CacheStats {
+  thumbDiskBytes: number;
+  thumbDiskFiles: number;
+  thumbDiskBudgetBytes: number;
+  dbBytes: number;
+  analysisRows: number;
+  sharpnessRows: number;
+  metadataRows: number;
+  cullingRows: number;
+}
 
 interface SettingsDialogProps {
   open: boolean;
@@ -142,6 +159,8 @@ function SettingsDialogComponent({ open, onOpenChange }: SettingsDialogProps) {
     "unknown"
   );
   const [terminalApps, setTerminalApps] = useState<InstalledApp[]>([]);
+  const [cacheStats, setCacheStats] = useState<CacheStats | null>(null);
+  const [clearingCache, setClearingCache] = useState<"thumb" | "photo" | null>(null);
 
   const tabs = [
     { id: "general" as TabId, label: t("settings.general.title"), icon: Settings },
@@ -233,11 +252,46 @@ function SettingsDialogComponent({ open, onOpenChange }: SettingsDialogProps) {
     }
   }, []);
 
+  const loadCacheStats = useCallback(async () => {
+    try {
+      const stats = await invoke<CacheStats>("get_cache_stats");
+      setCacheStats(stats);
+    } catch (e) {
+      console.error("Failed to load cache stats:", e);
+    }
+  }, []);
+
+  const handleClearThumbCache = async () => {
+    setClearingCache("thumb");
+    try {
+      await invoke("clear_thumbnail_cache");
+      clearIconCache();
+      await loadCacheStats();
+    } catch (e) {
+      console.error("Failed to clear thumbnail cache:", e);
+    } finally {
+      setClearingCache(null);
+    }
+  };
+
+  const handleClearPhotoCache = async () => {
+    setClearingCache("photo");
+    try {
+      await invoke("clear_photo_analysis_cache");
+      await loadCacheStats();
+    } catch (e) {
+      console.error("Failed to clear photo analysis cache:", e);
+    } finally {
+      setClearingCache(null);
+    }
+  };
+
   useEffect(() => {
     if (open && activeTab === "advanced") {
       checkPermission();
+      void loadCacheStats();
     }
-  }, [open, activeTab, checkPermission]);
+  }, [open, activeTab, checkPermission, loadCacheStats]);
 
   useEffect(() => {
     const handleFocus = () => {
@@ -274,15 +328,13 @@ function SettingsDialogComponent({ open, onOpenChange }: SettingsDialogProps) {
     const msg = restartMessages[targetLang] || restartMessages.en;
 
     // 显示重启提示弹窗
-    const { message } = await import("@tauri-apps/plugin-dialog");
-    await message(msg.message, {
+    await showMessageDialog(msg.message, {
       title: msg.title,
       kind: "info",
     });
 
     // 用户点击 OK 后重启应用
     try {
-      const { relaunch } = await import("@tauri-apps/plugin-process");
       console.log("Relaunching app...");
       await relaunch();
     } catch (e) {
@@ -605,6 +657,90 @@ function SettingsDialogComponent({ open, onOpenChange }: SettingsDialogProps) {
                         <ExternalLink className="h-3 w-3" />
                       </button>
                     </div>
+                  </div>
+
+                  {/* 缓存管理面板 */}
+                  <div className="bg-card/50 space-y-4 rounded-lg border p-4 shadow-sm">
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-1">
+                        <h3 className="leading-none font-medium">
+                          {t("settings.advanced.cache_title")}
+                        </h3>
+                        <p className="text-muted-foreground text-xs">
+                          {t("settings.advanced.cache_desc")}
+                        </p>
+                      </div>
+                      <Database className="text-muted-foreground/50 h-5 w-5 shrink-0" />
+                    </div>
+
+                    {cacheStats && (
+                      <div className="space-y-3 text-xs">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0 flex-1 space-y-1">
+                            <div className="font-medium">
+                              {t("settings.advanced.thumb_cache_label")}
+                            </div>
+                            <div className="text-muted-foreground tabular-nums">
+                              {t("settings.advanced.thumb_cache_detail", {
+                                used: formatFileSize(cacheStats.thumbDiskBytes),
+                                budget: formatFileSize(cacheStats.thumbDiskBudgetBytes),
+                                files: cacheStats.thumbDiskFiles,
+                              })}
+                            </div>
+                            <div className="bg-muted h-1.5 w-full overflow-hidden rounded-full">
+                              <div
+                                className="h-full rounded-full bg-blue-500/80 transition-all"
+                                style={{
+                                  width: `${Math.min(
+                                    100,
+                                    cacheStats.thumbDiskBudgetBytes > 0
+                                      ? (cacheStats.thumbDiskBytes /
+                                          cacheStats.thumbDiskBudgetBytes) *
+                                          100
+                                      : 0
+                                  )}%`,
+                                }}
+                              />
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={clearingCache !== null}
+                            onClick={() => void handleClearThumbCache()}
+                            className="border-border hover:bg-accent inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors disabled:opacity-50"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                            {t("settings.advanced.clear_thumb_cache")}
+                          </button>
+                        </div>
+
+                        <div className="border-border/50 flex items-center justify-between gap-3 border-t pt-3">
+                          <div className="min-w-0 flex-1 space-y-1">
+                            <div className="font-medium">
+                              {t("settings.advanced.photo_cache_label")}
+                            </div>
+                            <div className="text-muted-foreground tabular-nums">
+                              {t("settings.advanced.photo_cache_detail", {
+                                dbSize: formatFileSize(cacheStats.dbBytes),
+                                analysis: cacheStats.analysisRows,
+                                sharpness: cacheStats.sharpnessRows,
+                                metadata: cacheStats.metadataRows,
+                                culling: cacheStats.cullingRows,
+                              })}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={clearingCache !== null}
+                            onClick={() => void handleClearPhotoCache()}
+                            className="border-border hover:bg-accent inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors disabled:opacity-50"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                            {t("settings.advanced.clear_photo_cache")}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

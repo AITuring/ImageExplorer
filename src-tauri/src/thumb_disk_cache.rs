@@ -203,9 +203,58 @@ pub fn put_async(key: String, bytes: Arc<Vec<u8>>) {
     });
 }
 
+fn stats_in(root: &Path) -> (u64, usize) {
+    let mut total_bytes = 0u64;
+    let mut file_count = 0usize;
+    let Ok(shards) = fs::read_dir(root) else {
+        return (0, 0);
+    };
+    for shard in shards.flatten() {
+        let shard_path = shard.path();
+        if !shard_path.is_dir() {
+            continue;
+        }
+        let Ok(files) = fs::read_dir(&shard_path) else {
+            continue;
+        };
+        for file in files.flatten() {
+            let path = file.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("bin") {
+                continue;
+            }
+            if let Ok(meta) = file.metadata() {
+                total_bytes = total_bytes.saturating_add(meta.len());
+                file_count += 1;
+            }
+        }
+    }
+    (total_bytes, file_count)
+}
+
+fn clear_in(root: &Path) -> Result<(), String> {
+    if !root.exists() {
+        return Ok(());
+    }
+    fs::remove_dir_all(root)
+        .map_err(|error| format!("Failed to clear thumbnail cache: {error}"))?;
+    fs::create_dir_all(root).map_err(|error| format!("Failed to recreate cache dir: {error}"))?;
+    Ok(())
+}
+
+/// Return `(used_bytes, file_count, budget_bytes)` for the disk thumbnail cache.
+pub fn stats() -> (u64, usize, u64) {
+    let (bytes, count) = stats_in(cache_root());
+    (bytes, count, MAX_DISK_CACHE_BYTES)
+}
+
+/// Remove all files from the persistent disk thumbnail cache.
+pub fn clear_all() -> Result<(), String> {
+    clear_in(cache_root())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{get_in, prune_in, put_in, stable_key_hash};
+    use super::{clear_in, get_in, prune_in, put_in, stable_key_hash, stats_in};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -252,6 +301,24 @@ mod tests {
         assert_eq!(get_in(&root, "k1"), None);
         assert_eq!(get_in(&root, "k2"), Some(payload_b));
         assert_eq!(get_in(&root, "k3"), Some(payload_c));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn disk_cache_stats_and_clear_work_cleanly() {
+        let root = temp_cache_dir("stats-clear");
+        put_in(&root, "a", &vec![1u8; 512]).expect("put a");
+        put_in(&root, "b", &vec![2u8; 1024]).expect("put b");
+
+        let (bytes, files) = stats_in(&root);
+        assert_eq!(bytes, 1536);
+        assert_eq!(files, 2);
+
+        clear_in(&root).expect("clear cache");
+        let (bytes_after, files_after) = stats_in(&root);
+        assert_eq!(bytes_after, 0);
+        assert_eq!(files_after, 0);
 
         let _ = fs::remove_dir_all(root);
     }

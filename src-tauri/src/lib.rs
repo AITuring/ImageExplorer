@@ -321,6 +321,74 @@ async fn find_duplicate_files(
     .map_err(|error| error.to_string())?
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CacheStatsResponse {
+    thumb_disk_bytes: u64,
+    thumb_disk_files: usize,
+    thumb_disk_budget_bytes: u64,
+    db_bytes: u64,
+    analysis_rows: u64,
+    sharpness_rows: u64,
+    metadata_rows: u64,
+    culling_rows: u64,
+}
+
+#[tauri::command]
+async fn get_cache_stats(
+    database: tauri::State<'_, Option<SharedDatabase>>,
+) -> Result<CacheStatsResponse, String> {
+    let db_clone = database.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (thumb_disk_bytes, thumb_disk_files, thumb_disk_budget_bytes) =
+            thumb_disk_cache::stats();
+        let (db_bytes, analysis_rows, sharpness_rows, metadata_rows, culling_rows) =
+            if let Some(ref db) = db_clone {
+                let db_len = std::fs::metadata(&db.db_path).map(|m| m.len()).unwrap_or(0);
+                let store = PhotoCacheStore::new(db.read_connection(), db.connection());
+                let (a, s, m, c) = store.cache_row_counts().unwrap_or((0, 0, 0, 0));
+                (db_len, a, s, m, c)
+            } else {
+                (0, 0, 0, 0, 0)
+            };
+        Ok(CacheStatsResponse {
+            thumb_disk_bytes,
+            thumb_disk_files,
+            thumb_disk_budget_bytes,
+            db_bytes,
+            analysis_rows,
+            sharpness_rows,
+            metadata_rows,
+            culling_rows,
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn clear_thumbnail_cache() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        cache::clear_thumb_memory_cache();
+        thumb_disk_cache::clear_all()
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn clear_photo_analysis_cache(
+    database: tauri::State<'_, Option<SharedDatabase>>,
+) -> Result<(), String> {
+    let Some(ref db) = *database.inner() else {
+        return Ok(());
+    };
+    let store = PhotoCacheStore::new(db.read_connection(), db.connection());
+    tauri::async_runtime::spawn_blocking(move || store.clear_computed_caches())
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 fn cancel_storage_analysis(
     state: tauri::State<'_, std::sync::Arc<storage_analyzer::StorageAnalysisState>>,
@@ -1253,6 +1321,9 @@ pub fn run() {
             analyze_directory_storage,
             find_duplicate_files,
             cancel_storage_analysis,
+            get_cache_stats,
+            clear_thumbnail_cache,
+            clear_photo_analysis_cache,
             get_smart_files,
             get_index_status,
             open_url,
