@@ -245,7 +245,34 @@ fn generate_quicklook_thumbnail_bytes_in_process(
 }
 
 #[cfg(target_os = "macos")]
-pub fn get_arw_embedded_jpeg_bytes_blocking(
+fn resize_jpeg_bytes_in_process(jpeg: &[u8], max_pixel_size: u32) -> Option<Vec<u8>> {
+    extern "C" {
+        fn imageexplorer_resize_jpeg_bytes(
+            jpeg_bytes: *const u8,
+            jpeg_length: usize,
+            max_pixel_size: u32,
+            out_length: *mut usize,
+        ) -> *mut u8;
+        fn imageexplorer_free_thumbnail(buffer: *mut u8);
+    }
+
+    let mut out_len = 0usize;
+    let buffer = unsafe {
+        imageexplorer_resize_jpeg_bytes(jpeg.as_ptr(), jpeg.len(), max_pixel_size, &mut out_len)
+    };
+    if buffer.is_null() || out_len == 0 {
+        return None;
+    }
+    let resized = unsafe { std::slice::from_raw_parts(buffer, out_len).to_vec() };
+    unsafe { imageexplorer_free_thumbnail(buffer) };
+    Some(resized)
+}
+
+/// Extract (and optionally orientation-correct/downscale) the embedded full-size
+/// JPEG preview from any supported camera RAW format (ARW, CR2, CR3, NEF, NRW,
+/// RAF, ORF, RW2, PEF, SRW, DNG, ...) using zero-copy mmap parsing.
+#[cfg(target_os = "macos")]
+pub fn get_raw_embedded_jpeg_bytes_blocking(
     path: &str,
     max_pixel_size: u32,
 ) -> Option<crate::cache::CachedImageBytes> {
@@ -258,7 +285,7 @@ pub fn get_arw_embedded_jpeg_bytes_blocking(
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
     let cache_key = format!(
-        "arw:{}:{}:{}:{}",
+        "raw:{}:{}:{}:{}",
         path,
         metadata.len(),
         modified,
@@ -268,6 +295,13 @@ pub fn get_arw_embedded_jpeg_bytes_blocking(
         return Some(cached);
     }
 
+    if let Some(extracted) = crate::raw_preview::extract_embedded_jpeg_from_path(path_obj) {
+        let final_bytes =
+            resize_jpeg_bytes_in_process(&extracted, max_pixel_size).unwrap_or(extracted);
+        return Some(crate::cache::set_thumb_bytes_cache(cache_key, final_bytes));
+    }
+
+    // Legacy fallback for Sony ARW edge cases.
     extern "C" {
         fn imageexplorer_arw_embedded_jpeg(
             path: *const std::ffi::c_char,
@@ -286,6 +320,14 @@ pub fn get_arw_embedded_jpeg_bytes_blocking(
     let bytes = unsafe { std::slice::from_raw_parts(buffer, length).to_vec() };
     unsafe { imageexplorer_free_thumbnail(buffer) };
     Some(crate::cache::set_thumb_bytes_cache(cache_key, bytes))
+}
+
+#[cfg(target_os = "macos")]
+pub fn get_arw_embedded_jpeg_bytes_blocking(
+    path: &str,
+    max_pixel_size: u32,
+) -> Option<crate::cache::CachedImageBytes> {
+    get_raw_embedded_jpeg_bytes_blocking(path, max_pixel_size)
 }
 
 #[cfg(target_os = "macos")]
@@ -594,6 +636,19 @@ pub fn get_file_thumbnail_bytes_blocking_generic<R: tauri::Runtime>(
 
     #[cfg(target_os = "macos")]
     {
+        if prefer_embedded
+            && path_obj
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(crate::raw_preview::is_supported_raw_extension)
+        {
+            if let Some(cached) =
+                get_raw_embedded_jpeg_bytes_blocking(&path, size_val.round() as u32)
+            {
+                return Some(cached);
+            }
+        }
+
         if let Some(bytes) =
             generate_quicklook_thumbnail_bytes_in_process(path_obj, size_val, prefer_embedded)
         {

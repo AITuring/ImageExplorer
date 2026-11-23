@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { File, Folder } from "lucide-react";
 import { SmartIcon } from "@/components/SmartIcon";
 import {
@@ -87,6 +87,18 @@ export const FileThumbnail = memo(function FileThumbnail({
   const shouldRenderImg = Boolean(
     shouldLoadPreview && activeUrl && (isLoaded || (isInViewport && !isScrolling))
   );
+  const pendingImgRef = useRef<HTMLImageElement | null>(null);
+
+  // Abort any in-flight thumbnail fetch as soon as a virtualized cell scrolls
+  // out of view or switches identity so rapid scrolling never clogs WebKit's pool.
+  useEffect(() => {
+    const img = pendingImgRef.current;
+    return () => {
+      if (img && !img.complete) {
+        img.src = "";
+      }
+    };
+  }, [activeUrl, shouldRenderImg]);
 
   const fallbackIcon = (
     <SmartIcon
@@ -130,6 +142,7 @@ export const FileThumbnail = memo(function FileThumbnail({
     <>
       {fallbackIcon}
       <img
+        ref={pendingImgRef}
         src={activeUrl}
         crossOrigin="anonymous"
         className="pointer-events-none absolute inset-0 h-full w-full opacity-0"

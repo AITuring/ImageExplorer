@@ -8,6 +8,7 @@ mod db;
 mod index;
 mod menu;
 mod operations;
+mod raw_preview;
 mod thumb_disk_cache;
 mod thumb_protocol;
 mod trash_commands;

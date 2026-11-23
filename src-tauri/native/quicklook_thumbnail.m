@@ -413,6 +413,93 @@ void imageexplorer_free_thumbnail(uint8_t *buffer) {
     free(buffer);
 }
 
+// Orientation-correct and optionally downscale an already-extracted JPEG buffer
+// using ImageIO. Returns NULL when the JPEG is already within `maxPixelSize`
+// and has normal orientation so the caller can return the original bytes
+// untouched with zero re-encoding overhead.
+uint8_t *imageexplorer_resize_jpeg_bytes(
+    const uint8_t *jpegBytes,
+    size_t jpegLength,
+    uint32_t maxPixelSize,
+    size_t *outLength
+) {
+    if (jpegBytes == NULL || jpegLength == 0 || outLength == NULL) {
+        return NULL;
+    }
+    *outLength = 0;
+
+    @autoreleasepool {
+        NSData *input = [NSData dataWithBytesNoCopy:(void *)jpegBytes
+                                             length:jpegLength
+                                       freeWhenDone:NO];
+        CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)input, NULL);
+        if (source == NULL) {
+            return NULL;
+        }
+
+        NSDictionary *properties = CFBridgingRelease(
+            CGImageSourceCopyPropertiesAtIndex(source, 0, NULL)
+        );
+        NSNumber *pixelWidth = properties[(id)kCGImagePropertyPixelWidth];
+        NSNumber *pixelHeight = properties[(id)kCGImagePropertyPixelHeight];
+        NSNumber *orientationNumber = properties[(id)kCGImagePropertyOrientation];
+        NSUInteger maxDim = MAX(pixelWidth.unsignedIntegerValue, pixelHeight.unsignedIntegerValue);
+        NSInteger orientation = orientationNumber != nil ? orientationNumber.integerValue : 1;
+
+        BOOL needsResize = maxPixelSize > 0 && maxDim > maxPixelSize;
+        BOOL needsTransform = orientation > 1 && orientation <= 8;
+        if (!needsResize && !needsTransform) {
+            CFRelease(source);
+            return NULL;
+        }
+
+        uint32_t targetMax = needsResize ? maxPixelSize : (uint32_t)MAX(maxDim, (NSUInteger)1);
+        NSDictionary *options = @{
+            (id)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+            (id)kCGImageSourceCreateThumbnailWithTransform: @YES,
+            (id)kCGImageSourceThumbnailMaxPixelSize: @(targetMax),
+        };
+        CGImageRef image = CGImageSourceCreateThumbnailAtIndex(
+            source,
+            0,
+            (__bridge CFDictionaryRef)options
+        );
+        CFRelease(source);
+        if (image == NULL) {
+            return NULL;
+        }
+
+        CFMutableDataRef data = CFDataCreateMutable(kCFAllocatorDefault, 0);
+        CGImageDestinationRef destination = data == NULL
+            ? NULL
+            : CGImageDestinationCreateWithData(data, CFSTR("public.jpeg"), 1, NULL);
+        if (destination == NULL) {
+            if (data != NULL) CFRelease(data);
+            CGImageRelease(image);
+            return NULL;
+        }
+
+        NSDictionary *encodeOptions = @{(id)kCGImageDestinationLossyCompressionQuality: @0.90};
+        CGImageDestinationAddImage(destination, image, (__bridge CFDictionaryRef)encodeOptions);
+        uint8_t *result = NULL;
+        if (CGImageDestinationFinalize(destination)) {
+            CFIndex dataLength = CFDataGetLength(data);
+            if (dataLength > 0) {
+                result = malloc((size_t)dataLength);
+                if (result != NULL) {
+                    CFDataGetBytes(data, CFRangeMake(0, dataLength), result);
+                    *outLength = (size_t)dataLength;
+                }
+            }
+        }
+
+        CFRelease(destination);
+        CFRelease(data);
+        CGImageRelease(image);
+        return result;
+    }
+}
+
 static id imageexplorer_first_value(NSDictionary *dictionary, NSArray<NSString *> *keys) {
     for (NSString *key in keys) {
         id value = dictionary[key];

@@ -1454,20 +1454,6 @@ pub fn read_image_base64(path: String) -> Result<String, String> {
     Ok(format!("data:{};base64,{}", mime_type, base64_str))
 }
 
-#[cfg(target_os = "macos")]
-fn parse_sips_u32(output: &str, key: &str) -> Option<u32> {
-    output.lines().find_map(|line| {
-        let trimmed = line.trim();
-        if !trimmed.starts_with(key) {
-            return None;
-        }
-
-        trimmed
-            .split_once(':')
-            .and_then(|(_, value)| value.trim().parse::<u32>().ok())
-    })
-}
-
 #[tauri::command]
 pub async fn read_image_dimensions(path: String) -> Result<ImageDimensions, String> {
     tauri::async_runtime::spawn_blocking(move || read_image_dimensions_blocking(path))
@@ -1506,44 +1492,8 @@ fn read_image_dimensions_blocking(path: String) -> Result<ImageDimensions, Strin
 
     #[cfg(target_os = "macos")]
     {
-        if let Some(dimensions) = read_image_dimensions_with_imageio(&path) {
-            return Ok(dimensions);
-        }
-
-        let output = std::process::Command::new("/usr/bin/sips")
-            .args([
-                "-g",
-                "pixelWidth",
-                "-g",
-                "pixelHeight",
-                "-g",
-                "orientation",
-                &path,
-            ])
-            .output()
-            .map_err(|e| e.to_string())?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(if stderr.is_empty() {
-                "Failed to read image dimensions".to_string()
-            } else {
-                stderr
-            });
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut width = parse_sips_u32(&stdout, "pixelWidth")
-            .ok_or_else(|| "Failed to parse image width".to_string())?;
-        let mut height = parse_sips_u32(&stdout, "pixelHeight")
-            .ok_or_else(|| "Failed to parse image height".to_string())?;
-        let orientation = parse_sips_u32(&stdout, "orientation").unwrap_or(1);
-
-        if matches!(orientation, 5..=8) {
-            std::mem::swap(&mut width, &mut height);
-        }
-
-        Ok(ImageDimensions { width, height })
+        read_image_dimensions_with_imageio(&path)
+            .ok_or_else(|| "Failed to read image dimensions via ImageIO".to_string())
     }
 
     #[cfg(not(target_os = "macos"))]

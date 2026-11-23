@@ -206,7 +206,7 @@ export function buildFileThumbnailUrl(
   return `thumb://localhost/file?${params.toString()}`;
 }
 
-export function buildArwEmbeddedJpegUrl(
+export function buildRawEmbeddedJpegUrl(
   path: string,
   modified: number | null | undefined,
   fileSize: number,
@@ -217,8 +217,10 @@ export function buildArwEmbeddedJpegUrl(
     max: String(Math.round(maxPixelSize)),
     v: `${modified ?? 0}-${fileSize}`,
   });
-  return `thumb://localhost/arw?${params.toString()}`;
+  return `thumb://localhost/raw?${params.toString()}`;
 }
+
+export const buildArwEmbeddedJpegUrl = buildRawEmbeddedJpegUrl;
 
 // 轻量元数据索引：仅记录已成功加载/失败的 `thumb://` URL（不存任何 Base64 字节）
 const MAX_LOADED_URL_RECORDS = 4_000;

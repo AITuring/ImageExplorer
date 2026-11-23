@@ -21,11 +21,12 @@ import { FocusRegionOverlay } from "@/components/FocusRegionOverlay";
 import { SharpnessInspectorToolbar } from "@/components/SharpnessInspectorToolbar";
 import { SharpnessSelectionOverlay } from "@/components/SharpnessSelectionOverlay";
 import {
-  buildArwEmbeddedJpegUrl,
   buildFileThumbnailUrl,
+  buildRawEmbeddedJpegUrl,
   getLargestLoadedFileThumbnailUrl,
   loadHtmlImage,
 } from "@/lib/iconCache";
+import { preloadNeighborEntries } from "@/lib/imagePreload";
 import { useCameraAfMetadata } from "@/hooks/useCameraAfMetadata";
 import { useSharpnessInspector } from "@/hooks/useSharpnessInspector";
 import { usePhotoMetadata } from "@/hooks/usePhotoMetadata";
@@ -878,7 +879,9 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
                   entry={entry}
                   size={320}
                   requestSizeOverride={
-                    entry.extension?.toLowerCase() === "arw" ? 512 : progressivePreviewRequestSize
+                    RAW_EXTENSIONS.has((entry.extension ?? "").toLowerCase())
+                      ? 512
+                      : progressivePreviewRequestSize
                   }
                   className={`${renderedImageSize ? "h-full w-full" : "h-auto max-h-full w-auto max-w-full"} rounded-lg object-contain shadow-lg`}
                   fallbackClassName="text-muted-foreground h-40 w-40"
@@ -1094,49 +1097,20 @@ export function QuickLook({
   const isRawImage = Boolean(entry && RAW_EXTENSIONS.has((entry.extension || "").toLowerCase()));
 
   useEffect(() => {
-    if (!entry || previewType !== "image") {
-      return;
-    }
-
-    // RAW pages already request a large current frame and a sharpness source.
-    // Neighbor prefetch competes for external-disk reads during interaction.
-    if (isRawImage) return;
-
-    const candidates = [previousEntry, nextEntry].filter((candidate): candidate is FileEntry =>
-      Boolean(candidate && !candidate.is_dir && isImageFile(candidate.extension))
-    );
-    if (candidates.length === 0) {
+    if (!entry || previewType !== "image" || currentEntryIndex < 0) {
       return;
     }
 
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => {
-      for (const candidate of candidates) {
-        const extension = (candidate.extension || "").toLowerCase();
-        // Browser-native JPEG/PNG decoding is already cheap. Prioritize RAW and
-        // formats that need the native thumbnail bridge so arrow navigation can
-        // reuse a nearby preview immediately.
-        if (isBrowserSupportedImage(extension) && !RAW_EXTENSIONS.has(extension)) {
-          continue;
-        }
-
-        const url = buildFileThumbnailUrl(
-          candidate.path,
-          candidate.modified,
-          candidate.size,
-          768,
-          false,
-          true
-        );
-        void loadHtmlImage(url, controller.signal).catch(() => undefined);
-      }
-    }, 90);
+      preloadNeighborEntries(quickLookEntries, currentEntryIndex, "quicklook", controller.signal);
+    }, 140);
 
     return () => {
       window.clearTimeout(timeoutId);
       controller.abort();
     };
-  }, [entry, isRawImage, nextEntry, previewType, previousEntry]);
+  }, [currentEntryIndex, entry, previewType, quickLookEntries]);
 
   const nativePreviewRequestSize = useMemo(() => {
     if (previewType !== "image" || !entryPath) {
@@ -1478,9 +1452,9 @@ export function QuickLook({
 
     let cancelled = false;
     const controller = new AbortController();
-    // Sony ARW contains a full-resolution camera JPEG. Reuse it for the
-    // fitted preview instead of demosaicing the RAW twice on open.
-    const preferEmbeddedPreview = entryExtension.toLowerCase() === "arw";
+    // Camera RAW files embed a full-resolution JPEG preview. Extract and
+    // display it directly via `thumb://localhost/raw` instead of demosaicing twice.
+    const preferEmbeddedPreview = RAW_EXTENSIONS.has(entryExtension.toLowerCase());
 
     const applyPreviewSource = (src: string, requestSize: number) => {
       if (cancelled || requestSize < nativePreviewSizeRef.current) return;
@@ -1530,13 +1504,13 @@ export function QuickLook({
         embeddedArwJpegAttemptedRef.current = true;
         embeddedArwJpegLoadingRef.current = true;
         const requestedEntryIdentity = entryIdentity;
-        const interactiveUrl = buildArwEmbeddedJpegUrl(
+        const interactiveUrl = buildRawEmbeddedJpegUrl(
           entryPath,
           entryModified,
           entrySize,
           ARW_INTERACTIVE_PREVIEW_SIZE
         );
-        const gestureUrl = buildArwEmbeddedJpegUrl(
+        const gestureUrl = buildRawEmbeddedJpegUrl(
           entryPath,
           entryModified,
           entrySize,
@@ -1717,7 +1691,7 @@ export function QuickLook({
                 useNativeImagePreview={useNativeImagePreview}
                 progressivePreviewRequestSize={progressivePreviewRequestSize}
                 sharpnessAutoReady={
-                  entryExtension.toLowerCase() !== "arw" ||
+                  !RAW_EXTENSIONS.has(entryExtension.toLowerCase()) ||
                   nativePreviewSizeRef.current >= nativePreviewRequestSize
                 }
                 onImageLoadDimensions={handleImageLoadDimensions}

@@ -177,7 +177,7 @@ pub fn handle_thumb_protocol<R: tauri::Runtime>(
                 }
             });
         }
-        "arw" => {
+        "raw" | "arw" => {
             let max_pixel_size = params
                 .get("max")
                 .and_then(|value| value.parse::<u32>().ok())
@@ -190,7 +190,7 @@ pub fn handle_thumb_protocol<R: tauri::Runtime>(
                 };
                 #[cfg(target_os = "macos")]
                 let result = tauri::async_runtime::spawn_blocking(move || {
-                    crate::commands::apps::get_arw_embedded_jpeg_bytes_blocking(
+                    crate::commands::apps::get_raw_embedded_jpeg_bytes_blocking(
                         &path,
                         max_pixel_size,
                     )

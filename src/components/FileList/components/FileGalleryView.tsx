@@ -10,6 +10,7 @@ import { PhotoInspector } from "./PhotoInspector";
 import { SharpnessBadge } from "./PhotoDetails";
 import { usePhotoMetadata } from "@/hooks/usePhotoMetadata";
 import { isAnalyzablePhoto } from "@/lib/photoAnalysis";
+import { preloadNeighborEntries } from "@/lib/imagePreload";
 import { FINDER_TAG_PRESETS, hasFinderTag } from "@/lib/finderTags";
 import type { VisibleSharpness } from "@/hooks/useVisibleSharpness";
 
@@ -202,6 +203,18 @@ export function FileGalleryView({
       virtualizer.scrollToIndex(activeIndex, { align: "center" });
     }
   }, [activeIndex, virtualizer]);
+
+  useEffect(() => {
+    if (activeIndex < 0) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      preloadNeighborEntries(entries, activeIndex, "gallery", controller.signal);
+    }, 140);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [activeIndex, entries]);
 
   const comparePair = useMemo<[FileEntry, FileEntry] | null>(() => {
     const selectedPhotos = selectedFileEntries.filter(isAnalyzablePhoto);
