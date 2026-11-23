@@ -150,12 +150,10 @@ mod path_utils {
 
     /// 检查路径是否为受保护目录（macOS）
     #[cfg(target_os = "macos")]
-    pub fn is_protected_path(path: &Path) -> bool {
+    pub fn is_protected_path_with_home(path: &Path, home: Option<&Path>) -> bool {
         use super::PROTECTED_DIRS;
 
-        if let Some(home) = dirs::home_dir() {
-            let path_str = path.to_string_lossy();
-
+        if let Some(home) = home {
             // 检查是否是用户主目录的直接子目录
             if let Some(parent) = path.parent() {
                 if parent == home {
@@ -169,11 +167,23 @@ mod path_utils {
             }
 
             // 检查是否是 /Applications 目录
+            let path_str = path.to_string_lossy();
             if path_str == "/Applications" || path_str.starts_with("/Applications/") {
                 return true;
             }
         }
         false
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn is_protected_path(path: &Path) -> bool {
+        let home = dirs::home_dir();
+        is_protected_path_with_home(path, home.as_deref())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn is_protected_path_with_home(_path: &Path, _home: Option<&Path>) -> bool {
+        true
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -397,7 +407,10 @@ pub struct FileEntry {
 }
 
 #[tauri::command]
-pub async fn get_entries(path: String, force_refresh: bool) -> Result<Vec<FileEntry>, String> {
+pub async fn get_entries(
+    path: String,
+    force_refresh: bool,
+) -> Result<std::sync::Arc<Vec<FileEntry>>, String> {
     // Directory scans can block for seconds on sleeping or disconnected
     // external volumes. Use a detached filesystem thread instead of Tokio's
     // blocking pool: the window remains responsive, and a stuck volume cannot
@@ -421,10 +434,10 @@ pub async fn get_entries(path: String, force_refresh: bool) -> Result<Vec<FileEn
                         return Ok(cached);
                     }
 
-                    let entries = load_directory_entries(&path)?;
+                    let entries = std::sync::Arc::new(load_directory_entries(&path)?);
                     if crate::cache::set_dir_cache_if_generation(
                         path.clone(),
-                        entries.clone(),
+                        std::sync::Arc::clone(&entries),
                         generation,
                     ) {
                         return Ok(entries);
@@ -458,6 +471,7 @@ fn load_directory_entries(path: &str) -> Result<Vec<FileEntry>, String> {
         return Err(format!("Path is not a directory: {}", path));
     }
 
+    let home_dir = dirs::home_dir();
     let mut entries: Vec<FileEntry> = Vec::new();
 
     match fs::read_dir(dir_path) {
@@ -531,7 +545,8 @@ fn load_directory_entries(path: &str) -> Result<Vec<FileEntry>, String> {
 
                 // macOS 系统保护目录检测
                 if !readonly {
-                    readonly = path_utils::is_protected_path(&file_path);
+                    readonly =
+                        path_utils::is_protected_path_with_home(&file_path, home_dir.as_deref());
                 }
 
                 entries.push(FileEntry {
@@ -869,6 +884,29 @@ pub async fn read_image_dimensions(path: String) -> Result<ImageDimensions, Stri
         .map_err(|error| error.to_string())?
 }
 
+#[cfg(target_os = "macos")]
+fn read_image_dimensions_with_imageio(path: &str) -> Option<ImageDimensions> {
+    use std::ffi::CString;
+
+    extern "C" {
+        fn imageexplorer_image_dimensions(
+            path: *const std::ffi::c_char,
+            out_width: *mut u32,
+            out_height: *mut u32,
+        ) -> i32;
+    }
+
+    let c_path = CString::new(path.as_bytes()).ok()?;
+    let mut width = 0_u32;
+    let mut height = 0_u32;
+    let ok = unsafe { imageexplorer_image_dimensions(c_path.as_ptr(), &mut width, &mut height) };
+    if ok != 0 && width > 0 && height > 0 {
+        Some(ImageDimensions { width, height })
+    } else {
+        None
+    }
+}
+
 fn read_image_dimensions_blocking(path: String) -> Result<ImageDimensions, String> {
     let path_obj = Path::new(&path);
     if !path_obj.exists() {
@@ -877,6 +915,10 @@ fn read_image_dimensions_blocking(path: String) -> Result<ImageDimensions, Strin
 
     #[cfg(target_os = "macos")]
     {
+        if let Some(dimensions) = read_image_dimensions_with_imageio(&path) {
+            return Ok(dimensions);
+        }
+
         let output = std::process::Command::new("/usr/bin/sips")
             .args([
                 "-g",
@@ -1319,38 +1361,132 @@ fn sony_region_from_flexible_spot(
 }
 
 #[cfg(target_os = "macos")]
-fn read_sony_camera_af_metadata(path: &str) -> Option<CameraAfMetadata> {
+struct PersistentExifTool {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    stdout: std::io::BufReader<std::process::ChildStdout>,
+}
+
+#[cfg(target_os = "macos")]
+impl PersistentExifTool {
+    fn spawn(executable: &Path) -> Option<Self> {
+        use std::process::{Command, Stdio};
+
+        let mut child = Command::new(executable)
+            .args(["-stay_open", "True", "-@", "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let stdin = child.stdin.take()?;
+        let stdout = std::io::BufReader::new(child.stdout.take()?);
+        Some(Self {
+            child,
+            stdin,
+            stdout,
+        })
+    }
+
+    fn query(&mut self, args: &[&str]) -> Option<Vec<u8>> {
+        use std::io::BufRead;
+
+        for arg in args {
+            self.stdin.write_all(arg.as_bytes()).ok()?;
+            self.stdin.write_all(b"\n").ok()?;
+        }
+        self.stdin.write_all(b"-execute\n").ok()?;
+        self.stdin.flush().ok()?;
+
+        let mut output = Vec::new();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let bytes_read = self.stdout.read_line(&mut line).ok()?;
+            if bytes_read == 0 {
+                return None;
+            }
+            if line.trim_end_matches(['\r', '\n']) == "{ready}" {
+                break;
+            }
+            output.extend_from_slice(line.as_bytes());
+        }
+        Some(output)
+    }
+
+    fn shutdown(mut self) {
+        let _ = self.stdin.write_all(b"-stay_open\nFalse\n");
+        let _ = self.stdin.flush();
+        drop(self.stdin);
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn exiftool_daemon_mutex() -> &'static std::sync::Mutex<Option<PersistentExifTool>> {
+    static DAEMON: OnceLock<std::sync::Mutex<Option<PersistentExifTool>>> = OnceLock::new();
+    DAEMON.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(target_os = "macos")]
+pub fn shutdown_exiftool_daemon() {
+    if let Ok(mut guard) = exiftool_daemon_mutex().lock() {
+        if let Some(daemon) = guard.take() {
+            daemon.shutdown();
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn run_exiftool_query(args: &[&str]) -> Option<Vec<u8>> {
     let exiftool = sony_exiftool_command()?;
-    let output = std::process::Command::new(&exiftool)
-        .args([
-            "-j",
-            "-n",
-            "-q",
-            "-q",
-            "-api",
-            "RequestAll=3",
-            "-ImageWidth",
-            "-ImageHeight",
-            "-Orientation",
-            "-Sony:FocusLocation",
-            "-Sony:FocusLocation2",
-            "-Sony:FocusFrameSize",
-            "-Sony:FlexibleSpotPosition",
-            "-Sony:AFAreaModeSetting",
-            "-Sony:AFAreaMode",
-            "-Sony:FocusMode",
-            "-Sony:AFPointSelected",
-            "-Sony:AFPointAtShutterRelease",
-            "-Sony:FocalPlaneAFPointsUsed",
-            path,
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
+    let mut guard = exiftool_daemon_mutex().lock().ok()?;
+    if guard.is_none() {
+        *guard = PersistentExifTool::spawn(&exiftool);
+    }
+    if let Some(daemon) = guard.as_mut() {
+        if let Some(output) = daemon.query(args) {
+            return Some(output);
+        }
+    }
+    if let Some(dead) = guard.take() {
+        dead.shutdown();
+    }
+    *guard = PersistentExifTool::spawn(&exiftool);
+    guard.as_mut()?.query(args)
+}
+
+#[cfg(target_os = "macos")]
+fn read_sony_camera_af_metadata(path: &str) -> Option<CameraAfMetadata> {
+    let args = [
+        "-j",
+        "-n",
+        "-q",
+        "-q",
+        "-api",
+        "RequestAll=3",
+        "-ImageWidth",
+        "-ImageHeight",
+        "-Orientation",
+        "-Sony:FocusLocation",
+        "-Sony:FocusLocation2",
+        "-Sony:FocusFrameSize",
+        "-Sony:FlexibleSpotPosition",
+        "-Sony:AFAreaModeSetting",
+        "-Sony:AFAreaMode",
+        "-Sony:FocusMode",
+        "-Sony:AFPointSelected",
+        "-Sony:AFPointAtShutterRelease",
+        "-Sony:FocalPlaneAFPointsUsed",
+        path,
+    ];
+    let stdout = run_exiftool_query(&args)?;
+    if stdout.is_empty() {
         return None;
     }
 
-    let records: Vec<Value> = serde_json::from_slice(&output.stdout).ok()?;
+    let records: Vec<Value> = serde_json::from_slice(&stdout).ok()?;
     let record = records.first()?.as_object()?;
     let image_width = sony_json_numbers(sony_json_value(record, &["ImageWidth"]))
         .first()
@@ -1561,6 +1697,33 @@ pub async fn read_image_metadata(path: String) -> Result<Option<ImageMetadata>, 
         .map_err(|error| error.to_string())?
 }
 
+#[cfg(target_os = "macos")]
+fn is_raw_metadata_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "arw"
+                    | "cr2"
+                    | "cr3"
+                    | "nef"
+                    | "nrw"
+                    | "raf"
+                    | "orf"
+                    | "rw2"
+                    | "pef"
+                    | "srw"
+                    | "dcr"
+                    | "kdc"
+                    | "3fr"
+                    | "iiq"
+                    | "x3f"
+                    | "dng"
+            )
+        })
+}
+
 fn read_image_metadata_blocking(path: String) -> Result<Option<ImageMetadata>, String> {
     let path_obj = Path::new(&path);
     if !path_obj.exists() || !path_obj.is_file() {
@@ -1569,12 +1732,17 @@ fn read_image_metadata_blocking(path: String) -> Result<Option<ImageMetadata>, S
 
     #[cfg(target_os = "macos")]
     {
-        // ImageIO reads the EXIF dictionaries embedded in RAW files directly.
-        // Spotlight's mdls importer remains a fallback for formats whose
-        // ImageIO property dictionary is incomplete.
+        // ImageIO reads the EXIF dictionaries embedded in RAW and standard
+        // image files directly. Avoid spawning `/usr/bin/mdls` for standard
+        // images (e.g. PNG/JPEG/WebP screenshots or manual-lens photos) where
+        // ImageIO already parsed dimensions; reserve the Spotlight fallback for
+        // RAW files with incomplete ImageIO dictionaries or failed parses.
         let mut imageio_metadata = read_image_metadata_with_imageio(&path);
         if let Some(metadata) = imageio_metadata.as_ref() {
-            if !image_metadata_needs_fallback(metadata) {
+            let has_dimensions = metadata.width.is_some() && metadata.height.is_some();
+            if !image_metadata_needs_fallback(metadata)
+                || (has_dimensions && !is_raw_metadata_path(path_obj))
+            {
                 return Ok(imageio_metadata);
             }
         }
@@ -1807,19 +1975,32 @@ pub fn get_disk_space(path: String) -> Result<DiskSpace, String> {
     };
 
     #[cfg(unix)]
-    let available_bytes = std::process::Command::new("df")
-        .args(["-Pk", probe.to_string_lossy().as_ref()])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .nth(1)
-                .and_then(|line| line.split_whitespace().nth(3))
-                .and_then(|value| value.parse::<u64>().ok())
-                .map(|kilobytes| kilobytes.saturating_mul(1024))
-        });
+    let available_bytes = {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        CString::new(probe.as_os_str().as_bytes())
+            .ok()
+            .and_then(|c_path| {
+                let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+                // SAFETY: `c_path` is NUL-terminated and `stat` is a valid out-pointer.
+                let result = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
+                if result == 0 {
+                    // SAFETY: `statvfs` succeeded and initialized `stat`.
+                    let stat = unsafe { stat.assume_init() };
+                    #[allow(clippy::unnecessary_cast)]
+                    let block_size = if stat.f_frsize > 0 {
+                        stat.f_frsize as u64
+                    } else {
+                        stat.f_bsize as u64
+                    };
+                    #[allow(clippy::unnecessary_cast)]
+                    Some((stat.f_bavail as u64).saturating_mul(block_size))
+                } else {
+                    None
+                }
+            })
+    };
 
     #[cfg(windows)]
     let available_bytes = None;
@@ -1876,6 +2057,11 @@ pub fn copy_file(src: String, dest_dir: String) -> Result<String, String> {
 }
 
 const COPY_BUFFER_SIZE: usize = 8 * 1024 * 1024;
+const MIN_COPY_BUFFER_SIZE: usize = 64 * 1024;
+
+fn copy_buffer_len(file_size: u64) -> usize {
+    file_size.clamp(MIN_COPY_BUFFER_SIZE as u64, COPY_BUFFER_SIZE as u64) as usize
+}
 
 pub(crate) fn path_exists(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
@@ -2352,7 +2538,7 @@ where
         // writing any bytes, so a crash cannot leave an unclaimed partial.
         on_ready(&partial, false)?;
     }
-    let mut buffer = vec![0_u8; COPY_BUFFER_SIZE];
+    let mut buffer = vec![0_u8; copy_buffer_len(source_size.saturating_sub(offset))];
     loop {
         let read = source
             .read(&mut buffer)

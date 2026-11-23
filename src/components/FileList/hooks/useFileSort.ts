@@ -34,39 +34,41 @@ export function useFileSort(entries: FileEntry[]) {
   );
 
   const sortedEntries = useMemo(() => {
-    const sortableEntries = deferredEntries.map((entry, originalIndex) => ({
-      entry,
-      originalIndex,
-      textValue:
-        sortField === "name" ? entry.name : sortField === "kind" ? getEntryKind(entry) : "",
-      numericValue:
-        sortField === "size"
-          ? entry.size || 0
-          : sortField === "date"
-            ? entry.modified || 0
-            : sortField === "created"
-              ? entry.created || 0
-              : 0,
-    }));
+    if (deferredEntries.length <= 1) return deferredEntries;
+    const direction = sortDirection === "asc" ? 1 : -1;
+    const next = deferredEntries.slice();
 
-    sortableEntries.sort((first, second) => {
-      const a = first.entry;
-      const b = second.entry;
-      // 始终让文件夹排在前面
-      if (a.is_dir !== b.is_dir) {
-        return a.is_dir ? -1 : 1;
-      }
+    // Array.prototype.sort is guaranteed stable in modern JS engines, so we can
+    // sort a shallow copy directly without allocating N wrapper objects + a
+    // second output array on 100k-entry directories.
+    if (sortField === "name") {
+      next.sort((a, b) => {
+        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+        return FILE_NAME_COLLATOR.compare(a.name, b.name) * direction;
+      });
+    } else if (sortField === "kind") {
+      next.sort((a, b) => {
+        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+        return FILE_NAME_COLLATOR.compare(getEntryKind(a), getEntryKind(b)) * direction;
+      });
+    } else if (sortField === "size") {
+      next.sort((a, b) => {
+        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+        return ((a.size || 0) - (b.size || 0)) * direction;
+      });
+    } else if (sortField === "date") {
+      next.sort((a, b) => {
+        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+        return ((a.modified || 0) - (b.modified || 0)) * direction;
+      });
+    } else {
+      next.sort((a, b) => {
+        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+        return ((a.created || 0) - (b.created || 0)) * direction;
+      });
+    }
 
-      const comparison =
-        sortField === "name" || sortField === "kind"
-          ? FILE_NAME_COLLATOR.compare(first.textValue, second.textValue)
-          : first.numericValue - second.numericValue;
-
-      if (comparison === 0) return first.originalIndex - second.originalIndex;
-      return sortDirection === "asc" ? comparison : -comparison;
-    });
-
-    return sortableEntries.map(({ entry }) => entry);
+    return next;
   }, [deferredEntries, sortField, sortDirection]);
 
   return {

@@ -14,8 +14,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 /// 数据库连接管理器
+/// 读写分离：写连接专供索引构建与增量更新，只读连接供并发搜索使用，充分发挥 WAL 读写并发能力。
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
+    read_conn: Arc<Mutex<Connection>>,
     pub db_path: PathBuf,
 }
 
@@ -45,8 +47,11 @@ impl Database {
             Err(error) => return Err(error),
         };
 
+        let read_conn = Self::open_read_connection(&db_path)?;
+
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            read_conn: Arc::new(Mutex::new(read_conn)),
             db_path,
         })
     }
@@ -56,6 +61,7 @@ impl Database {
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
+             PRAGMA busy_timeout = 5000;
              PRAGMA cache_size = -64000;
              PRAGMA temp_store = MEMORY;",
         )
@@ -64,6 +70,22 @@ impl Database {
         if !Self::integrity_ok(&conn) {
             return Err("SQLite integrity check failed".to_string());
         }
+        Ok(conn)
+    }
+
+    fn open_read_connection(path: &PathBuf) -> Result<Connection, String> {
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|error| error.to_string())?;
+        conn.execute_batch(
+            "PRAGMA query_only = ON;
+             PRAGMA busy_timeout = 5000;
+             PRAGMA cache_size = -32000;
+             PRAGMA temp_store = MEMORY;",
+        )
+        .map_err(|error| error.to_string())?;
         Ok(conn)
     }
 
@@ -77,7 +99,7 @@ impl Database {
 
     fn integrity_ok(conn: &Connection) -> bool {
         let main_ok = conn
-            .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+            .query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0))
             .map(|result| result.eq_ignore_ascii_case("ok"))
             .unwrap_or(false);
         if !main_ok {
@@ -96,9 +118,14 @@ impl Database {
         app_support.join("com.hyperexplorer.app").join("index.db")
     }
 
-    /// 获取连接（用于查询）
+    /// 获取写连接（用于索引写入）
     pub fn connection(&self) -> Arc<Mutex<Connection>> {
         self.conn.clone()
+    }
+
+    /// 获取独立只读连接（WAL 并发搜索，不被后台索引写入阻塞）
+    pub fn read_connection(&self) -> Arc<Mutex<Connection>> {
+        self.read_conn.clone()
     }
 
     /// 检查索引是否需要重建
@@ -199,7 +226,7 @@ impl Database {
 
     /// 获取索引文件数量
     pub fn file_count(&self) -> i64 {
-        let conn = match self.conn.lock() {
+        let conn = match self.read_conn.lock() {
             Ok(c) => c,
             Err(_) => return 0,
         };
@@ -224,6 +251,6 @@ mod tests {
                 row.get(0)
             })
             .expect("schema version");
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
     }
 }

@@ -7,7 +7,8 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::SystemTime;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime};
 
 // Suppress deprecation warnings is NO LONGER NEEDED as we removed cocoa.
 // #![allow(deprecated)]
@@ -171,117 +172,6 @@ fn quicklook_thumbnail_path(output_dir: &Path, source_path: &Path) -> Option<Pat
 }
 
 #[cfg(target_os = "macos")]
-fn is_image_for_native_thumbnail(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| {
-            matches!(
-                ext.to_ascii_lowercase().as_str(),
-                "jpg"
-                    | "jpeg"
-                    | "png"
-                    | "webp"
-                    | "gif"
-                    | "bmp"
-                    | "tif"
-                    | "tiff"
-                    | "dng"
-                    | "heic"
-                    | "heif"
-                    | "avif"
-                    | "ico"
-                    | "psd"
-                    | "arw"
-                    | "cr2"
-                    | "cr3"
-                    | "nef"
-                    | "nrw"
-                    | "raf"
-                    | "orf"
-                    | "rw2"
-                    | "pef"
-                    | "srw"
-                    | "dcr"
-                    | "kdc"
-                    | "3fr"
-                    | "iiq"
-                    | "x3f"
-            )
-        })
-        .unwrap_or(false)
-}
-
-#[cfg(target_os = "macos")]
-fn is_raw_for_native_thumbnail(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| {
-            matches!(
-                ext.to_ascii_lowercase().as_str(),
-                "arw"
-                    | "cr2"
-                    | "cr3"
-                    | "nef"
-                    | "nrw"
-                    | "raf"
-                    | "orf"
-                    | "rw2"
-                    | "pef"
-                    | "srw"
-                    | "dcr"
-                    | "kdc"
-                    | "3fr"
-                    | "iiq"
-                    | "x3f"
-                    | "dng"
-            )
-        })
-        .unwrap_or(false)
-}
-
-#[cfg(target_os = "macos")]
-fn generate_image_thumbnail_with_sips(path: &Path, size: f64) -> Option<String> {
-    // RAW must stay on the ImageIO/Quick Look path. Although `sips` accepts
-    // many RAW extensions, its output can be the camera's small embedded JPEG
-    // (then enlarged by the browser), which makes Space preview look blurry at
-    // 200%+ zoom. ImageIO is the path that requests a size-bounded RAW decode.
-    if path.is_dir() || !is_image_for_native_thumbnail(path) || is_raw_for_native_thumbnail(path) {
-        return None;
-    }
-
-    let mut hasher = DefaultHasher::new();
-    path.hash(&mut hasher);
-    let path_hash = hasher.finish();
-    let temp_root = std::env::temp_dir().join("imageexplorer-sips");
-    let output_dir = temp_root.join(format!("{}-{}", path_hash, size.round() as u32));
-    fs::create_dir_all(&output_dir).ok()?;
-
-    let output_path = output_dir.join("thumb.png");
-    let status = Command::new("/usr/bin/sips")
-        .args([
-            "-s",
-            "format",
-            "png",
-            "-Z",
-            &format!("{}", size.round() as u32),
-            path.to_string_lossy().as_ref(),
-            "--out",
-            output_path.to_string_lossy().as_ref(),
-        ])
-        .output()
-        .ok()?;
-
-    if !status.status.success() || !output_path.exists() {
-        let _ = fs::remove_dir_all(&output_dir);
-        return None;
-    }
-
-    let base64 = icon_utils::png_file_to_base64(&output_path);
-    let _ = fs::remove_dir_all(&output_dir);
-    base64
-}
-
-#[cfg(target_os = "macos")]
 fn generate_quicklook_thumbnail(path: &Path, size: f64) -> Option<String> {
     if path.is_dir() {
         return None;
@@ -350,9 +240,10 @@ fn generate_quicklook_thumbnail_in_process(
         return None;
     }
 
-    let bytes = unsafe { std::slice::from_raw_parts(buffer, length).to_vec() };
+    let bytes = unsafe { std::slice::from_raw_parts(buffer, length) };
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
     unsafe { imageexplorer_free_thumbnail(buffer) };
-    Some(base64::engine::general_purpose::STANDARD.encode(bytes))
+    Some(encoded)
 }
 
 #[cfg(target_os = "macos")]
@@ -404,31 +295,53 @@ fn scan_apps_in_dir(dir: &Path) -> Vec<InstalledApp> {
     apps
 }
 
-/// 解析 .app bundle 获取应用信息
+/// 解析 .app bundle 获取应用信息（进程内通过 NSBundle 直接读取 Info.plist，避免为每个应用派生 defaults 子进程）
+#[cfg(target_os = "macos")]
 fn parse_app_bundle(app_path: &Path) -> Option<InstalledApp> {
-    let info_plist = app_path.join("Contents/Info.plist");
+    use objc2::{msg_send, ClassType};
+    use objc2_foundation::{NSBundle, NSString};
 
+    let info_plist = app_path.join("Contents/Info.plist");
     if !info_plist.exists() {
         return None;
     }
 
-    // 使用 defaults 命令读取 plist（macOS 内置工具）
-    let bundle_id = read_plist_key(&info_plist, "CFBundleIdentifier")?;
-    let name = read_plist_key(&info_plist, "CFBundleName")
-        .or_else(|| read_plist_key(&info_plist, "CFBundleDisplayName"))
-        .unwrap_or_else(|| {
-            app_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("Unknown")
-                .to_string()
-        });
+    let path_str = app_path.to_string_lossy();
+    let (bundle_id, name, icon_name) = unsafe {
+        let ns_path = NSString::from_str(&path_str);
+        let bundle = NSBundle::bundleWithPath(&ns_path)?;
+        let bundle_id = bundle.bundleIdentifier()?.to_string();
+        if bundle_id.is_empty() {
+            return None;
+        }
 
-    // 图标路径
-    let icon_name = read_plist_key(&info_plist, "CFBundleIconFile")
-        .or_else(|| read_plist_key(&info_plist, "CFBundleIconName"));
+        let read_string = |key: &str| -> Option<String> {
+            let ns_key = NSString::from_str(key);
+            let value = bundle.objectForInfoDictionaryKey(&ns_key)?;
+            let is_string: bool = msg_send![&*value, isKindOfClass: NSString::class()];
+            if !is_string {
+                return None;
+            }
+            let ns_string = &*(objc2::rc::Retained::as_ptr(&value) as *const NSString);
+            let text = ns_string.to_string();
+            (!text.is_empty()).then_some(text)
+        };
+
+        let name = read_string("CFBundleName")
+            .or_else(|| read_string("CFBundleDisplayName"))
+            .unwrap_or_else(|| {
+                app_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Unknown")
+                    .to_string()
+            });
+        let icon_name = read_string("CFBundleIconFile").or_else(|| read_string("CFBundleIconName"));
+        (bundle_id, name, icon_name)
+    };
+
     let icon_path = icon_name.map(|icon| {
-        let mut icon_file = icon.clone();
+        let mut icon_file = icon;
         if !icon_file.ends_with(".icns") {
             icon_file.push_str(".icns");
         }
@@ -444,54 +357,69 @@ fn parse_app_bundle(app_path: &Path) -> Option<InstalledApp> {
     Some(InstalledApp {
         name,
         bundle_id,
-        path: app_path.to_string_lossy().to_string(),
+        path: path_str.into_owned(),
         icon_path,
-        icon_base64: None, // 扫描时暂不加载图标数据，避免性能问题
+        icon_base64: None,
         is_terminal,
     })
 }
 
-// ... (read_plist_key 保持不变)
-/// 使用 defaults 命令读取 plist 键值
-fn read_plist_key(plist_path: &Path, key: &str) -> Option<String> {
-    let output = Command::new("/usr/bin/defaults")
-        .args(["read", &plist_path.to_string_lossy(), key])
-        .output()
-        .ok()?;
+#[cfg(not(target_os = "macos"))]
+fn parse_app_bundle(_app_path: &Path) -> Option<InstalledApp> {
+    None
+}
 
-    if output.status.success() {
-        let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !value.is_empty() {
-            return Some(value);
+const INSTALLED_APPS_CACHE_TTL: Duration = Duration::from_secs(60);
+
+type InstalledAppsCache = Mutex<Option<(Instant, Vec<InstalledApp>)>>;
+
+fn installed_apps_cache() -> &'static InstalledAppsCache {
+    static CACHE: OnceLock<InstalledAppsCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn scan_installed_apps_cached() -> Vec<InstalledApp> {
+    if let Ok(guard) = installed_apps_cache().lock() {
+        if let Some((timestamp, apps)) = guard.as_ref() {
+            if timestamp.elapsed() <= INSTALLED_APPS_CACHE_TTL {
+                return apps.clone();
+            }
         }
     }
-    None
+
+    let mut apps = Vec::new();
+    apps.extend(scan_apps_in_dir(Path::new("/Applications")));
+    if let Some(home) = dirs::home_dir() {
+        apps.extend(scan_apps_in_dir(&home.join("Applications")));
+    }
+    apps.extend(scan_apps_in_dir(Path::new("/System/Applications")));
+    apps.sort_by_key(|app| app.name.to_lowercase());
+
+    if let Ok(mut guard) = installed_apps_cache().lock() {
+        *guard = Some((Instant::now(), apps.clone()));
+    }
+    apps
 }
 
 /// 获取所有已安装应用
 #[tauri::command]
-pub fn get_installed_apps() -> Vec<InstalledApp> {
-    let mut apps = Vec::new();
-    // 扫描 /Applications
-    apps.extend(scan_apps_in_dir(Path::new("/Applications")));
-    // 扫描 ~/Applications
-    if let Some(home) = dirs::home_dir() {
-        apps.extend(scan_apps_in_dir(&home.join("Applications")));
-    }
-    // 扫描 /System/Applications (系统应用)
-    apps.extend(scan_apps_in_dir(Path::new("/System/Applications")));
-    // 按名称排序
-    apps.sort_by_key(|app| app.name.to_lowercase());
-    apps
+pub async fn get_installed_apps() -> Vec<InstalledApp> {
+    tauri::async_runtime::spawn_blocking(scan_installed_apps_cached)
+        .await
+        .unwrap_or_default()
 }
 
 /// 获取终端类应用
 #[tauri::command]
-pub fn get_terminal_apps() -> Vec<InstalledApp> {
-    get_installed_apps()
-        .into_iter()
-        .filter(|app| app.is_terminal)
-        .collect()
+pub async fn get_terminal_apps() -> Vec<InstalledApp> {
+    tauri::async_runtime::spawn_blocking(|| {
+        scan_installed_apps_cached()
+            .into_iter()
+            .filter(|app| app.is_terminal)
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// 获取指定文件的推荐打开应用
@@ -656,11 +584,6 @@ fn get_file_thumbnail_blocking(
 
     #[cfg(target_os = "macos")]
     {
-        if let Some(base64) = generate_image_thumbnail_with_sips(path_obj, size_val) {
-            crate::cache::set_icon_cache(image_cache_key.clone(), base64.clone());
-            return Some(base64);
-        }
-
         if let Some(base64) =
             generate_quicklook_thumbnail_in_process(path_obj, size_val, prefer_embedded)
         {
@@ -708,9 +631,15 @@ fn get_file_thumbnail_blocking(
 #[tauri::command]
 #[allow(deprecated)]
 pub async fn get_sf_symbol(app: tauri::AppHandle, name: String) -> Option<String> {
+    let cache_key = format!("sfsymbol:{}", name);
+    if let Some(cached) = crate::cache::get_icon_cache(&cache_key) {
+        return Some(cached);
+    }
+
     #[cfg(target_os = "macos")]
     {
         let (tx, rx) = std::sync::mpsc::channel();
+        let name_clone = name.clone();
 
         let _ = app.run_on_main_thread(move || {
             use base64::{engine::general_purpose, Engine as _};
@@ -719,7 +648,7 @@ pub async fn get_sf_symbol(app: tauri::AppHandle, name: String) -> Option<String
             use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize, NSString};
 
             let result = unsafe {
-                let name_ns = NSString::from_str(&name);
+                let name_ns = NSString::from_str(&name_clone);
                 if let Some(base_image) =
                     NSImage::imageWithSystemSymbolName_accessibilityDescription(&name_ns, None)
                 {
@@ -759,7 +688,11 @@ pub async fn get_sf_symbol(app: tauri::AppHandle, name: String) -> Option<String
             let _ = tx.send(result);
         });
 
-        rx.recv().unwrap_or(None)
+        let result = rx.recv().unwrap_or(None);
+        if let Some(ref base64) = result {
+            crate::cache::set_icon_cache(cache_key, base64.clone());
+        }
+        result
     }
     #[cfg(not(target_os = "macos"))]
     None

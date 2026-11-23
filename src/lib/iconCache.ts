@@ -6,8 +6,41 @@ import { SYSTEM_PATHS } from "@/constants/paths";
 const MAX_CACHE_ENTRIES = 1200;
 const MAX_CACHE_BYTES = 64 * 1024 * 1024;
 const iconCacheEntries = new Map<string, string>();
-const retainedCacheKeys = new Set<string>();
+const retainedCacheKeyCounts = new Map<string, number>();
+// Secondary index mapping `file:<path>:<mtime>:<size>:` -> cached keys so
+// `getLargestCachedFileThumbnail` is O(variants) instead of scanning all 1200 entries.
+const thumbnailKeysByPrefix = new Map<string, Set<string>>();
 let iconCacheBytes = 0;
+
+function extractThumbnailPrefix(key: string): string | null {
+  if (!key.startsWith("file:")) return null;
+  // Format: file:<path>:<modified>:<fileSize>:<requestSize>[:embedded]
+  // Note: path may contain colons on some systems; find the last 3 numeric/flag segments.
+  const withoutFlag = key.endsWith(":embedded") ? key.slice(0, -":embedded".length) : key;
+  const lastColon = withoutFlag.lastIndexOf(":");
+  if (lastColon <= 5) return null;
+  return withoutFlag.slice(0, lastColon + 1);
+}
+
+function indexThumbnailKey(key: string) {
+  const prefix = extractThumbnailPrefix(key);
+  if (!prefix) return;
+  let bucket = thumbnailKeysByPrefix.get(prefix);
+  if (!bucket) {
+    bucket = new Set<string>();
+    thumbnailKeysByPrefix.set(prefix, bucket);
+  }
+  bucket.add(key);
+}
+
+function unindexThumbnailKey(key: string) {
+  const prefix = extractThumbnailPrefix(key);
+  if (!prefix) return;
+  const bucket = thumbnailKeysByPrefix.get(prefix);
+  if (!bucket) return;
+  bucket.delete(key);
+  if (bucket.size === 0) thumbnailKeysByPrefix.delete(prefix);
+}
 
 function valueBytes(value: string) {
   return value.length * 2;
@@ -24,7 +57,7 @@ function touchCacheKey(key: string) {
 
 function getOldestEvictableCacheKey() {
   for (const cacheKey of iconCacheEntries.keys()) {
-    if (!retainedCacheKeys.has(cacheKey)) return cacheKey;
+    if (!retainedCacheKeyCounts.has(cacheKey)) return cacheKey;
   }
   return iconCacheEntries.keys().next().value as string | undefined;
 }
@@ -36,6 +69,7 @@ function setCacheValue(key: string, value: string) {
     iconCacheEntries.delete(key);
   }
   iconCacheEntries.set(key, value);
+  indexThumbnailKey(key);
   iconCacheBytes += valueBytes(value);
 
   while (iconCacheEntries.size > MAX_CACHE_ENTRIES || iconCacheBytes > MAX_CACHE_BYTES) {
@@ -44,6 +78,7 @@ function setCacheValue(key: string, value: string) {
     const oldestValue = iconCacheEntries.get(oldest);
     if (oldestValue !== undefined) iconCacheBytes -= valueBytes(oldestValue);
     iconCacheEntries.delete(oldest);
+    unindexThumbnailKey(oldest);
   }
 }
 
@@ -52,6 +87,7 @@ function deleteCacheValue(key: string) {
   if (value !== undefined) {
     iconCacheBytes -= valueBytes(value);
     iconCacheEntries.delete(key);
+    unindexThumbnailKey(key);
     return true;
   }
   return false;
@@ -80,13 +116,24 @@ export const iconCache = new Proxy<Record<string, string>>({} as Record<string, 
 
 export function clearIconCache() {
   iconCacheEntries.clear();
+  thumbnailKeysByPrefix.clear();
   iconCacheBytes = 0;
 }
 
 /** Keep mounted grid thumbnails from being evicted by a large Quick Look frame. */
 export function retainIconCacheKey(cacheKey: string) {
-  retainedCacheKeys.add(cacheKey);
-  return () => retainedCacheKeys.delete(cacheKey);
+  retainedCacheKeyCounts.set(cacheKey, (retainedCacheKeyCounts.get(cacheKey) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const nextCount = (retainedCacheKeyCounts.get(cacheKey) ?? 1) - 1;
+    if (nextCount <= 0) {
+      retainedCacheKeyCounts.delete(cacheKey);
+    } else {
+      retainedCacheKeyCounts.set(cacheKey, nextCount);
+    }
+  };
 }
 
 export function getIconCacheStats() {
@@ -128,6 +175,13 @@ const keyedRefreshCallbacks = new Map<string, Set<() => void>>();
 
 // Keep the request size in one place so visible thumbnails and background
 // analysis can share the native thumbnail/cache entry.
+export function toImageDataUrl(base64: string): string {
+  if (base64.startsWith("data:")) return base64;
+  if (base64.startsWith("/9j/")) return `data:image/jpeg;base64,${base64}`;
+  if (base64.startsWith("UklGR")) return `data:image/webp;base64,${base64}`;
+  return `data:image/png;base64,${base64}`;
+}
+
 export function getThumbnailRequestSize(size: number, requestSizeOverride?: number) {
   if (requestSizeOverride) return requestSizeOverride;
   const dpr = typeof window === "undefined" ? 1 : window.devicePixelRatio || 1;
@@ -153,10 +207,13 @@ export function getLargestCachedFileThumbnail(
   fileSize: number
 ) {
   const prefix = `file:${path}:${modified ?? 0}:${fileSize}:`;
-  let bestMatch: { requestSize: number; base64: string } | null = null;
+  const candidateKeys = thumbnailKeysByPrefix.get(prefix);
+  if (!candidateKeys || candidateKeys.size === 0) return null;
 
-  for (const [cacheKey, value] of iconCacheEntries) {
-    if (!cacheKey.startsWith(prefix) || value === "failed") continue;
+  let bestMatch: { requestSize: number; base64: string } | null = null;
+  for (const cacheKey of candidateKeys) {
+    const value = iconCacheEntries.get(cacheKey);
+    if (!value || value === "failed") continue;
     // Embedded previews append ":embedded" to the size token. Parse the
     // numeric part so those previews can also seed Quick Look immediately.
     const requestSize = Number(cacheKey.slice(prefix.length).split(":", 1)[0]);
@@ -414,6 +471,6 @@ export async function preloadIcon(type: string, value: string): Promise<void> {
     console.error("Failed to preload icon:", e);
   } finally {
     loadingIcons.delete(cacheKey);
-    triggerIconRefresh();
+    triggerIconRefreshForKey(cacheKey);
   }
 }

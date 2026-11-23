@@ -250,13 +250,16 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   const editPasteEnabled = isRegisteredCommandEnabled("edit.paste");
   const editSelectAllEnabled = isRegisteredCommandEnabled("edit.select-all");
 
+  const lastSyncedMenuRef = useRef<Map<string, boolean>>(new Map());
+
   useEffect(() => {
     if (activeTab?.path !== currentPath) return;
 
     const currentWindow = getCurrentWindow();
     let cancelled = false;
     let unlisten: (() => void) | undefined;
-    const syncNativeMenu = async () => {
+    let syncTimer: ReturnType<typeof setTimeout> | null = null;
+    const syncNativeMenu = async (force = false) => {
       try {
         if (cancelled || !(await currentWindow.isFocused())) return;
         const scope = getCurrentKeyboardCommandScope();
@@ -270,16 +273,30 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
           ["edit.paste", isRegisteredCommandEnabled("edit.paste")],
           ["edit.select-all", isRegisteredCommandEnabled("edit.select-all")],
         ];
-        await Promise.all(
-          commandStates.map(([commandId, enabled]) =>
-            invoke("set_native_menu_command_enabled", { commandId, enabled })
-          )
-        );
+        const changedStates = force
+          ? commandStates
+          : commandStates.filter(
+              ([commandId, enabled]) => lastSyncedMenuRef.current.get(commandId) !== enabled
+            );
+        if (changedStates.length === 0) return;
+
+        await invoke("set_native_menu_commands_enabled", { states: changedStates });
+        if (!cancelled) {
+          for (const [commandId, enabled] of changedStates) {
+            lastSyncedMenuRef.current.set(commandId, enabled);
+          }
+        }
       } catch (syncError) {
         console.error("Failed to sync native file menu state:", syncError);
       }
     };
-    const queueMenuSync = () => queueMicrotask(() => void syncNativeMenu());
+    const queueMenuSync = () => {
+      if (syncTimer !== null) return;
+      syncTimer = setTimeout(() => {
+        syncTimer = null;
+        void syncNativeMenu();
+      }, 32);
+    };
 
     void syncNativeMenu();
     document.addEventListener("focusin", queueMenuSync);
@@ -291,7 +308,10 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     window.addEventListener("app-command-registry-changed", queueMenuSync);
     void currentWindow
       .onFocusChanged(({ payload: focused }) => {
-        if (focused) void syncNativeMenu();
+        if (focused) {
+          lastSyncedMenuRef.current.clear();
+          void syncNativeMenu(true);
+        }
       })
       .then((dispose) => {
         if (cancelled) {
@@ -304,6 +324,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
 
     return () => {
       cancelled = true;
+      if (syncTimer !== null) clearTimeout(syncTimer);
       unlisten?.();
       document.removeEventListener("focusin", queueMenuSync);
       document.removeEventListener("focusout", queueMenuSync);
@@ -381,8 +402,12 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     getScrollElement: () => gridScrollRef.current,
     estimateSize: (rowIndex) => {
       if (!photoAnalysisEnabled) return GRID_ROW_HEIGHT;
-      const row = sortedEntries.slice(rowIndex * gridColumns, (rowIndex + 1) * gridColumns);
-      return row.some((entry) => !entry.is_dir) ? PHOTO_GRID_ROW_HEIGHT : GRID_ROW_HEIGHT;
+      const start = rowIndex * gridColumns;
+      const end = Math.min(sortedEntries.length, start + gridColumns);
+      for (let i = start; i < end; i += 1) {
+        if (!sortedEntries[i].is_dir) return PHOTO_GRID_ROW_HEIGHT;
+      }
+      return GRID_ROW_HEIGHT;
     },
     overscan: 2,
     useAnimationFrameWithResizeObserver: true,
@@ -402,12 +427,18 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     const endIndex = Math.min(sortedEntries.length, (gridViewportEndRow + 1) * gridColumns);
     return sortedEntries.slice(startIndex, endIndex);
   }, [gridColumns, gridViewportEndRow, gridViewportStartRow, sortedEntries, viewMode]);
-  const gridViewportPathSet = useMemo(
-    () => new Set(gridViewportEntries.map((entry) => entry.path)),
+  const gridViewportPaths = useMemo(
+    () => gridViewportEntries.map((entry) => entry.path),
     [gridViewportEntries]
   );
+  const gridViewportPathSet = useMemo(() => new Set(gridViewportPaths), [gridViewportPaths]);
   const listStart = listVirtualizer.range?.startIndex ?? 0;
   const listEnd = listVirtualizer.range?.endIndex ?? -1;
+  const listViewportPaths = useMemo(() => {
+    if (viewMode !== "list" || listEnd < listStart) return [];
+    return sortedEntries.slice(listStart, listEnd + 1).map((entry) => entry.path);
+  }, [listEnd, listStart, sortedEntries, viewMode]);
+  const viewportPriorityPaths = viewMode === "icon" ? gridViewportPaths : listViewportPaths;
   const folderScanEntries = useMemo(
     () =>
       entries.filter(
@@ -419,7 +450,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   );
   const visibleSharpness = useVisibleSharpness(
     folderScanEntries,
-    !loading && !error && !quickLookEntry
+    !loading && !error && !quickLookEntry,
+    viewportPriorityPaths
   );
 
   const photoAnalysisEnabledForFolder = photoAnalysisEnabled;
@@ -427,7 +459,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     entries,
     photoAnalysisEnabledForFolder,
     currentPath,
-    gridViewportEntries.map((entry) => entry.path),
+    viewportPriorityPaths,
     Boolean(quickLookEntry)
   );
 
@@ -519,54 +551,72 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     gridVirtualizer,
   ]);
 
-  // 点击处理
-  const handleClick = (
-    entry: FileEntry,
-    index: number,
-    e: React.MouseEvent,
-    sourceEntries: FileEntry[] = sortedEntries
-  ) => {
-    if (e.metaKey || e.ctrlKey) {
-      toggleSelection(entry.path, index);
-    } else if (e.shiftKey) {
-      selectRange(sourceEntries, index);
-    } else {
-      selectSingle(entry.path, index);
-    }
-  };
+  // 当前选中的文件集合与列表（O(N) 而非 O(N*M)）
+  const selectedPathSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
+  const selectedFileEntries = useMemo(
+    () => selectionEntries.filter((e) => selectedPathSet.has(e.path)),
+    [selectionEntries, selectedPathSet]
+  );
+
+  const sortedEntriesRef = useRef(sortedEntries);
+  const selectedPathSetRef = useRef(selectedPathSet);
+  useEffect(() => {
+    sortedEntriesRef.current = sortedEntries;
+  }, [sortedEntries]);
+  useEffect(() => {
+    selectedPathSetRef.current = selectedPathSet;
+  }, [selectedPathSet]);
+
+  // 点击处理（稳定引用，避免破坏 FileListItem / FileGridItem 的 React.memo）
+  const handleClick = useCallback(
+    (
+      entry: FileEntry,
+      index: number,
+      e: React.MouseEvent,
+      sourceEntries: FileEntry[] = sortedEntriesRef.current
+    ) => {
+      if (e.metaKey || e.ctrlKey) {
+        toggleSelection(entry.path, index);
+      } else if (e.shiftKey) {
+        selectRange(sourceEntries, index);
+      } else {
+        selectSingle(entry.path, index);
+      }
+    },
+    [selectRange, selectSingle, toggleSelection]
+  );
 
   // Finder 风格：点击未选中的文件名先选中，点击已选中文件名进入重命名。
-  const handleNameClick = (entry: FileEntry, index: number, e: React.MouseEvent) => {
-    if (e.metaKey || e.ctrlKey || e.shiftKey) {
-      handleClick(entry, index, e);
-      return;
-    }
+  const handleNameClick = useCallback(
+    (entry: FileEntry, index: number, e: React.MouseEvent) => {
+      if (e.metaKey || e.ctrlKey || e.shiftKey) {
+        handleClick(entry, index, e);
+        return;
+      }
 
-    if (selectedPaths.includes(entry.path) && !entry.readonly) {
-      handleStartRename(entry);
-    } else {
-      selectSingle(entry.path, index);
-    }
-  };
+      if (selectedPathSetRef.current.has(entry.path) && !entry.readonly) {
+        handleStartRename(entry);
+      } else {
+        selectSingle(entry.path, index);
+      }
+    },
+    [handleClick, handleStartRename, selectSingle]
+  );
 
   // 跳转到位置
-  const handleGoToLocation = async (entry: FileEntry) => {
-    try {
-      const parentDir = await invoke<string>("get_parent_dir", { path: entry.path });
-      if (parentDir) {
-        onNavigate(parentDir, entry.path);
+  const handleGoToLocation = useCallback(
+    async (entry: FileEntry) => {
+      try {
+        const parentDir = await invoke<string>("get_parent_dir", { path: entry.path });
+        if (parentDir) {
+          onNavigate(parentDir, entry.path);
+        }
+      } catch (e) {
+        console.error("Failed to go to location:", e);
       }
-    } catch (e) {
-      console.error("Failed to go to location:", e);
-    }
-  };
-
-  // 当前选中的文件列表
-  const selectedFileEntries = useMemo(
-    () => selectionEntries.filter((e) => selectedPaths.includes(e.path)),
-    [selectionEntries, selectedPaths]
+    },
+    [onNavigate]
   );
-  const selectedPathSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
 
   const handleFileContainerDragOver = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
@@ -604,30 +654,51 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   );
 
   // 文件操作对象
-  const fileActions: FileActions = {
-    onOpen: handleOpen,
-    onOpenInNewTab: (entry) => {
-      if (entry.is_dir) addTab(entry.path);
-    },
-    onCopy: handleCopy,
-    onCut: handleCut,
-    onPaste: handlePaste,
-    onCopyPath: handleCopyPath,
-    onDelete: handleDelete,
-    onCompress: handleCompress,
-    onExtract: handleExtract,
-    onGetInfo: handleGetInfo,
-    onToggleFavorite: handleToggleFavorite,
-    isFavorite,
-    onRename: handleStartRename,
-    onGoToLocation: currentPath.startsWith(SMART_FOLDER_PREFIX) ? handleGoToLocation : undefined,
-    onBatchRename: (entries: FileEntry[]) => {
-      setBatchRenameFiles(entries);
-      setShowBatchRename(true);
-    },
-    commands: fileCommands,
-    currentPath: operationPath,
-  };
+  const fileActions: FileActions = useMemo(
+    () => ({
+      onOpen: handleOpen,
+      onOpenInNewTab: (entry) => {
+        if (entry.is_dir) addTab(entry.path);
+      },
+      onCopy: handleCopy,
+      onCut: handleCut,
+      onPaste: handlePaste,
+      onCopyPath: handleCopyPath,
+      onDelete: handleDelete,
+      onCompress: handleCompress,
+      onExtract: handleExtract,
+      onGetInfo: handleGetInfo,
+      onToggleFavorite: handleToggleFavorite,
+      isFavorite,
+      onRename: handleStartRename,
+      onGoToLocation: currentPath.startsWith(SMART_FOLDER_PREFIX) ? handleGoToLocation : undefined,
+      onBatchRename: (entries: FileEntry[]) => {
+        setBatchRenameFiles(entries);
+        setShowBatchRename(true);
+      },
+      commands: fileCommands,
+      currentPath: operationPath,
+    }),
+    [
+      addTab,
+      currentPath,
+      fileCommands,
+      handleCompress,
+      handleCopy,
+      handleCopyPath,
+      handleCut,
+      handleDelete,
+      handleExtract,
+      handleGetInfo,
+      handleGoToLocation,
+      handleOpen,
+      handlePaste,
+      handleStartRename,
+      handleToggleFavorite,
+      isFavorite,
+      operationPath,
+    ]
+  );
 
   // Loading 状态
   if (loading) {
@@ -810,6 +881,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                         >
                           <FileListItem
                             entry={entry}
+                            index={virtualItem.index}
                             visibleSharpness={visibleSharpness.get(entry.path)}
                             isInViewport={
                               virtualItem.index >= listStart && virtualItem.index <= listEnd
@@ -822,9 +894,9 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                             onEditValueChange={setEditValue}
                             onSubmitRename={handleSubmitRename}
                             onCancelRename={handleCancelRename}
-                            onClick={(e) => handleClick(entry, virtualItem.index, e)}
-                            onNameClick={(e) => handleNameClick(entry, virtualItem.index, e)}
-                            onDoubleClick={() => handleOpen(entry)}
+                            onItemClick={handleClick}
+                            onItemNameClick={handleNameClick}
+                            onItemDoubleClick={handleOpen}
                           />
                         </AppContextMenu>
                       </div>
@@ -886,6 +958,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                                 >
                                   <FileGridItem
                                     entry={entry}
+                                    index={globalIndex}
                                     isSelected={selectedPathSet.has(entry.path)}
                                     isFocused={selectedPath === entry.path}
                                     isEditing={editingPath === entry.path}
@@ -893,9 +966,9 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                                     onEditValueChange={setEditValue}
                                     onSubmitRename={handleSubmitRename}
                                     onCancelRename={handleCancelRename}
-                                    onClick={(e) => handleClick(entry, globalIndex, e)}
-                                    onNameClick={(e) => handleNameClick(entry, globalIndex, e)}
-                                    onDoubleClick={() => handleOpen(entry)}
+                                    onItemClick={handleClick}
+                                    onItemNameClick={handleNameClick}
+                                    onItemDoubleClick={handleOpen}
                                     photoAnalysis={analysis}
                                     visibleSharpness={visibleSharpness.get(entry.path)}
                                     photoAnalysisEnabled={photoAnalysisEnabled}

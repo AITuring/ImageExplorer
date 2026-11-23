@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input";
 
 interface FileGridItemProps {
   entry: FileEntry;
+  index?: number;
   isSelected: boolean;
   isFocused?: boolean;
   isEditing: boolean;
@@ -22,9 +23,12 @@ interface FileGridItemProps {
   onEditValueChange: (value: string) => void;
   onSubmitRename: () => void;
   onCancelRename: () => void;
-  onClick: (e: React.MouseEvent) => void;
+  onClick?: (e: React.MouseEvent) => void;
   onNameClick?: (e: React.MouseEvent) => void;
-  onDoubleClick: () => void;
+  onDoubleClick?: () => void;
+  onItemClick?: (entry: FileEntry, index: number, e: React.MouseEvent) => void;
+  onItemNameClick?: (entry: FileEntry, index: number, e: React.MouseEvent) => void;
+  onItemDoubleClick?: (entry: FileEntry) => void;
   onMove?: (source: string, target: string) => void;
   photoAnalysis?: PhotoAnalysisRecord;
   visibleSharpness?: VisibleSharpness;
@@ -36,6 +40,7 @@ interface FileGridItemProps {
 
 export const FileGridItem = memo(function FileGridItem({
   entry,
+  index = 0,
   isSelected,
   isFocused = false,
   isEditing,
@@ -46,6 +51,9 @@ export const FileGridItem = memo(function FileGridItem({
   onClick,
   onNameClick,
   onDoubleClick,
+  onItemClick,
+  onItemNameClick,
+  onItemDoubleClick,
   photoAnalysis,
   visibleSharpness,
   photoGroupColor,
@@ -95,8 +103,14 @@ export const FileGridItem = memo(function FileGridItem({
           : "hover:bg-accent/60 hover:ring-border/60 ring-1 ring-transparent"
       } ${isFocused ? "outline-primary outline outline-1 outline-offset-[-1px]" : ""}`}
       style={!isSelected && photoGroupColor ? { backgroundColor: photoGroupColor } : undefined}
-      onClick={onClick}
-      onDoubleClick={onDoubleClick}
+      onClick={(e) => {
+        if (onItemClick) onItemClick(entry, index, e);
+        else onClick?.(e);
+      }}
+      onDoubleClick={() => {
+        if (onItemDoubleClick) onItemDoubleClick(entry);
+        else onDoubleClick?.();
+      }}
     >
       <div
         className="relative mb-1 flex max-w-full items-center justify-center overflow-hidden"
@@ -151,13 +165,17 @@ export const FileGridItem = memo(function FileGridItem({
         />
       ) : (
         <div
-          className={`w-full text-center ${onNameClick ? "cursor-text" : ""}`}
+          className={`w-full text-center ${onNameClick || onItemNameClick ? "cursor-text" : ""}`}
           onClick={(e) => {
             e.stopPropagation();
-            if (onNameClick) {
+            if (onItemNameClick) {
+              onItemNameClick(entry, index, e);
+            } else if (onNameClick) {
               onNameClick(e);
+            } else if (onItemClick) {
+              onItemClick(entry, index, e);
             } else {
-              onClick(e);
+              onClick?.(e);
             }
           }}
         >

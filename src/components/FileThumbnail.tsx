@@ -6,6 +6,7 @@ import {
   loadFileThumbnail,
   registerIconRefreshForKey,
   retainIconCacheKey,
+  toImageDataUrl,
   triggerIconRefreshForKey,
   getFileThumbnailCacheKey,
   getThumbnailRequestSize,
@@ -152,7 +153,7 @@ export const FileThumbnail = memo(function FileThumbnail({
   if (thumbnailBase64) {
     return (
       <img
-        src={`data:image/png;base64,${thumbnailBase64}`}
+        src={toImageDataUrl(thumbnailBase64)}
         className={className || "object-contain"}
         style={className ? undefined : { width: roundedSize, height: roundedSize }}
         alt=""

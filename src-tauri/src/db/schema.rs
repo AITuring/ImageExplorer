@@ -2,7 +2,7 @@
 
 use rusqlite::Connection;
 
-const CURRENT_SCHEMA_VERSION: i64 = 2;
+const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 /// 初始化数据库 schema
 pub fn init(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -66,6 +66,13 @@ pub fn init(conn: &Connection) -> Result<(), rusqlite::Error> {
             )?;
             record_migration(conn, 2)?;
         }
+
+        if version < 3 {
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_files_extension_lower ON files(LOWER(extension)) WHERE is_dir = 0;",
+            )?;
+            record_migration(conn, 3)?;
+        }
     }
 
     // 检查并创建 FTS 触发器
@@ -86,8 +93,20 @@ fn record_migration(conn: &Connection, version: i64) -> Result<(), rusqlite::Err
     Ok(())
 }
 
+/// Drop FTS triggers temporarily during bulk table replacement so SQLite does
+/// not update FTS row-by-row right before an explicit FTS rebuild.
+pub fn drop_fts_triggers(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute_batch(
+        r#"
+        DROP TRIGGER IF EXISTS files_ai;
+        DROP TRIGGER IF EXISTS files_ad;
+        DROP TRIGGER IF EXISTS files_au;
+        "#,
+    )
+}
+
 /// 设置 FTS 同步触发器
-fn setup_fts_triggers(conn: &Connection) -> Result<(), rusqlite::Error> {
+pub fn setup_fts_triggers(conn: &Connection) -> Result<(), rusqlite::Error> {
     // 检查触发器是否存在
     let trigger_exists: bool = conn
         .query_row(

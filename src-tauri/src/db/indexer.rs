@@ -2,10 +2,13 @@
 //!
 //! 负责扫描文件系统并写入数据库
 
-use ignore::{DirEntry, WalkBuilder};
+use ignore::{DirEntry, WalkBuilder, WalkState};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf, MAIN_SEPARATOR};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::time::SystemTime;
 use tauri::Emitter;
 
@@ -65,6 +68,7 @@ impl IndexBuilder {
     }
 
     /// 扫描文件系统，并按批次交给数据库写入，避免百万文件全部驻留内存。
+    /// 使用真正的并行遍历（build_parallel）并通过有界通道流式交给写线程。
     fn scan_files<F>(
         &self,
         root: &str,
@@ -80,79 +84,127 @@ impl IndexBuilder {
             / 2;
         let threads = std::cmp::max(1, threads);
 
-        let walker = WalkBuilder::new(root)
-            .hidden(false)
-            .git_ignore(false)
-            .git_global(false)
-            .git_exclude(false)
-            .threads(threads)
-            .filter_entry(|entry| !crate::config::is_index_excluded(entry.path()))
-            .build();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Result<FileRecord, String>>(4096);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let root_owned = root.to_string();
+        let walker_cancelled = Arc::clone(&cancelled);
+
+        let walker_handle = std::thread::Builder::new()
+            .name("imageexplorer-index-walker".to_string())
+            .spawn(move || {
+                let walker = WalkBuilder::new(&root_owned)
+                    .hidden(false)
+                    .git_ignore(false)
+                    .git_global(false)
+                    .git_exclude(false)
+                    .threads(threads)
+                    .filter_entry(|entry| !crate::config::is_index_excluded(entry.path()))
+                    .build_parallel();
+
+                walker.run(|| {
+                    let tx = tx.clone();
+                    let root_str = root_owned.clone();
+                    let cancelled = Arc::clone(&walker_cancelled);
+                    Box::new(move |result| {
+                        if cancelled.load(Ordering::Relaxed) {
+                            return WalkState::Quit;
+                        }
+                        let entry = match result {
+                            Ok(entry) => entry,
+                            Err(error) => {
+                                let _ =
+                                    tx.send(Err(format!("index scan traversal failed: {error}")));
+                                cancelled.store(true, Ordering::Relaxed);
+                                return WalkState::Quit;
+                            }
+                        };
+                        let path = entry.path();
+                        let path_str = path.to_string_lossy().to_string();
+                        if path_str == root_str {
+                            return WalkState::Continue;
+                        }
+                        let Some(file_name) = path.file_name() else {
+                            return WalkState::Continue;
+                        };
+                        let name = file_name.to_string_lossy().to_string();
+                        let name_lower = name.to_lowercase();
+                        let (size, modified, is_dir) = if let Ok(metadata) = entry.metadata() {
+                            let size = metadata.len() as i64;
+                            let modified = metadata
+                                .modified()
+                                .ok()
+                                .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                                .map(|d| d.as_secs() as i64);
+                            (size, modified, metadata.is_dir())
+                        } else {
+                            (0, None, entry.file_type().is_some_and(|kind| kind.is_dir()))
+                        };
+                        let extension = path.extension().map(|e| e.to_string_lossy().to_string());
+                        let parent_path = path.parent().map(|p| p.to_string_lossy().to_string());
+
+                        if tx
+                            .send(Ok(FileRecord {
+                                path: path_str,
+                                name,
+                                name_lower,
+                                extension,
+                                size,
+                                modified_at: modified,
+                                is_dir,
+                                parent_path,
+                            }))
+                            .is_err()
+                        {
+                            cancelled.store(true, Ordering::Relaxed);
+                            return WalkState::Quit;
+                        }
+                        WalkState::Continue
+                    })
+                });
+            })
+            .map_err(|error| format!("Failed to start index walker: {error}"))?;
 
         let mut count = 0;
         let mut last_emit = std::time::Instant::now();
+        let mut scan_result: Result<(), String> = Ok(());
 
-        for result in walker {
-            let entry = result.map_err(|error| format!("index scan traversal failed: {error}"))?;
-            let path = entry.path();
-            let path_str = path.to_string_lossy().to_string();
-
-            if path_str == root {
-                continue;
-            }
-
-            if let Some(file_name) = path.file_name() {
-                let name = file_name.to_string_lossy().to_string();
-                let name_lower = name.to_lowercase();
-
-                let (size, modified) = if let Ok(metadata) = entry.metadata() {
-                    let size = metadata.len() as i64;
-                    let modified = metadata
-                        .modified()
-                        .ok()
-                        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs() as i64);
-                    (size, modified)
-                } else {
-                    (0, None)
-                };
-
-                let extension = path.extension().map(|e| e.to_string_lossy().to_string());
-
-                let parent_path = path.parent().map(|p| p.to_string_lossy().to_string());
-
-                on_file(FileRecord {
-                    path: path_str,
-                    name,
-                    name_lower,
-                    extension,
-                    size,
-                    modified_at: modified,
-                    is_dir: path.is_dir(),
-                    parent_path,
-                })?;
-
-                count += 1;
-
-                // 进度通知
-                if count % crate::config::INDEX_PROGRESS_INTERVAL == 0
-                    || last_emit.elapsed().as_secs() >= 1
-                {
-                    if let Some(app_handle) = app {
-                        let _ = app_handle.emit("index-progress", count);
+        for item in rx {
+            match item {
+                Ok(record) => {
+                    if let Err(error) = on_file(record) {
+                        cancelled.store(true, Ordering::Relaxed);
+                        scan_result = Err(error);
+                        break;
                     }
-                    last_emit = std::time::Instant::now();
+                    count += 1;
 
-                    // CPU 降速
-                    if count % crate::config::INDEX_THROTTLE_INTERVAL == 0 {
-                        std::thread::sleep(std::time::Duration::from_millis(
-                            crate::config::INDEX_THROTTLE_MS,
-                        ));
+                    // 进度通知
+                    if count % crate::config::INDEX_PROGRESS_INTERVAL == 0
+                        || last_emit.elapsed().as_secs() >= 1
+                    {
+                        if let Some(app_handle) = app {
+                            let _ = app_handle.emit("index-progress", count);
+                        }
+                        last_emit = std::time::Instant::now();
+
+                        // CPU 降速
+                        if count % crate::config::INDEX_THROTTLE_INTERVAL == 0 {
+                            std::thread::sleep(std::time::Duration::from_millis(
+                                crate::config::INDEX_THROTTLE_MS,
+                            ));
+                        }
                     }
+                }
+                Err(error) => {
+                    cancelled.store(true, Ordering::Relaxed);
+                    scan_result = Err(error);
+                    break;
                 }
             }
         }
 
+        let _ = walker_handle.join();
+        scan_result?;
         Ok(count)
     }
 
@@ -220,9 +272,11 @@ impl IndexBuilder {
     }
 
     /// 在单个事务中替换活动索引并同步 FTS。WAL 读者在提交前仍可读取旧索引。
+    /// 批量替换前先移除 FTS 触发器，避免逐行维护 FTS 后又全量 rebuild 的双倍开销。
     fn activate_staging_table(&self) -> Result<(), String> {
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
+        crate::db::schema::drop_fts_triggers(&tx).map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM files", [])
             .map_err(|e| e.to_string())?;
         tx.execute(
@@ -234,6 +288,7 @@ impl IndexBuilder {
         .map_err(|e| e.to_string())?;
         tx.execute("INSERT INTO files_fts(files_fts) VALUES('rebuild')", [])
             .map_err(|e| e.to_string())?;
+        crate::db::schema::setup_fts_triggers(&tx).map_err(|e| e.to_string())?;
         tx.execute("DROP TABLE files_rebuild_staging", [])
             .map_err(|e| e.to_string())?;
         let indexed_at = SystemTime::now()
@@ -528,14 +583,28 @@ fn path_prefix(path: &str) -> String {
     }
 }
 
+/// Exclusive upper bound for a path prefix ending with `MAIN_SEPARATOR` so
+/// SQLite can satisfy subtree queries with a B-tree index range scan instead of
+/// `substr(path, ...)`, which forces a full table scan.
+fn path_prefix_upper_bound(prefix: &str) -> String {
+    let mut bytes = prefix.as_bytes().to_vec();
+    if let Some(last) = bytes.last_mut() {
+        *last = last.saturating_add(1);
+    }
+    String::from_utf8(bytes).unwrap_or_else(|_| format!("{prefix}\u{10FFFF}"))
+}
+
 fn read_path_tree(conn: &Connection, root: &str, recursive: bool) -> Result<Vec<String>, String> {
     let mut paths = if recursive {
         let prefix = path_prefix(root);
+        let upper_bound = path_prefix_upper_bound(&prefix);
         let mut stmt = conn
-            .prepare("SELECT path FROM files WHERE path = ?1 OR substr(path, 1, length(?2)) = ?2")
+            .prepare("SELECT path FROM files WHERE path = ?1 OR (path >= ?2 AND path < ?3)")
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(rusqlite::params![root, prefix], |row| row.get(0))
+            .query_map(rusqlite::params![root, prefix, upper_bound], |row| {
+                row.get(0)
+            })
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<String>, _>>()
             .map_err(|e| e.to_string())?;
@@ -557,9 +626,10 @@ fn read_path_tree(conn: &Connection, root: &str, recursive: bool) -> Result<Vec<
 
 fn delete_path_tree(conn: &Connection, root: &str) -> Result<(), String> {
     let prefix = path_prefix(root);
+    let upper_bound = path_prefix_upper_bound(&prefix);
     conn.execute(
-        "DELETE FROM files WHERE path = ?1 OR substr(path, 1, length(?2)) = ?2",
-        rusqlite::params![root, prefix],
+        "DELETE FROM files WHERE path = ?1 OR (path >= ?2 AND path < ?3)",
+        rusqlite::params![root, prefix, upper_bound],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -640,7 +710,7 @@ fn file_record_from_entry(entry: &DirEntry) -> Result<FileRecord, String> {
             .map(|value| value.to_string_lossy().to_string()),
         size: metadata.len() as i64,
         modified_at,
-        is_dir: path.is_dir(),
+        is_dir: metadata.is_dir(),
         parent_path: path
             .parent()
             .map(|parent| parent.to_string_lossy().to_string()),

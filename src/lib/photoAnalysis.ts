@@ -5,6 +5,7 @@ import {
   getLargestCachedFileThumbnail,
   getThumbnailRequestSize,
   loadFileThumbnail,
+  toImageDataUrl,
 } from "@/lib/iconCache";
 import { groupPhotoFeatures } from "@/lib/photoGrouping";
 
@@ -177,7 +178,7 @@ function decodeThumbnail(base64: string): Promise<HTMLImageElement> {
     const image = new Image();
     image.onload = () => resolve(image);
     image.onerror = () => reject(new Error("Unable to decode analysis thumbnail"));
-    image.src = `data:image/png;base64,${base64}`;
+    image.src = toImageDataUrl(base64);
   });
 }
 
@@ -396,11 +397,21 @@ function createTileScoreGrid(tileScores: ArrayLike<number>) {
   }));
 }
 
+let sharedAnalysisCanvas: HTMLCanvasElement | null = null;
+let sharedAnalysisContext: CanvasRenderingContext2D | null = null;
+
+function getSharedAnalysisContext() {
+  if (!sharedAnalysisCanvas) {
+    sharedAnalysisCanvas = document.createElement("canvas");
+    sharedAnalysisCanvas.width = ANALYSIS_SIZE;
+    sharedAnalysisCanvas.height = ANALYSIS_SIZE;
+    sharedAnalysisContext = sharedAnalysisCanvas.getContext("2d", { willReadFrequently: true });
+  }
+  return sharedAnalysisContext;
+}
+
 function extractPhotoFeatures(image: HTMLImageElement, path: string): ExtractedPhotoFeatures {
-  const canvas = document.createElement("canvas");
-  canvas.width = ANALYSIS_SIZE;
-  canvas.height = ANALYSIS_SIZE;
-  const context = canvas.getContext("2d", { willReadFrequently: true });
+  const context = getSharedAnalysisContext();
   if (!context) {
     throw new Error("Canvas 2D context is unavailable");
   }
@@ -581,11 +592,7 @@ async function analyzeEntry(entry: FileEntry, key: string, signal: AbortSignal) 
   if (cached) return cached;
 
   if (signal.aborted) return null;
-  const availableThumbnail = getLargestCachedFileThumbnail(
-    entry.path,
-    entry.modified,
-    entry.size
-  );
+  const availableThumbnail = getLargestCachedFileThumbnail(entry.path, entry.modified, entry.size);
   // Share the visible 80px grid thumbnail whenever possible. The image is
   // still sampled into the smaller analysis canvas, but RAW decoding happens
   // only once per file/request size.
@@ -599,15 +606,17 @@ async function analyzeEntry(entry: FileEntry, key: string, signal: AbortSignal) 
   );
   // Do not accept the generic ARW document icon as an analysis image. It has
   // the same pixels for every failed RAW decode and would create false groups.
-  const base64 = availableThumbnail?.base64 ?? await loadFileThumbnail(
-    thumbnailKey,
-    entry.path,
-    thumbnailRequestSize,
-    false,
-    signal,
-    "background",
-    true
-  );
+  const base64 =
+    availableThumbnail?.base64 ??
+    (await loadFileThumbnail(
+      thumbnailKey,
+      entry.path,
+      thumbnailRequestSize,
+      false,
+      signal,
+      "background",
+      true
+    ));
   if (!base64 || signal.aborted) return null;
 
   const image = await decodeThumbnail(base64);

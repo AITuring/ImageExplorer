@@ -24,6 +24,7 @@ import {
   getFileThumbnailCacheKey,
   getLargestCachedFileThumbnail,
   loadFileThumbnail,
+  toImageDataUrl,
 } from "@/lib/iconCache";
 import { useCameraAfMetadata } from "@/hooks/useCameraAfMetadata";
 import { useSharpnessInspector } from "@/hooks/useSharpnessInspector";
@@ -1212,9 +1213,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     }
 
     const cached = getLargestCachedFileThumbnail(entryPath, entryModified, entrySize);
-    return cached
-      ? { size: cached.requestSize, src: `data:image/png;base64,${cached.base64}` }
-      : null;
+    return cached ? { size: cached.requestSize, src: toImageDataUrl(cached.base64) } : null;
   }, [entryModified, entryPath, entrySize]);
 
   const dialogStyle = useMemo<CSSProperties | undefined>(() => {
@@ -1485,7 +1484,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
       )
         .then((base64) => {
           if (base64) {
-            applyPreviewSource(`data:image/png;base64,${base64}`, requestSize);
+            applyPreviewSource(toImageDataUrl(base64), requestSize);
           }
         })
         .finally(() => {

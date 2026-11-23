@@ -86,6 +86,11 @@ function percentileFromHistogram(histogram: Uint32Array, total: number, percenti
   return histogram.length - 1;
 }
 
+export interface ComputeSharpnessMaskOptions {
+  /** Skip building the full RGBA highlight mask when only a sharp/soft verdict is needed. */
+  verdictOnly?: boolean;
+}
+
 /**
  * Builds a focus-peaking mask from RGBA pixels. The threshold is relative to
  * the selected area, but an absolute high-frequency floor prevents a uniformly
@@ -95,13 +100,15 @@ function percentileFromHistogram(histogram: Uint32Array, total: number, percenti
 export function computeSharpnessMask(
   pixels: Uint8ClampedArray,
   width: number,
-  height: number
+  height: number,
+  options?: ComputeSharpnessMaskOptions
 ): SharpnessMaskResult {
+  const verdictOnly = Boolean(options?.verdictOnly);
   const pixelCount = width * height;
   const emptyMask = () => ({
     width,
     height,
-    rgba: new Uint8ClampedArray(pixelCount * 4),
+    rgba: new Uint8ClampedArray(verdictOnly ? 0 : pixelCount * 4),
     highlightedPixels: 0,
     highlightedRatio: 0,
   });
@@ -236,8 +243,9 @@ export function computeSharpnessMask(
   const percentile98 = percentileFromHistogram(histogram, validPixels, 0.98);
   const threshold = Math.max(MIN_ABSOLUTE_SHARPNESS, percentile88, mean + deviation * 0.65);
   const supportThreshold = Math.max(MIN_ABSOLUTE_SHARPNESS * 0.55, threshold * 0.55);
-  const rgba = new Uint8ClampedArray(pixelCount * 4);
+  const rgba = verdictOnly ? new Uint8ClampedArray(0) : new Uint8ClampedArray(pixelCount * 4);
   const intensityRange = Math.max(8, percentile98 - threshold, maximumScore - threshold);
+  const minimumUsefulPixels = Math.max(6, Math.floor(validPixels * 0.00005));
   const tileFocus = new Uint8Array(tileLaplacian.length);
   for (let tile = 0; tile < tileFocus.length; tile += 1) {
     tileFocus[tile] =
@@ -245,7 +253,7 @@ export function computeSharpnessMask(
   }
   let highlightedPixels = 0;
 
-  for (let y = 1; y < height - 1; y += 1) {
+  outer: for (let y = 1; y < height - 1; y += 1) {
     const tileRow = (y >> FOCUS_TILE_SHIFT) * tileColumns;
     for (let x = 1; x < width - 1; x += 1) {
       const index = y * width + x;
@@ -265,6 +273,10 @@ export function computeSharpnessMask(
 
       if (supportingNeighbors >= 2) {
         highlightedPixels += 1;
+        if (verdictOnly) {
+          if (highlightedPixels >= minimumUsefulPixels) break outer;
+          continue;
+        }
         const strength = clamp((scores[index] - threshold) / intensityRange, 0, 1);
         const pixelIndex = index * 4;
         rgba[pixelIndex] = 255;
@@ -288,7 +300,6 @@ export function computeSharpnessMask(
     }
   }
 
-  const minimumUsefulPixels = Math.max(6, Math.floor(validPixels * 0.00005));
   if (highlightedPixels < minimumUsefulPixels) {
     return emptyMask();
   }
@@ -300,6 +311,21 @@ export function computeSharpnessMask(
     highlightedPixels,
     highlightedRatio: highlightedPixels / validPixels,
   };
+}
+
+let sharedRegionCanvas: HTMLCanvasElement | null = null;
+let sharedRegionContext: CanvasRenderingContext2D | null = null;
+
+function getSharedRegionContext(width: number, height: number) {
+  if (!sharedRegionCanvas) {
+    sharedRegionCanvas = document.createElement("canvas");
+  }
+  if (sharedRegionCanvas.width !== width) sharedRegionCanvas.width = width;
+  if (sharedRegionCanvas.height !== height) sharedRegionCanvas.height = height;
+  if (!sharedRegionContext) {
+    sharedRegionContext = sharedRegionCanvas.getContext("2d", { willReadFrequently: true });
+  }
+  return sharedRegionContext;
 }
 
 export function extractSharpnessRegionPixels(
@@ -331,14 +357,12 @@ export function extractSharpnessRegionPixels(
   const analysisWidth = Math.max(1, Math.round(selectedWidth * analysisScale));
   const analysisHeight = Math.max(1, Math.round(selectedHeight * analysisScale));
 
-  const canvas = document.createElement("canvas");
-  canvas.width = analysisWidth;
-  canvas.height = analysisHeight;
-  const context = canvas.getContext("2d", { willReadFrequently: true });
+  const context = getSharedRegionContext(analysisWidth, analysisHeight);
   if (!context) {
     throw new Error("Canvas 2D context is unavailable");
   }
 
+  context.clearRect(0, 0, analysisWidth, analysisHeight);
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = "high";
   context.drawImage(

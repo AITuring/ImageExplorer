@@ -7,7 +7,7 @@ import {
   type SharpnessMaskResult,
 } from "@/lib/sharpnessAnalysis";
 import { computeSharpnessMaskOffThread } from "@/lib/sharpnessWorker";
-import { getFileThumbnailCacheKey, loadFileThumbnail } from "@/lib/iconCache";
+import { getFileThumbnailCacheKey, loadFileThumbnail, toImageDataUrl } from "@/lib/iconCache";
 import type { FileEntry } from "@/types";
 
 export type SharpnessInspectorStatus =
@@ -101,7 +101,7 @@ function decodeThumbnail(base64: string, signal: AbortSignal): Promise<HTMLImage
       reject(new Error("Unable to decode the sharpness preview"));
     };
     signal.addEventListener("abort", handleAbort, { once: true });
-    image.src = `data:image/png;base64,${base64}`;
+    image.src = toImageDataUrl(base64);
   });
 }
 

@@ -11,6 +11,7 @@ import { formatFileSize, formatDate } from "@/utils/format";
 
 interface FileListItemProps {
   entry: FileEntry;
+  index?: number;
   visibleSharpness?: VisibleSharpness;
   isInViewport?: boolean;
   isScrolling?: boolean;
@@ -21,14 +22,18 @@ interface FileListItemProps {
   onEditValueChange: (value: string) => void;
   onSubmitRename: () => void;
   onCancelRename: () => void;
-  onClick: (e: React.MouseEvent) => void;
+  onClick?: (e: React.MouseEvent) => void;
   onNameClick?: (e: React.MouseEvent) => void;
-  onDoubleClick: () => void;
+  onDoubleClick?: () => void;
+  onItemClick?: (entry: FileEntry, index: number, e: React.MouseEvent) => void;
+  onItemNameClick?: (entry: FileEntry, index: number, e: React.MouseEvent) => void;
+  onItemDoubleClick?: (entry: FileEntry) => void;
   onMove?: (source: string, target: string) => void;
 }
 
 export const FileListItem = memo(function FileListItem({
   entry,
+  index = 0,
   visibleSharpness,
   isInViewport = true,
   isScrolling = false,
@@ -42,6 +47,9 @@ export const FileListItem = memo(function FileListItem({
   onClick,
   onNameClick,
   onDoubleClick,
+  onItemClick,
+  onItemNameClick,
+  onItemDoubleClick,
 }: FileListItemProps) {
   const metadata = usePhotoMetadata(entry, isInViewport && !isScrolling);
   const summary = getPhotoMetadataSummary(metadata);
@@ -63,8 +71,14 @@ export const FileListItem = memo(function FileListItem({
       className={`finder-list-row flex w-full cursor-default items-center rounded-md p-2 text-sm transition-colors ${
         isSelected ? "bg-accent/80 ring-primary/20 ring-1" : "hover:bg-accent/60 focus:bg-accent/60"
       } ${isFocused ? "outline-primary outline outline-1 outline-offset-[-1px]" : ""}`}
-      onClick={onClick}
-      onDoubleClick={onDoubleClick}
+      onClick={(e) => {
+        if (onItemClick) onItemClick(entry, index, e);
+        else onClick?.(e);
+      }}
+      onDoubleClick={() => {
+        if (onItemDoubleClick) onItemDoubleClick(entry);
+        else onDoubleClick?.();
+      }}
     >
       <div className="flex min-w-0 flex-1 items-center gap-3">
         <CompactFileThumbnail entry={entry} isInViewport={isInViewport} isScrolling={isScrolling} />
@@ -94,10 +108,14 @@ export const FileListItem = memo(function FileListItem({
             className={`cursor-text truncate rounded px-1 ${isSelected ? "bg-primary/10" : ""}`}
             onClick={(e) => {
               e.stopPropagation();
-              if (onNameClick) {
+              if (onItemNameClick) {
+                onItemNameClick(entry, index, e);
+              } else if (onNameClick) {
                 onNameClick(e);
+              } else if (onItemClick) {
+                onItemClick(entry, index, e);
               } else {
-                onClick(e);
+                onClick?.(e);
               }
             }}
           >

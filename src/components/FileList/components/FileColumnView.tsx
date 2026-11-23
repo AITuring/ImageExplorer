@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { memo, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { DIR_CHANGE_DEBOUNCE_MS } from "@/constants/config";
 import { ChevronRight } from "lucide-react";
 import { FileEntry } from "@/types";
@@ -13,6 +14,8 @@ import { ColumnFilePreview } from "./ColumnFilePreview";
 import { RequestGeneration } from "@/lib/requestGeneration";
 import { Input } from "@/components/ui/input";
 import type { FileActions } from "@/types";
+
+const COLUMN_ROW_HEIGHT = 32;
 
 export interface ColumnSelectionContext {
   rootPath: string;
@@ -51,6 +54,184 @@ interface ColumnData {
   selectedPath: string | null;
 }
 
+interface ColumnPaneProps {
+  column: ColumnData;
+  colIdx: number;
+  selectedPaths: string[];
+  selectedPathSet: ReadonlySet<string>;
+  focusedPath: string | null;
+  selectedFileEntries: FileEntry[];
+  fileActions: FileActions;
+  editingPath: string | null;
+  editValue: string;
+  renameInputRef: React.RefObject<HTMLInputElement | null>;
+  onEditValueChange: (value: string) => void;
+  onSubmitRename: () => void;
+  onCancelRename: () => void;
+  onSelect: (colIdx: number, entry: FileEntry, entryIdx: number, e: React.MouseEvent) => void;
+  onDoubleClick: (entry: FileEntry) => void;
+  handleMove: (src: string | string[], dest: string) => void;
+}
+
+const ColumnPane = memo(function ColumnPane({
+  column,
+  colIdx,
+  selectedPaths,
+  selectedPathSet,
+  focusedPath,
+  selectedFileEntries,
+  fileActions,
+  editingPath,
+  editValue,
+  renameInputRef,
+  onEditValueChange,
+  onSubmitRename,
+  onCancelRename,
+  onSelect,
+  onDoubleClick,
+  handleMove,
+}: ColumnPaneProps) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const virtualizer = useVirtualizer({
+    count: column.entries.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => COLUMN_ROW_HEIGHT,
+    overscan: 8,
+    useAnimationFrameWithResizeObserver: true,
+  });
+
+  useEffect(() => {
+    if (!focusedPath) return;
+    const focusedIndex = column.entries.findIndex((entry) => entry.path === focusedPath);
+    if (focusedIndex >= 0) {
+      virtualizer.scrollToIndex(focusedIndex, { align: "auto" });
+    }
+  }, [column.entries, focusedPath, virtualizer]);
+
+  const rangeStart = virtualizer.range?.startIndex ?? 0;
+  const rangeEnd = virtualizer.range?.endIndex ?? -1;
+
+  return (
+    <div className="border-border/30 flex h-full w-60 shrink-0 flex-col border-r last:border-r-0">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto">
+        {column.entries.length === 0 ? (
+          <div className="text-muted-foreground flex h-20 items-center justify-center text-xs">
+            Empty
+          </div>
+        ) : (
+          <div
+            style={{
+              height: `${virtualizer.getTotalSize()}px`,
+              width: "100%",
+              position: "relative",
+            }}
+          >
+            {virtualizer.getVirtualItems().map((virtualItem) => {
+              const entry = column.entries[virtualItem.index];
+              if (!entry) return null;
+              const entryIdx = virtualItem.index;
+              const isSelected = selectedPathSet.has(entry.path);
+              const isColumnSelected = column.selectedPath === entry.path;
+              const dragPaths = isSelected ? selectedPaths : [entry.path];
+              const nativeDragHandlers = makeNativeFileDragGestureHandlers(dragPaths);
+              const isInViewport = entryIdx >= rangeStart && entryIdx <= rangeEnd;
+              return (
+                <div
+                  key={entry.path}
+                  data-index={entryIdx}
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: "100%",
+                    height: `${virtualItem.size}px`,
+                    transform: `translateY(${virtualItem.start}px)`,
+                  }}
+                >
+                  <AppContextMenu
+                    type={entry.is_dir ? "folder" : "file"}
+                    entry={entry}
+                    selectedEntries={selectedFileEntries}
+                    fileActions={fileActions}
+                  >
+                    <div
+                      {...nativeDragHandlers}
+                      data-selected={isSelected}
+                      data-file-path={entry.path}
+                      className={`finder-column-row flex h-full cursor-default items-center gap-2 px-2 py-1 text-sm transition-colors ${
+                        isSelected || isColumnSelected ? "bg-accent" : "hover:bg-accent/50"
+                      } ${focusedPath === entry.path ? "outline-primary outline outline-1 outline-offset-[-1px]" : ""}`}
+                      onClick={(e) => onSelect(colIdx, entry, entryIdx, e)}
+                      onDoubleClick={() => onDoubleClick(entry)}
+                      onDragOver={(event) => {
+                        if (!entry.is_dir) return;
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = "move";
+                        event.currentTarget.classList.add("bg-primary/20");
+                      }}
+                      onDragLeave={(event) => {
+                        if (
+                          !entry.is_dir ||
+                          event.currentTarget.contains(event.relatedTarget as Node)
+                        ) {
+                          return;
+                        }
+                        event.currentTarget.classList.remove("bg-primary/20");
+                      }}
+                      onDrop={(event) => {
+                        if (!entry.is_dir) return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        event.currentTarget.classList.remove("bg-primary/20");
+                        const data = readFileDragData(event.dataTransfer);
+                        const paths = data?.paths.filter((path) => path !== entry.path) ?? [];
+                        if (paths.length > 0) handleMove(paths, entry.path);
+                      }}
+                    >
+                      <CompactFileThumbnail
+                        entry={entry}
+                        isInViewport={isInViewport}
+                        isScrolling={virtualizer.isScrolling}
+                      />
+                      {editingPath === entry.path ? (
+                        <Input
+                          ref={renameInputRef}
+                          value={editValue}
+                          onChange={(event) => onEditValueChange(event.target.value)}
+                          onBlur={onSubmitRename}
+                          onKeyDown={(event) => {
+                            event.stopPropagation();
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              onSubmitRename();
+                            } else if (event.key === "Escape") {
+                              event.preventDefault();
+                              onCancelRename();
+                            }
+                          }}
+                          onClick={(event) => event.stopPropagation()}
+                          aria-label={`Rename ${entry.name}`}
+                          className="h-6 min-w-0 flex-1 px-1 text-xs"
+                        />
+                      ) : (
+                        <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+                      )}
+                      {entry.is_dir && (
+                        <ChevronRight className="text-muted-foreground h-3 w-3 shrink-0" />
+                      )}
+                    </div>
+                  </AppContextMenu>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
+
 export function FileColumnView({
   currentPath,
   selectedPaths,
@@ -83,16 +264,7 @@ export function FileColumnView({
   const showHiddenPreferenceRef = useRef(showHiddenFiles);
   const columnPathsKey = columns.map((column) => column.path).join("\0");
   const hasCurrentRoot = columns[0]?.path === currentPath;
-
-  useEffect(() => {
-    if (!hasCurrentRoot || !focusedPath) return;
-    const frame = requestAnimationFrame(() => {
-      const rows = scrollContainerRef.current?.querySelectorAll<HTMLElement>("[data-file-path]");
-      const focusedRow = Array.from(rows ?? []).find((row) => row.dataset.filePath === focusedPath);
-      focusedRow?.scrollIntoView({ block: "center", inline: "nearest" });
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [focusedPath, columns, hasCurrentRoot]);
+  const selectedPathSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
 
   useEffect(() => {
     const activeColumn = columns[activeColumnIndex];
@@ -254,12 +426,16 @@ export function FileColumnView({
     };
   }, [columnPathsKey, currentPath, loadColumn, showHiddenFiles]);
 
-  const previewEntry =
-    hasCurrentRoot && focusedPath && selectedPaths.includes(focusedPath)
-      ? columns
-          .flatMap((column) => column.entries)
-          .find((entry) => entry.path === focusedPath && !entry.is_dir)
-      : undefined;
+  const previewEntry = useMemo(() => {
+    if (!hasCurrentRoot || !focusedPath || !selectedPathSet.has(focusedPath)) {
+      return undefined;
+    }
+    for (const column of columns) {
+      const match = column.entries.find((entry) => entry.path === focusedPath && !entry.is_dir);
+      if (match) return match;
+    }
+    return undefined;
+  }, [columns, focusedPath, hasCurrentRoot, selectedPathSet]);
 
   // 选中文件夹时展开新列（使用函数式更新避免 columns 依赖）
   const handleSelect = useCallback(
@@ -310,96 +486,25 @@ export function FileColumnView({
   return (
     <div ref={scrollContainerRef} className="flex h-full overflow-x-auto overflow-y-hidden">
       {columns.map((column, colIdx) => (
-        <div
+        <ColumnPane
           key={column.path}
-          className="border-border/30 flex h-full w-60 shrink-0 flex-col border-r last:border-r-0"
-        >
-          <div className="flex-1 overflow-y-auto">
-            {column.entries.map((entry, entryIdx) => {
-              const isSelected = selectedPaths.includes(entry.path);
-              const isColumnSelected = column.selectedPath === entry.path;
-              const dragPaths = isSelected ? selectedPaths : [entry.path];
-              const nativeDragHandlers = makeNativeFileDragGestureHandlers(dragPaths);
-              return (
-                <AppContextMenu
-                  key={entry.path}
-                  type={entry.is_dir ? "folder" : "file"}
-                  entry={entry}
-                  selectedEntries={selectedFileEntries}
-                  fileActions={fileActions}
-                >
-                  <div
-                    {...nativeDragHandlers}
-                    data-selected={isSelected}
-                    data-file-path={entry.path}
-                    className={`finder-column-row flex cursor-default items-center gap-2 px-2 py-1.5 text-sm transition-colors ${
-                      isSelected || isColumnSelected ? "bg-accent" : "hover:bg-accent/50"
-                    } ${focusedPath === entry.path ? "outline-primary outline outline-1 outline-offset-[-1px]" : ""}`}
-                    onClick={(e) => handleSelect(colIdx, entry, entryIdx, e)}
-                    onDoubleClick={() => handleDoubleClick(entry)}
-                    onDragOver={(event) => {
-                      if (!entry.is_dir) return;
-                      event.preventDefault();
-                      event.dataTransfer.dropEffect = "move";
-                      event.currentTarget.classList.add("bg-primary/20");
-                    }}
-                    onDragLeave={(event) => {
-                      if (
-                        !entry.is_dir ||
-                        event.currentTarget.contains(event.relatedTarget as Node)
-                      ) {
-                        return;
-                      }
-                      event.currentTarget.classList.remove("bg-primary/20");
-                    }}
-                    onDrop={(event) => {
-                      if (!entry.is_dir) return;
-                      event.preventDefault();
-                      event.stopPropagation();
-                      event.currentTarget.classList.remove("bg-primary/20");
-                      const data = readFileDragData(event.dataTransfer);
-                      const paths = data?.paths.filter((path) => path !== entry.path) ?? [];
-                      if (paths.length > 0) handleMove(paths, entry.path);
-                    }}
-                  >
-                    <CompactFileThumbnail entry={entry} />
-                    {editingPath === entry.path ? (
-                      <Input
-                        ref={renameInputRef}
-                        value={editValue}
-                        onChange={(event) => onEditValueChange(event.target.value)}
-                        onBlur={onSubmitRename}
-                        onKeyDown={(event) => {
-                          event.stopPropagation();
-                          if (event.key === "Enter") {
-                            event.preventDefault();
-                            onSubmitRename();
-                          } else if (event.key === "Escape") {
-                            event.preventDefault();
-                            onCancelRename();
-                          }
-                        }}
-                        onClick={(event) => event.stopPropagation()}
-                        aria-label={`Rename ${entry.name}`}
-                        className="h-6 min-w-0 flex-1 px-1 text-xs"
-                      />
-                    ) : (
-                      <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-                    )}
-                    {entry.is_dir && (
-                      <ChevronRight className="text-muted-foreground h-3 w-3 shrink-0" />
-                    )}
-                  </div>
-                </AppContextMenu>
-              );
-            })}
-            {column.entries.length === 0 && (
-              <div className="text-muted-foreground flex h-20 items-center justify-center text-xs">
-                Empty
-              </div>
-            )}
-          </div>
-        </div>
+          column={column}
+          colIdx={colIdx}
+          selectedPaths={selectedPaths}
+          selectedPathSet={selectedPathSet}
+          focusedPath={focusedPath}
+          selectedFileEntries={selectedFileEntries}
+          fileActions={fileActions}
+          editingPath={editingPath}
+          editValue={editValue}
+          renameInputRef={renameInputRef}
+          onEditValueChange={onEditValueChange}
+          onSubmitRename={onSubmitRename}
+          onCancelRename={onCancelRename}
+          onSelect={handleSelect}
+          onDoubleClick={handleDoubleClick}
+          handleMove={handleMove}
+        />
       ))}
       {previewEntry && <ColumnFilePreview key={previewEntry.path} entry={previewEntry} />}
     </div>

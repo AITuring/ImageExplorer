@@ -72,16 +72,35 @@ pub fn watch_directory(
         },
     );
 
-    // 在后台线程处理事件
+    // 在后台线程处理事件，对高频批量写入做 50ms 合并防抖，避免向前端广播数千次 dir-change
     let app_handle = app.clone();
     let watched_path = path.clone();
     std::thread::spawn(move || {
-        for res in rx {
+        use std::sync::mpsc::RecvTimeoutError;
+        use std::time::Duration;
+
+        const WATCHER_COALESCE_WINDOW: Duration = Duration::from_millis(50);
+
+        while let Ok(res) = rx.recv() {
+            let mut changed = false;
             match res {
-                Ok(_event) => crate::cache::notify_dir_change(&app_handle, &watched_path),
-                Err(e) => {
-                    eprintln!("Watch error: {:?}", e);
+                Ok(_event) => changed = true,
+                Err(e) => eprintln!("Watch error: {:?}", e),
+            }
+
+            if changed {
+                loop {
+                    match rx.recv_timeout(WATCHER_COALESCE_WINDOW) {
+                        Ok(Ok(_)) => continue,
+                        Ok(Err(e)) => eprintln!("Watch error: {:?}", e),
+                        Err(RecvTimeoutError::Timeout) => break,
+                        Err(RecvTimeoutError::Disconnected) => {
+                            crate::cache::notify_dir_change(&app_handle, &watched_path);
+                            return;
+                        }
+                    }
                 }
+                crate::cache::notify_dir_change(&app_handle, &watched_path);
             }
         }
     });

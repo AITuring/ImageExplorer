@@ -7,6 +7,30 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+static BOOL imageexplorer_is_raw_extension(NSString *extension) {
+    static NSSet<NSString *> *rawExtensions = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        rawExtensions = [NSSet setWithObjects:
+            @"arw", @"cr2", @"cr3", @"nef", @"nrw", @"raf", @"orf", @"rw2",
+            @"pef", @"srw", @"dcr", @"kdc", @"3fr", @"iiq", @"x3f", @"dng", nil
+        ];
+    });
+    return extension != nil && [rawExtensions containsObject:extension.lowercaseString];
+}
+
+static CIContext *imageexplorer_shared_ci_context(void) {
+    static CIContext *sharedContext = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        sharedContext = [CIContext contextWithOptions:@{
+            kCIContextUseSoftwareRenderer: @NO,
+            kCIContextHighQualityDownsample: @YES,
+        }];
+    });
+    return sharedContext;
+}
+
 static uint16_t imageexplorer_tiff_u16(const uint8_t *bytes, BOOL littleEndian) {
     return littleEndian ? (uint16_t)(bytes[0] | bytes[1] << 8)
                         : (uint16_t)(bytes[0] << 8 | bytes[1]);
@@ -62,7 +86,9 @@ uint8_t *imageexplorer_arw_embedded_jpeg(const char *path, uint32_t maxPixelSize
         }
         if (!bestLength) return NULL;
         if (maxPixelSize > 0) {
-            NSData *jpeg = [file subdataWithRange:NSMakeRange(bestOffset, bestLength)];
+            NSData *jpeg = [NSData dataWithBytesNoCopy:(void *)(bytes + bestOffset)
+                                                length:bestLength
+                                          freeWhenDone:NO];
             CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)jpeg, NULL);
             if (source != NULL) {
                 NSDictionary *properties = CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(source, 0, NULL));
@@ -93,6 +119,7 @@ uint8_t *imageexplorer_arw_embedded_jpeg(const char *path, uint32_t maxPixelSize
                                 CFRelease(data);
                                 CGImageRelease(image);
                                 CFRelease(source);
+                                (void)file;
                                 return result;
                             }
                             CFRelease(destination);
@@ -103,6 +130,7 @@ uint8_t *imageexplorer_arw_embedded_jpeg(const char *path, uint32_t maxPixelSize
                 }
                 CFRelease(source);
             }
+            (void)file;
         }
         uint8_t *result = malloc(bestLength);
         if (result == NULL) return NULL;
@@ -153,7 +181,9 @@ static CGImageRef imageexplorer_create_arw_full_jpeg(NSURL *fileURL, uint32_t si
     }
     if (!bestLength) return NULL;
 
-    NSData *jpeg = [file subdataWithRange:NSMakeRange(bestOffset, bestLength)];
+    NSData *jpeg = [NSData dataWithBytesNoCopy:(void *)(bytes + bestOffset)
+                                        length:bestLength
+                                  freeWhenDone:NO];
     CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)jpeg, NULL);
     if (source == NULL) return NULL;
     NSDictionary *options = @{
@@ -163,6 +193,7 @@ static CGImageRef imageexplorer_create_arw_full_jpeg(NSURL *fileURL, uint32_t si
     };
     CGImageRef image = CGImageSourceCreateThumbnailAtIndex(source, 0, (__bridge CFDictionaryRef)options);
     CFRelease(source);
+    (void)file;
     return image;
 }
 
@@ -196,12 +227,7 @@ static CGImageRef imageexplorer_create_imageio_preview(NSURL *fileURL, uint32_t 
 // native RAW size and renders a size-bounded demosaiced image instead of
 // enlarging the embedded preview.
 static CGImageRef imageexplorer_create_coreimage_raw_preview(NSURL *fileURL, uint32_t size) {
-    NSString *extension = fileURL.pathExtension.lowercaseString;
-    NSSet<NSString *> *rawExtensions = [NSSet setWithObjects:
-        @"arw", @"cr2", @"cr3", @"nef", @"nrw", @"raf", @"orf", @"rw2",
-        @"pef", @"srw", @"dcr", @"kdc", @"3fr", @"iiq", @"x3f", @"dng", nil
-    ];
-    if (![rawExtensions containsObject:extension]) {
+    if (!imageexplorer_is_raw_extension(fileURL.pathExtension)) {
         return NULL;
     }
 
@@ -229,10 +255,7 @@ static CGImageRef imageexplorer_create_coreimage_raw_preview(NSURL *fileURL, uin
             return NULL;
         }
 
-        CIContext *context = [CIContext contextWithOptions:@{
-            kCIContextUseSoftwareRenderer: @NO,
-            kCIContextHighQualityDownsample: @YES,
-        }];
+        CIContext *context = imageexplorer_shared_ci_context();
         if (context == nil) {
             return NULL;
         }
@@ -296,28 +319,33 @@ uint8_t *imageexplorer_quicklook_thumbnail(
         }
 
         NSURL *fileURL = [NSURL fileURLWithPath:filePath];
+        BOOL isRaw = imageexplorer_is_raw_extension(fileURL.pathExtension);
         // Grid thumbnails and focus analysis should use the camera-embedded JPEG
-        // whenever possible. Decoding the full RAW source for every small card
-        // can stall a large folder for tens of seconds. Core Image RAW decoding
-        // is reserved for Quick Look; ImageIO remains the compatibility fallback.
+        // for RAW files whenever possible. Non-RAW formats decode directly via
+        // ImageIO's size-bounded thumbnail API so stale tiny EXIF thumbnails
+        // are never enlarged and external `sips` processes are not needed.
         CGImageRef image = NULL;
-        if (preferEmbedded) {
-            image = imageexplorer_create_arw_full_jpeg(fileURL, size);
-            // A few ARWs omit the full JPEG. Keep the high-resolution RAW
-            // path for those files rather than enlarging a small thumbnail.
-            if (image == NULL && size >= 2048 && [fileURL.pathExtension.lowercaseString isEqualToString:@"arw"]) {
+        if (isRaw) {
+            if (preferEmbedded) {
+                image = imageexplorer_create_arw_full_jpeg(fileURL, size);
+                // A few ARWs omit the full JPEG. Keep the high-resolution RAW
+                // path for those files rather than enlarging a small thumbnail.
+                if (image == NULL && size >= 2048 && [fileURL.pathExtension.lowercaseString isEqualToString:@"arw"]) {
+                    image = imageexplorer_create_coreimage_raw_preview(fileURL, size);
+                }
+                if (image == NULL) {
+                    image = imageexplorer_create_embedded_preview(fileURL, size);
+                }
+                if (image == NULL) {
+                    image = imageexplorer_create_imageio_preview(fileURL, size);
+                }
+            } else {
                 image = imageexplorer_create_coreimage_raw_preview(fileURL, size);
+                if (image == NULL) {
+                    image = imageexplorer_create_imageio_preview(fileURL, size);
+                }
             }
-        }
-        if (!preferEmbedded) {
-            image = imageexplorer_create_coreimage_raw_preview(fileURL, size);
-        }
-        if (image == NULL) {
-            image = preferEmbedded
-                ? imageexplorer_create_embedded_preview(fileURL, size)
-                : imageexplorer_create_imageio_preview(fileURL, size);
-        }
-        if (image == NULL && preferEmbedded) {
+        } else {
             image = imageexplorer_create_imageio_preview(fileURL, size);
         }
         if (image == NULL) {
@@ -333,9 +361,16 @@ uint8_t *imageexplorer_quicklook_thumbnail(
             return NULL;
         }
 
+        // Encode opaque photos as JPEG (5-15x smaller and much faster to encode
+        // than PNG) while preserving PNG for images with an alpha channel.
+        CGImageAlphaInfo alphaInfo = CGImageGetAlphaInfo(image);
+        BOOL hasAlpha = alphaInfo != kCGImageAlphaNone &&
+                        alphaInfo != kCGImageAlphaNoneSkipFirst &&
+                        alphaInfo != kCGImageAlphaNoneSkipLast;
+        CFStringRef outputType = hasAlpha ? CFSTR("public.png") : CFSTR("public.jpeg");
         CGImageDestinationRef destination = CGImageDestinationCreateWithData(
             data,
-            CFSTR("public.png"),
+            outputType,
             1,
             NULL
         );
@@ -345,7 +380,10 @@ uint8_t *imageexplorer_quicklook_thumbnail(
             return NULL;
         }
 
-        CGImageDestinationAddImage(destination, image, NULL);
+        NSDictionary *encodeOptions = hasAlpha
+            ? nil
+            : @{(id)kCGImageDestinationLossyCompressionQuality: @0.86};
+        CGImageDestinationAddImage(destination, image, (__bridge CFDictionaryRef)encodeOptions);
         if (!CGImageDestinationFinalize(destination)) {
             if (destination != NULL) {
                 CFRelease(destination);
@@ -549,5 +587,60 @@ uint8_t *imageexplorer_image_metadata(const char *path, size_t *length) {
         [json getBytes:result length:json.length];
         *length = json.length;
         return result;
+    }
+}
+
+// Read orientation-corrected image dimensions directly via ImageIO without
+// spawning `/usr/bin/sips`.
+int imageexplorer_image_dimensions(const char *path, uint32_t *outWidth, uint32_t *outHeight) {
+    if (path == NULL || outWidth == NULL || outHeight == NULL) {
+        return 0;
+    }
+
+    @autoreleasepool {
+        NSString *filePath = [NSString stringWithUTF8String:path];
+        if (filePath == nil) {
+            return 0;
+        }
+
+        NSURL *fileURL = [NSURL fileURLWithPath:filePath];
+        CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)fileURL, NULL);
+        if (source == NULL) {
+            return 0;
+        }
+
+        NSDictionary *properties = CFBridgingRelease(
+            CGImageSourceCopyPropertiesAtIndex(source, 0, NULL)
+        );
+        CFRelease(source);
+        if (properties == nil) {
+            return 0;
+        }
+
+        NSNumber *widthNumber = properties[(NSString *)kCGImagePropertyPixelWidth];
+        NSNumber *heightNumber = properties[(NSString *)kCGImagePropertyPixelHeight];
+        if (![widthNumber isKindOfClass:NSNumber.class] || ![heightNumber isKindOfClass:NSNumber.class]) {
+            return 0;
+        }
+
+        uint32_t width = widthNumber.unsignedIntValue;
+        uint32_t height = heightNumber.unsignedIntValue;
+        if (width == 0 || height == 0) {
+            return 0;
+        }
+
+        NSNumber *orientationNumber = properties[(NSString *)kCGImagePropertyOrientation];
+        NSInteger orientation = [orientationNumber isKindOfClass:NSNumber.class]
+            ? orientationNumber.integerValue
+            : 1;
+        if (orientation >= 5 && orientation <= 8) {
+            uint32_t tmp = width;
+            width = height;
+            height = tmp;
+        }
+
+        *outWidth = width;
+        *outHeight = height;
+        return 1;
     }
 }

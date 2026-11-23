@@ -60,65 +60,101 @@ struct SearchResponse {
     index_failed: bool,
 }
 
+fn is_updatable_native_menu_command(command_id: &str) -> bool {
+    matches!(
+        command_id,
+        "window.new"
+            | "file.new-file"
+            | "file.new-folder"
+            | "edit.cut"
+            | "edit.copy"
+            | "edit.paste"
+            | "edit.select-all"
+    )
+}
+
+fn collect_native_menu_items(
+    items: Vec<MenuItemKind<tauri::Wry>>,
+    target_ids: &std::collections::HashSet<&str>,
+    out: &mut std::collections::HashMap<String, MenuItem<tauri::Wry>>,
+) -> Result<(), String> {
+    for item in items {
+        let id = item.id().as_ref();
+        if target_ids.contains(id) {
+            match item {
+                MenuItemKind::MenuItem(menu_item) => {
+                    out.insert(menu_item.id().as_ref().to_string(), menu_item);
+                }
+                _ => {
+                    return Err(format!(
+                        "Native menu command '{id}' is not a normal menu item"
+                    ));
+                }
+            }
+            continue;
+        }
+
+        if let MenuItemKind::Submenu(submenu) = item {
+            collect_native_menu_items(
+                submenu
+                    .items()
+                    .map_err(|error| format!("Failed to read native menu items: {error}"))?,
+                target_ids,
+                out,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn set_native_menu_command_enabled(
     app: AppHandle,
     command_id: String,
     enabled: bool,
 ) -> Result<(), String> {
-    if command_id != "window.new"
-        && command_id != "file.new-file"
-        && command_id != "file.new-folder"
-        && command_id != "edit.cut"
-        && command_id != "edit.copy"
-        && command_id != "edit.paste"
-        && command_id != "edit.select-all"
-    {
-        return Err(format!(
-            "Native menu command '{command_id}' cannot be updated here"
-        ));
+    set_native_menu_commands_enabled(app, vec![(command_id, enabled)])
+}
+
+/// 批量同步多个原生菜单项的启用状态，避免前端一次交互触发 7 次独立 IPC 与菜单树遍历
+#[tauri::command]
+fn set_native_menu_commands_enabled(
+    app: AppHandle,
+    states: Vec<(String, bool)>,
+) -> Result<(), String> {
+    if states.is_empty() {
+        return Ok(());
     }
-
-    fn find_item(
-        items: Vec<MenuItemKind<tauri::Wry>>,
-        id: &str,
-    ) -> Result<Option<MenuItem<tauri::Wry>>, String> {
-        for item in items {
-            if item.id() == id {
-                return match item {
-                    MenuItemKind::MenuItem(menu_item) => Ok(Some(menu_item)),
-                    _ => Err(format!(
-                        "Native menu command '{id}' is not a normal menu item"
-                    )),
-                };
-            }
-
-            if let MenuItemKind::Submenu(submenu) = item {
-                if let Some(menu_item) = find_item(
-                    submenu
-                        .items()
-                        .map_err(|error| format!("Failed to read native menu items: {error}"))?,
-                    id,
-                )? {
-                    return Ok(Some(menu_item));
-                }
-            }
+    for (command_id, _) in &states {
+        if !is_updatable_native_menu_command(command_id) {
+            return Err(format!(
+                "Native menu command '{command_id}' cannot be updated here"
+            ));
         }
-
-        Ok(None)
     }
 
     let menu = app
         .menu()
         .ok_or_else(|| "The native application menu is unavailable".to_string())?;
-    let item = find_item(
+    let target_ids: std::collections::HashSet<&str> =
+        states.iter().map(|(id, _)| id.as_str()).collect();
+    let mut found = std::collections::HashMap::with_capacity(target_ids.len());
+    collect_native_menu_items(
         menu.items()
             .map_err(|error| format!("Failed to read native menu items: {error}"))?,
-        &command_id,
-    )?
-    .ok_or_else(|| format!("Native menu command '{command_id}' was not found"))?;
-    item.set_enabled(enabled)
-        .map_err(|error| format!("Failed to update native menu command '{command_id}': {error}"))
+        &target_ids,
+        &mut found,
+    )?;
+
+    for (command_id, enabled) in states {
+        let item = found
+            .get(&command_id)
+            .ok_or_else(|| format!("Native menu command '{command_id}' was not found"))?;
+        item.set_enabled(enabled).map_err(|error| {
+            format!("Failed to update native menu command '{command_id}': {error}")
+        })?;
+    }
+    Ok(())
 }
 
 /// 搜索已索引的文件
@@ -133,9 +169,9 @@ async fn search_indexed(
 ) -> Result<SearchResponse, String> {
     let limit_val = limit.unwrap_or(50);
 
-    // 优先尝试 SQLite 搜索
+    // 优先尝试 SQLite 搜索（使用只读连接以发挥 WAL 并发）
     if let Some(ref db) = *database.inner() {
-        let conn = db.connection();
+        let conn = db.read_connection();
         let search_engine = SearchEngine::new(conn);
         let query_clone = query.clone();
 
@@ -517,7 +553,31 @@ fn start_sqlite_watcher(
             }
 
             match rx.recv_timeout(std::time::Duration::from_millis(500)) {
-                Ok(Ok(event)) => pending_events.push(event),
+                Ok(Ok(event)) => {
+                    pending_events.push(event);
+                    // Drain any immediately queued events from the same OS burst
+                    // before updating SQLite.
+                    while let Ok(next) = rx.try_recv() {
+                        match next {
+                            Ok(event) => pending_events.push(event),
+                            Err(error) => {
+                                eprintln!("SQLite watcher error; scheduling index reconciliation: {error:?}");
+                                pending_events.request_reconciliation();
+                                match replace_sqlite_event_watcher(&mut watcher, &mut rx, &root) {
+                                    Ok(()) => watcher_had_error = false,
+                                    Err(restart_error) => {
+                                        watcher_had_error = true;
+                                        watcher_disconnected = true;
+                                        eprintln!(
+                                            "Failed to restart SQLite watcher: {restart_error}"
+                                        );
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
                 Ok(Err(error)) => {
                     eprintln!("SQLite watcher error; scheduling index reconciliation: {error:?}");
                     pending_events.request_reconciliation();
@@ -658,10 +718,7 @@ fn apply_sqlite_index_event(updater: &IndexUpdater, event: notify::Event) {
     use notify::EventKind;
 
     let result = match event.kind {
-        EventKind::Create(_)
-        | EventKind::Modify(
-            notify::event::ModifyKind::Data(_) | notify::event::ModifyKind::Metadata(_),
-        ) => {
+        EventKind::Create(_) => {
             for path in event.paths {
                 if config::is_index_excluded(&path) {
                     continue;
@@ -673,6 +730,23 @@ fn apply_sqlite_index_event(updater: &IndexUpdater, event: notify::Event) {
                     updater.upsert(&path_str, false)
                 };
                 if let Err(error) = result {
+                    eprintln!("SQLite index upsert failed: {error}");
+                }
+            }
+            Ok(())
+        }
+        EventKind::Modify(
+            notify::event::ModifyKind::Data(_) | notify::event::ModifyKind::Metadata(_),
+        ) => {
+            // Directory mtime/metadata updates fire whenever a child changes.
+            // Updating only the directory row avoids recursively re-scanning the
+            // entire subtree on every single file write.
+            for path in event.paths {
+                if config::is_index_excluded(&path) {
+                    continue;
+                }
+                let path_str = path.to_string_lossy().to_string();
+                if let Err(error) = updater.upsert(&path_str, path.is_dir()) {
                     eprintln!("SQLite index upsert failed: {error}");
                 }
             }
@@ -901,6 +975,7 @@ pub fn run() {
             get_file_operation_conflicts,
             get_file_operations,
             set_native_menu_command_enabled,
+            set_native_menu_commands_enabled,
             cancel_file_operation,
             retry_file_operation,
             undo_file_operation,
@@ -938,6 +1013,8 @@ pub fn run() {
                     let _ = child.wait();
                 }
             }
+            #[cfg(target_os = "macos")]
+            commands::fs::shutdown_exiftool_daemon();
         }
     });
 }

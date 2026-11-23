@@ -3,7 +3,7 @@ use regex::RegexBuilder;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{State, Window};
 
@@ -175,6 +175,7 @@ fn search_files_parallel(
         .map_err(|e| e.to_string())?;
 
     let results = Arc::new(Mutex::new(Vec::new()));
+    let found_count = Arc::new(AtomicUsize::new(0));
     let pattern = Arc::new(pattern);
     let root_str = root.to_string();
 
@@ -188,16 +189,14 @@ fn search_files_parallel(
 
     walker.run(|| {
         let results = Arc::clone(&results);
+        let found_count = Arc::clone(&found_count);
         let pattern = Arc::clone(&pattern);
         let root_str = root_str.clone();
 
         Box::new(move |entry| {
-            // 检查是否已达到限制
-            {
-                let r = results.lock().unwrap();
-                if r.len() >= limit {
-                    return WalkState::Quit;
-                }
+            // 无锁检查是否已达到限制，避免每个文件都竞争 Mutex
+            if found_count.load(Ordering::Relaxed) >= limit {
+                return WalkState::Quit;
             }
 
             if let Ok(entry) = entry {
@@ -218,8 +217,12 @@ fn search_files_parallel(
                             r.push(SearchResult {
                                 name,
                                 path: path.to_string_lossy().to_string(),
-                                is_dir: path.is_dir(),
+                                is_dir: entry.file_type().is_some_and(|kind| kind.is_dir()),
                             });
+                            found_count.store(r.len(), Ordering::Relaxed);
+                        }
+                        if r.len() >= limit {
+                            return WalkState::Quit;
                         }
                     }
                 }
@@ -275,9 +278,9 @@ pub async fn get_smart_files(
 
     let limit_val = limit.unwrap_or(200);
 
-    // 优先使用 SQLite 数据库
+    // 优先使用 SQLite 数据库（使用只读连接以支持 WAL 并发）
     if let Some(ref db) = *database.inner() {
-        let conn = db.connection();
+        let conn = db.read_connection();
         let search_engine = SearchEngine::new(conn);
         let exts = extensions.clone();
 

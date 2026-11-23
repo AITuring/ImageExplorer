@@ -25,3 +25,22 @@ test("high contrast alone does not make a broad soft edge sharp", () => {
   assert.ok(edgeImage(0).highlightedPixels > 0);
   assert.ok(edgeImage(2).highlightedPixels < edgeImage(0).highlightedPixels / 4);
 });
+
+test("verdictOnly matches sharpness detection without allocating a full RGBA mask", () => {
+  const width = 128;
+  const height = 128;
+  const sharpPixels = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = (y * width + x) * 4;
+      const value = x < 64 ? 40 : 220;
+      sharpPixels[index] = value;
+      sharpPixels[index + 1] = value;
+      sharpPixels[index + 2] = value;
+      sharpPixels[index + 3] = 255;
+    }
+  }
+  const verdictResult = computeSharpnessMask(sharpPixels, width, height, { verdictOnly: true });
+  assert.ok(verdictResult.highlightedPixels > 0);
+  assert.equal(verdictResult.rgba.length, 0);
+});

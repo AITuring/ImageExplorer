@@ -4,8 +4,9 @@
  */
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
@@ -28,16 +29,115 @@ const MAX_DIR_CACHE_ENTRIES: usize = 500;
 const MAX_ICON_CACHE_ENTRIES: usize = 1200;
 const MAX_ICON_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
-/// 目录列表缓存
-static DIR_CACHE: Lazy<DashMap<String, CacheEntry<Vec<FileEntry>>>> = Lazy::new(DashMap::new);
+/// 目录列表缓存（使用 Arc 避免 10 万条目录在读写缓存时深拷贝）
+static DIR_CACHE: Lazy<DashMap<String, CacheEntry<Arc<Vec<FileEntry>>>>> = Lazy::new(DashMap::new);
 
 /// Serializes cache publication with invalidation so an in-flight scan cannot
 /// put an older directory snapshot back after a change event removed it.
 static DIR_CACHE_GATE: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 static DIR_CACHE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// 图标缓存
-static ICON_CACHE: Lazy<DashMap<String, CacheEntry<String>>> = Lazy::new(DashMap::new);
+struct IconLruEntry {
+    data: String,
+    timestamp: Instant,
+    sequence: u64,
+}
+
+#[derive(Default)]
+struct IconLruCache {
+    entries: HashMap<String, IconLruEntry>,
+    order: VecDeque<(String, u64)>,
+    total_bytes: usize,
+    next_sequence: u64,
+}
+
+impl IconLruCache {
+    fn get(&mut self, key: &str) -> Option<String> {
+        let expired = self
+            .entries
+            .get(key)
+            .is_some_and(|entry| entry.timestamp.elapsed() > ICON_CACHE_TTL);
+        if expired {
+            if let Some(removed) = self.entries.remove(key) {
+                self.total_bytes = self.total_bytes.saturating_sub(removed.data.len());
+            }
+            return None;
+        }
+
+        let seq = self.next_sequence.wrapping_add(1);
+        self.next_sequence = seq;
+        let data = {
+            let entry = self.entries.get_mut(key)?;
+            entry.sequence = seq;
+            entry.data.clone()
+        };
+        self.order.push_back((key.to_string(), seq));
+        self.compact_order_if_needed();
+        Some(data)
+    }
+
+    fn insert(&mut self, key: String, base64: String) {
+        let new_bytes = base64.len();
+        let seq = self.next_sequence.wrapping_add(1);
+        self.next_sequence = seq;
+        if let Some(previous) = self.entries.insert(
+            key.clone(),
+            IconLruEntry {
+                data: base64,
+                timestamp: Instant::now(),
+                sequence: seq,
+            },
+        ) {
+            self.total_bytes = self.total_bytes.saturating_sub(previous.data.len());
+        }
+        self.total_bytes = self.total_bytes.saturating_add(new_bytes);
+        self.order.push_back((key, seq));
+        self.evict_if_needed();
+    }
+
+    fn evict_if_needed(&mut self) {
+        // Evict stale queue entries and expired/oldest entries in amortized O(1).
+        while let Some((oldest_key, oldest_seq)) = self.order.front() {
+            let Some(entry) = self.entries.get(oldest_key) else {
+                self.order.pop_front();
+                continue;
+            };
+            if entry.sequence != *oldest_seq {
+                self.order.pop_front();
+                continue;
+            }
+            let over_limit = self.entries.len() > MAX_ICON_CACHE_ENTRIES
+                || self.total_bytes > MAX_ICON_CACHE_BYTES;
+            let expired = entry.timestamp.elapsed() > ICON_CACHE_TTL;
+            if !over_limit && !expired {
+                break;
+            }
+            let (evict_key, _) = self.order.pop_front().expect("front exists");
+            if let Some(removed) = self.entries.remove(&evict_key) {
+                self.total_bytes = self.total_bytes.saturating_sub(removed.data.len());
+            }
+        }
+        self.compact_order_if_needed();
+    }
+
+    fn compact_order_if_needed(&mut self) {
+        if self.order.len() > self.entries.len().saturating_mul(4).max(256) {
+            self.order.retain(|(key, seq)| {
+                self.entries
+                    .get(key)
+                    .is_some_and(|entry| entry.sequence == *seq)
+            });
+        }
+    }
+
+    #[allow(dead_code)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+/// 图标缓存（O(1) 均摊 LRU + 字节预算）
+static ICON_CACHE: Lazy<Mutex<IconLruCache>> = Lazy::new(|| Mutex::new(IconLruCache::default()));
 
 /// 淘汰过期条目，如果仍超限则移除最旧的条目
 fn evict_cache<T>(cache: &DashMap<String, CacheEntry<T>>, ttl: Duration, max_size: usize) {
@@ -59,7 +159,7 @@ fn evict_cache<T>(cache: &DashMap<String, CacheEntry<T>>, ttl: Duration, max_siz
 }
 
 /// Read the directory cache and its generation as one snapshot.
-pub fn get_dir_cache_snapshot(path: &str) -> (u64, Option<Vec<FileEntry>>) {
+pub fn get_dir_cache_snapshot(path: &str) -> (u64, Option<Arc<Vec<FileEntry>>>) {
     let _guard = DIR_CACHE_GATE
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -70,7 +170,7 @@ pub fn get_dir_cache_snapshot(path: &str) -> (u64, Option<Vec<FileEntry>>) {
             DIR_CACHE.remove(path);
             None
         } else {
-            Some(entry.data.clone())
+            Some(Arc::clone(&entry.data))
         }
     } else {
         None
@@ -82,7 +182,7 @@ pub fn get_dir_cache_snapshot(path: &str) -> (u64, Option<Vec<FileEntry>>) {
 /// Publish a scan only if no directory change occurred after it started.
 pub fn set_dir_cache_if_generation(
     path: String,
-    entries: Vec<FileEntry>,
+    entries: Arc<Vec<FileEntry>>,
     expected_generation: u64,
 ) -> bool {
     let _guard = DIR_CACHE_GATE
@@ -123,47 +223,14 @@ pub fn notify_dir_change(app: &AppHandle, path: &str) {
 
 /// 获取图标缓存
 pub fn get_icon_cache(key: &str) -> Option<String> {
-    let entry = ICON_CACHE.get(key)?;
-    if entry.timestamp.elapsed() > ICON_CACHE_TTL {
-        drop(entry);
-        ICON_CACHE.remove(key);
-        return None;
-    }
-    Some(entry.data.clone())
+    let mut cache = ICON_CACHE.lock().unwrap_or_else(|error| error.into_inner());
+    cache.get(key)
 }
 
 /// 设置图标缓存
 pub fn set_icon_cache(key: String, base64: String) {
-    ICON_CACHE.insert(
-        key,
-        CacheEntry {
-            data: base64,
-            timestamp: Instant::now(),
-        },
-    );
-
-    // Thumbnail values are base64 strings and can be much larger than normal
-    // application icons. Bound both count and payload size so visiting a
-    // multi-thousand RAW folder cannot retain hundreds of megabytes forever.
-    evict_cache(&ICON_CACHE, ICON_CACHE_TTL, MAX_ICON_CACHE_ENTRIES);
-    while icon_cache_bytes() > MAX_ICON_CACHE_BYTES {
-        let oldest = ICON_CACHE
-            .iter()
-            .max_by_key(|entry| entry.value().timestamp.elapsed())
-            .map(|entry| entry.key().clone());
-        if let Some(key) = oldest {
-            ICON_CACHE.remove(&key);
-        } else {
-            break;
-        }
-    }
-}
-
-fn icon_cache_bytes() -> usize {
-    ICON_CACHE
-        .iter()
-        .map(|entry| entry.value().data.len())
-        .sum()
+    let mut cache = ICON_CACHE.lock().unwrap_or_else(|error| error.into_inner());
+    cache.insert(key, base64);
 }
 
 /// 获取目录缓存大小（用于调试）
@@ -175,12 +242,16 @@ pub fn dir_cache_size() -> usize {
 /// 获取图标缓存大小（用于调试）
 #[allow(dead_code)]
 pub fn icon_cache_size() -> usize {
-    ICON_CACHE.len()
+    ICON_CACHE
+        .lock()
+        .map(|cache| cache.len())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
     use super::{get_dir_cache_snapshot, invalidate_dir_cache, set_dir_cache_if_generation};
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -197,7 +268,7 @@ mod tests {
 
         assert!(!set_dir_cache_if_generation(
             path.clone(),
-            Vec::new(),
+            Arc::new(Vec::new()),
             started_generation
         ));
         assert!(get_dir_cache_snapshot(&path).1.is_none());
