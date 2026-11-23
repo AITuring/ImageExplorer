@@ -24,12 +24,21 @@ import { useQuickLook } from "./hooks/useQuickLook";
 import { usePhotoAnalysis } from "@/hooks/usePhotoAnalysis";
 import { FolderSharpnessPanel } from "@/components/FolderSharpnessPanel";
 import { useVisibleSharpness } from "@/hooks/useVisibleSharpness";
-import { getPhotoGroupColor } from "@/lib/photoAnalysis";
+import { getPhotoGroupColor, isAnalyzablePhoto } from "@/lib/photoAnalysis";
 import { hydratePhotoMetadataCache } from "@/lib/photoMetadata";
+import {
+  DEFAULT_FOLDER_FILTER,
+  filterFolderEntries,
+  hasActiveFolderFilter,
+  type FolderFilterState,
+} from "@/lib/folderFilter";
+import { expandPairedEntries, pairRawAndJpegEntries } from "@/lib/rawJpegPairing";
 import { FileListHeader } from "./components/FileListHeader";
 import { FileListItem } from "./components/FileListItem";
 import { FileGridItem } from "./components/FileGridItem";
 import { FileGalleryView } from "./components/FileGalleryView";
+import { FolderFilterBar } from "./components/FolderFilterBar";
+import { PhotoCompareDialog } from "@/components/PhotoCompareDialog";
 import {
   FileColumnView,
   type ColumnNavigationHandle,
@@ -122,6 +131,11 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   const [columnSelectionContext, setColumnSelectionContext] =
     useState<ColumnSelectionContext | null>(null);
   const columnNavRef = useRef<ColumnNavigationHandle | null>(null);
+  const filterInputRef = useRef<HTMLInputElement | null>(null);
+  const [folderFilter, setFolderFilter] = useState<FolderFilterState>(DEFAULT_FOLDER_FILTER);
+  const [filterBarDismissed, setFilterBarDismissed] = useState(false);
+  const [filterBarForcedOpen, setFilterBarForcedOpen] = useState(false);
+  const [comparePair, setComparePair] = useState<[FileEntry, FileEntry] | null>(null);
 
   // 1. 数据加载
   const { entries, showHiddenFiles, loading, error, loadEntries } = useFileEntries(currentPath);
@@ -134,9 +148,64 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     }
   }, [entries, error, loading]);
 
+  // Reset per-folder text/tag/sharpness filters when navigating to another folder,
+  // while preserving the user's RAW+JPG stacking preference.
+  const previousPathRef = useRef(currentPath);
+  useEffect(() => {
+    if (previousPathRef.current !== currentPath) {
+      previousPathRef.current = currentPath;
+      setFolderFilter((current) => ({
+        ...DEFAULT_FOLDER_FILTER,
+        pairRawJpeg: current.pairRawJpeg,
+      }));
+      setFilterBarDismissed(false);
+      setFilterBarForcedOpen(false);
+    }
+  }, [currentPath]);
+
+  const folderScanEntries = useMemo(
+    () =>
+      entries.filter(
+        (entry) =>
+          currentPath.startsWith(SMART_FOLDER_PREFIX) ||
+          (entry.path.slice(0, entry.path.lastIndexOf("/")) || "/") === currentPath
+      ),
+    [entries, currentPath]
+  );
+
+  const hasPhotosInFolder = useMemo(
+    () => entries.some((entry) => isAnalyzablePhoto(entry)),
+    [entries]
+  );
+
+  const pairingPreview = useMemo(() => pairRawAndJpegEntries(entries), [entries]);
+  const pairedCompanionsByPath = useMemo(
+    () =>
+      folderFilter.pairRawJpeg
+        ? pairingPreview.companionsByPrimaryPath
+        : new Map<string, FileEntry[]>(),
+    [folderFilter.pairRawJpeg, pairingPreview.companionsByPrimaryPath]
+  );
+  const displayBaseEntries = folderFilter.pairRawJpeg ? pairingPreview.entries : entries;
+
+  const viewportPriorityPathsRef = useRef<string[]>([]);
+  const [viewportPriorityPaths, setViewportPriorityPaths] = useState<string[]>([]);
+  const [quickLookOpenFlag, setQuickLookOpenFlag] = useState(false);
+
+  const visibleSharpness = useVisibleSharpness(
+    folderScanEntries,
+    !loading && !error && !quickLookOpenFlag,
+    viewportPriorityPaths
+  );
+
+  const filteredEntries = useMemo(
+    () => filterFolderEntries(displayBaseEntries, folderFilter, visibleSharpness),
+    [displayBaseEntries, folderFilter, visibleSharpness]
+  );
+
   // 2. 排序
   const { sortField, sortDirection, handleSort, handleArrange, sortedEntries } =
-    useFileSort(entries);
+    useFileSort(filteredEntries);
   const activeColumnContext =
     viewMode === "column" && columnSelectionContext?.rootPath === currentPath
       ? columnSelectionContext
@@ -199,14 +268,14 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     onRefresh: () => loadEntries(false),
   });
 
-  // 5. 文件操作
+  // 5. 文件操作（启用 RAW+JPG 配对时自动同步操作配对的伴随文件）
   const {
     handleOpen,
-    handleCopy,
-    handleCut,
+    handleCopy: rawHandleCopy,
+    handleCut: rawHandleCut,
     handlePaste,
-    handleDuplicate,
-    handleDelete,
+    handleDuplicate: rawHandleDuplicate,
+    handleDelete: rawHandleDelete,
     handleCompress,
     handleExtract,
     handleGetInfo,
@@ -219,9 +288,9 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     handleOpenInTerminal,
     handleShowPackageContents,
     handleShowOriginal,
-    handleToggleTag,
-    handleCopyTo,
-    handleMove,
+    handleToggleTag: rawHandleToggleTag,
+    handleCopyTo: rawHandleCopyTo,
+    handleMove: rawHandleMove,
   } = useFileOperations({
     currentPath: operationPath,
     onRefresh: (forceRefresh = false) => loadEntries(false, forceRefresh),
@@ -232,6 +301,55 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       setEditValue(name);
     },
   });
+
+  const expandPaths = useCallback(
+    (sourcePaths: string | string[]) => {
+      const list = Array.isArray(sourcePaths) ? sourcePaths : [sourcePaths];
+      if (pairedCompanionsByPath.size === 0) return list;
+      const expanded = new Set<string>(list);
+      for (const path of list) {
+        const companions = pairedCompanionsByPath.get(path);
+        if (companions) {
+          for (const companion of companions) expanded.add(companion.path);
+        }
+      }
+      return Array.from(expanded);
+    },
+    [pairedCompanionsByPath]
+  );
+
+  const handleCopy = useCallback(
+    (targets: FileEntry[]) => rawHandleCopy(expandPairedEntries(targets, pairedCompanionsByPath)),
+    [pairedCompanionsByPath, rawHandleCopy]
+  );
+  const handleCut = useCallback(
+    (targets: FileEntry[]) => rawHandleCut(expandPairedEntries(targets, pairedCompanionsByPath)),
+    [pairedCompanionsByPath, rawHandleCut]
+  );
+  const handleDuplicate = useCallback(
+    (targets: FileEntry[]) =>
+      rawHandleDuplicate(expandPairedEntries(targets, pairedCompanionsByPath)),
+    [pairedCompanionsByPath, rawHandleDuplicate]
+  );
+  const handleDelete = useCallback(
+    (targets: FileEntry[]) => rawHandleDelete(expandPairedEntries(targets, pairedCompanionsByPath)),
+    [pairedCompanionsByPath, rawHandleDelete]
+  );
+  const handleToggleTag = useCallback(
+    (targets: FileEntry[], tag: string) =>
+      rawHandleToggleTag(expandPairedEntries(targets, pairedCompanionsByPath), tag),
+    [pairedCompanionsByPath, rawHandleToggleTag]
+  );
+  const handleMove = useCallback(
+    (sourcePaths: string | string[], targetPath: string) =>
+      rawHandleMove(expandPaths(sourcePaths), targetPath),
+    [expandPaths, rawHandleMove]
+  );
+  const handleCopyTo = useCallback(
+    (sourcePaths: string | string[], targetPath: string) =>
+      rawHandleCopyTo(expandPaths(sourcePaths), targetPath),
+    [expandPaths, rawHandleCopyTo]
+  );
 
   // 6. 批量重命名
   const [batchRenameFiles, setBatchRenameFiles] = useState<FileEntry[]>([]);
@@ -262,6 +380,15 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     void settingsManager.set("show_hidden_files", !showHiddenFiles);
   }, [showHiddenFiles]);
 
+  const handleFocusFilterBar = useCallback(() => {
+    setFilterBarDismissed(false);
+    setFilterBarForcedOpen(true);
+    requestAnimationFrame(() => {
+      filterInputRef.current?.focus();
+      filterInputRef.current?.select();
+    });
+  }, []);
+
   // 7. 键盘快捷键
   const fileCommands = useFileKeyboardShortcuts({
     selectedPath,
@@ -280,6 +407,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     canGoBack,
     canGoForward,
     onToggleHiddenFiles: handleToggleHiddenFiles,
+    onFocusFilterBar: handleFocusFilterBar,
+    onToggleTag: handleToggleTag,
     onScrollToIndex: (index) => scrollToIndexRef.current(index),
     onColumnNavigateLeft: () => columnNavRef.current?.navigateLeft() ?? false,
     onColumnNavigateRight: () => columnNavRef.current?.navigateRight() ?? Promise.resolve(false),
@@ -521,28 +650,30 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     if (viewMode !== "list" || listEnd < listStart) return [];
     return sortedEntries.slice(listStart, listEnd + 1).map((entry) => entry.path);
   }, [listEnd, listStart, sortedEntries, viewMode]);
-  const viewportPriorityPaths = viewMode === "icon" ? gridViewportPaths : listViewportPaths;
-  const folderScanEntries = useMemo(
-    () =>
-      entries.filter(
-        (entry) =>
-          currentPath.startsWith(SMART_FOLDER_PREFIX) ||
-          (entry.path.slice(0, entry.path.lastIndexOf("/")) || "/") === currentPath
-      ),
-    [entries, currentPath]
-  );
-  const visibleSharpness = useVisibleSharpness(
-    folderScanEntries,
-    !loading && !error && !quickLookEntry,
-    viewportPriorityPaths
-  );
+  const computedViewportPriorityPaths = viewMode === "icon" ? gridViewportPaths : listViewportPaths;
+
+  useEffect(() => {
+    const prev = viewportPriorityPathsRef.current;
+    if (
+      prev.length === computedViewportPriorityPaths.length &&
+      prev.every((path, idx) => path === computedViewportPriorityPaths[idx])
+    ) {
+      return;
+    }
+    viewportPriorityPathsRef.current = computedViewportPriorityPaths;
+    setViewportPriorityPaths(computedViewportPriorityPaths);
+  }, [computedViewportPriorityPaths]);
+
+  useEffect(() => {
+    setQuickLookOpenFlag(Boolean(quickLookEntry));
+  }, [quickLookEntry]);
 
   const photoAnalysisEnabledForFolder = photoAnalysisEnabled;
   const { records: photoAnalysis } = usePhotoAnalysis(
     entries,
     photoAnalysisEnabledForFolder,
     currentPath,
-    viewportPriorityPaths,
+    computedViewportPriorityPaths,
     Boolean(quickLookEntry)
   );
 
@@ -776,6 +907,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       onShowPackageContents: handleShowPackageContents,
       onShowOriginal: handleShowOriginal,
       onToggleTag: handleToggleTag,
+      onCompare: (pair) => setComparePair(pair),
       onCopy: handleCopy,
       onCut: handleCut,
       onPaste: handlePaste,
@@ -936,6 +1068,28 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                 gridVirtualizer.scrollToIndex(Math.floor(index / gridColumns), { align: "center" });
             }}
           />
+          {(filterBarForcedOpen ||
+            hasActiveFolderFilter(folderFilter) ||
+            (hasPhotosInFolder && !filterBarDismissed && viewMode !== "column")) && (
+            <div className={viewMode === "gallery" ? "px-3 pt-2" : ""}>
+              <FolderFilterBar
+                filter={folderFilter}
+                onChange={setFolderFilter}
+                totalCount={displayBaseEntries.length}
+                filteredCount={filteredEntries.length}
+                pairCount={pairingPreview.pairCount}
+                inputRef={filterInputRef}
+                onClose={
+                  !hasActiveFolderFilter(folderFilter)
+                    ? () => {
+                        setFilterBarDismissed(true);
+                        setFilterBarForcedOpen(false);
+                      }
+                    : undefined
+                }
+              />
+            </div>
+          )}
           {viewMode === "gallery" ? (
             <FileGalleryView
               entries={sortedEntries}
@@ -947,6 +1101,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
               onSelect={(entry, index, event) => handleClick(entry, index, event)}
               onSelectSingle={selectSingle}
               onDoubleClick={handleOpen}
+              onToggleTag={handleToggleTag}
+              onCompare={(pair) => setComparePair(pair)}
             />
           ) : viewMode === "column" ? (
             <FileColumnView
@@ -1055,6 +1211,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                             onItemDoubleClick={handleOpen}
                             columnWidths={listColumnWidths}
                             columnVisibility={listColumnVisibility}
+                            pairedBadge={pairedCompanionsByPath.has(entry.path) ? "RAW+JPG" : null}
                           />
                         </AppContextMenu>
                       </div>
@@ -1152,6 +1309,9 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                                     visibleSharpness={visibleSharpness.get(entry.path)}
                                     photoAnalysisEnabled={photoAnalysisEnabled}
                                     iconSize={iconSize}
+                                    pairedBadge={
+                                      pairedCompanionsByPath.has(entry.path) ? "RAW+JPG" : null
+                                    }
                                     isScrolling={gridIsScrolling}
                                     isInViewport={gridViewportPathSet.has(entry.path)}
                                     photoGroupColor={getPhotoGroupColor(analysis?.groupId ?? null)}
@@ -1177,6 +1337,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
           entries={sortedEntries}
           photoAnalysis={photoAnalysis}
           onClose={() => setQuickLookEntry(null)}
+          onToggleTag={(target, tag) => void handleToggleTag([target], tag)}
+          onDelete={(target) => handleDelete([target])}
           onNavigate={(entry) => {
             const index = sortedEntries.findIndex((candidate) => candidate.path === entry.path);
             selectSingle(entry.path, index);
@@ -1191,6 +1353,14 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
           }}
         />
       )}
+
+      <PhotoCompareDialog
+        entries={comparePair}
+        visibleSharpness={visibleSharpness}
+        onClose={() => setComparePair(null)}
+        onToggleTag={(target, tag) => void handleToggleTag([target], tag)}
+        onDelete={(target) => handleDelete([target])}
+      />
 
       <BatchRenameDialog
         open={showBatchRename}

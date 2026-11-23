@@ -34,6 +34,7 @@ interface FileListItemProps {
   onMove?: (source: string, target: string) => void;
   columnWidths?: ListColumnWidths;
   columnVisibility?: ListColumnVisibility;
+  pairedBadge?: string | null;
 }
 
 export const FileListItem = memo(function FileListItem({
@@ -57,6 +58,7 @@ export const FileListItem = memo(function FileListItem({
   onItemDoubleClick,
   columnWidths,
   columnVisibility,
+  pairedBadge,
 }: FileListItemProps) {
   const { t } = useTranslation();
   const metadata = usePhotoMetadata(entry, isInViewport && !isScrolling);
@@ -128,6 +130,11 @@ export const FileListItem = memo(function FileListItem({
             }}
           >
             {entry.name}
+          </span>
+        )}
+        {!isEditing && pairedBadge && (
+          <span className="bg-primary/10 text-primary shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium">
+            {pairedBadge}
           </span>
         )}
         {!isEditing && <FinderTagDots tags={entry.tags} />}

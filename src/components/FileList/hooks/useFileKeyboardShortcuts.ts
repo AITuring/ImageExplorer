@@ -6,6 +6,7 @@ import type { ViewMode } from "@/stores/viewMode";
 import { registerKeyboardCommands } from "@/lib/keyboardShortcuts";
 import { isCommandEnabled, registerAppCommands, runCommand } from "@/lib/commands";
 import { viewModeCommands } from "@/lib/viewModeCommands";
+import { FINDER_TAG_PRESETS } from "@/lib/finderTags";
 import { findTypeAheadMatch } from "./finderListModel";
 
 const TYPE_AHEAD_RESET_MS = 750;
@@ -28,6 +29,8 @@ interface UseFileKeyboardShortcutsOptions {
   canGoBack?: boolean;
   canGoForward?: boolean;
   onToggleHiddenFiles?: () => void;
+  onFocusFilterBar?: () => void;
+  onToggleTag?: (entries: FileEntry[], tag: string) => void;
   onScrollToIndex?: (index: number) => void;
   onColumnNavigateLeft?: () => boolean;
   onColumnNavigateRight?: () => Promise<boolean>;
@@ -357,6 +360,43 @@ export function useFileKeyboardShortcuts(
           enabled: () => Boolean(optionsRef.current.onToggleHiddenFiles),
           run: () => {
             optionsRef.current.onToggleHiddenFiles?.();
+          },
+        },
+        {
+          id: "file.focus-filter",
+          scope: "file-view",
+          matches: (event) =>
+            isModifierPressed(event) && event.altKey && !event.shiftKey && event.code === "KeyF",
+          enabled: () => Boolean(optionsRef.current.onFocusFilterBar),
+          run: () => {
+            optionsRef.current.onFocusFilterBar?.();
+          },
+        },
+        {
+          id: "file.gallery-quick-tag",
+          scope: "file-view",
+          priority: 2,
+          matches: (event) =>
+            optionsRef.current.viewMode === "gallery" &&
+            !isModifierPressed(event) &&
+            !event.altKey &&
+            !event.shiftKey &&
+            /^[1-7]$/.test(event.key),
+          enabled: () =>
+            Boolean(
+              optionsRef.current.onToggleTag &&
+              !optionsRef.current.editingPath &&
+              optionsRef.current.selectedPaths.length > 0
+            ),
+          run: (event) => {
+            const preset = FINDER_TAG_PRESETS[Number(event.key) - 1];
+            if (!preset) return;
+            const current = optionsRef.current;
+            const selectedSet = new Set(current.selectedPaths);
+            const targets = current.entries.filter((entry) => selectedSet.has(entry.path));
+            if (targets.length > 0) {
+              current.onToggleTag?.(targets, preset.id);
+            }
           },
         },
         {

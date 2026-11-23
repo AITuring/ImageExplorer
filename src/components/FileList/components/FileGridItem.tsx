@@ -36,6 +36,7 @@ interface FileGridItemProps {
   photoGroupColor?: string;
   photoAnalysisEnabled?: boolean;
   iconSize?: number;
+  pairedBadge?: string | null;
   isScrolling?: boolean;
   isInViewport?: boolean;
 }
@@ -61,6 +62,7 @@ export const FileGridItem = memo(function FileGridItem({
   photoGroupColor,
   photoAnalysisEnabled = false,
   iconSize = 160,
+  pairedBadge = null,
   isScrolling = false,
   isInViewport = true,
 }: FileGridItemProps) {
@@ -131,6 +133,11 @@ export const FileGridItem = memo(function FileGridItem({
             entry.is_dir ? "h-16 w-16 text-blue-500" : "text-muted-foreground h-16 w-16"
           }
         />
+        {pairedBadge && (
+          <span className="bg-background/85 text-foreground border-border/60 pointer-events-none absolute top-1 right-1 rounded border px-1 py-0.5 text-[9px] font-semibold backdrop-blur-sm">
+            {pairedBadge}
+          </span>
+        )}
         {photoAnalysis &&
           focusRegions.map((region) => (
             <FocusRegionOverlay

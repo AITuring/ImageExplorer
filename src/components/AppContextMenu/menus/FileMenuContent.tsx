@@ -8,6 +8,7 @@ import {
 import { useClipboard } from "@/stores/clipboard";
 import { isCommandEnabled, runCommand } from "@/lib/commands";
 import { FINDER_TAG_PRESETS, hasFinderTag } from "@/lib/finderTags";
+import { isAnalyzablePhoto } from "@/lib/photoAnalysis";
 import { FileEntry, FileActions } from "@/types";
 import { SYSTEM_PATHS, SF_SYMBOLS } from "@/constants/paths";
 import { MenuItem } from "../MenuItem";
@@ -16,6 +17,7 @@ import {
   ArrowUpRight,
   Archive,
   Clipboard,
+  Columns2,
   Copy,
   FolderPlus,
   Info,
@@ -185,6 +187,20 @@ export function FileMenuContent({ entry, selectedEntries, actions }: FileMenuCon
           }
         />
       )}
+
+      {targets.length >= 2 &&
+        actions.onCompare &&
+        (() => {
+          const photos = targets.filter(isAnalyzablePhoto);
+          if (photos.length < 2) return null;
+          return (
+            <MenuItem
+              fallbackIcon={Columns2}
+              label={t("context_menu.compare_photos")}
+              onClick={() => actions.onCompare?.([photos[0], photos[1]])}
+            />
+          );
+        })()}
 
       {targets.length > 1 && actions.onBatchRename && (
         <MenuItem

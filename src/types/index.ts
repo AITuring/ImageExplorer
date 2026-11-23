@@ -193,6 +193,7 @@ export interface FileActions {
   onShowPackageContents?: (entry: FileEntry) => void;
   onShowOriginal?: (entry: FileEntry) => void;
   onToggleTag?: (entries: FileEntry[], tag: string) => void;
+  onCompare?: (entries: [FileEntry, FileEntry]) => void;
   onCopy: (entries: FileEntry[]) => void;
   onCut: (entries: FileEntry[]) => void;
   onPaste: () => void;

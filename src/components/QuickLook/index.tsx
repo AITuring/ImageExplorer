@@ -53,6 +53,7 @@ import {
 import { formatFileSize, formatDate } from "@/utils/format";
 import { RAW_IMAGE_EXTENSIONS } from "@/constants/fileTypes";
 import { isInteractiveKeyboardTarget, shouldIgnoreKeyboardCommand } from "@/lib/keyboardShortcuts";
+import { FINDER_TAG_PRESETS } from "@/lib/finderTags";
 
 interface QuickLookProps {
   entry: FileEntry | null;
@@ -60,6 +61,8 @@ interface QuickLookProps {
   photoAnalysis?: ReadonlyMap<string, PhotoAnalysisRecord>;
   onClose: () => void;
   onNavigate: (entry: FileEntry) => void;
+  onToggleTag?: (entry: FileEntry, tag: string) => void;
+  onDelete?: (entry: FileEntry) => Promise<void>;
 }
 
 type PreviewType = "text" | "image" | "video" | "audio" | "pdf" | "icon";
@@ -964,7 +967,15 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
   );
 });
 
-export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }: QuickLookProps) {
+export function QuickLook({
+  entry,
+  entries,
+  photoAnalysis,
+  onClose,
+  onNavigate,
+  onToggleTag,
+  onDelete,
+}: QuickLookProps) {
   const { t } = useTranslation();
   const isOpen = Boolean(entry);
   const entryPath = entry?.path ?? null;
@@ -1372,6 +1383,40 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
         return;
       }
 
+      // Photography culling shortcuts inside QuickLook:
+      // 1-7 toggle Finder color tags; Cmd+Backspace deletes and advances.
+      if (
+        onToggleTag &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey &&
+        /^[1-7]$/.test(e.key)
+      ) {
+        const preset = FINDER_TAG_PRESETS[Number(e.key) - 1];
+        if (preset) {
+          e.preventDefault();
+          onToggleTag(entry, preset.id);
+          return;
+        }
+      }
+
+      if (
+        onDelete &&
+        !entry.readonly &&
+        (e.metaKey || e.ctrlKey) &&
+        !e.altKey &&
+        e.key === "Backspace"
+      ) {
+        e.preventDefault();
+        const fallbackNext = nextEntry ?? previousEntry ?? null;
+        void onDelete(entry).then(() => {
+          if (fallbackNext) onNavigate(fallbackNext);
+          else onClose();
+        });
+        return;
+      }
+
       if (!canNavigate) {
         return;
       }
@@ -1396,7 +1441,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
         (el as HTMLMediaElement).pause();
       });
     };
-  }, [canNavigate, entry, nextEntry, onClose, onNavigate, previousEntry]);
+  }, [canNavigate, entry, nextEntry, onClose, onDelete, onNavigate, onToggleTag, previousEntry]);
 
   useEffect(() => {
     // sips 不支持部分 RAW 格式，且在 macOS 上可能启动一个失败的子进程；

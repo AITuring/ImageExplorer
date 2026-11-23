@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, Columns2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { FileActions, FileEntry } from "@/types";
 import { FileThumbnail } from "@/components/FileThumbnail";
@@ -10,6 +10,7 @@ import { PhotoInspector } from "./PhotoInspector";
 import { SharpnessBadge } from "./PhotoDetails";
 import { usePhotoMetadata } from "@/hooks/usePhotoMetadata";
 import { isAnalyzablePhoto } from "@/lib/photoAnalysis";
+import { FINDER_TAG_PRESETS, hasFinderTag } from "@/lib/finderTags";
 import type { VisibleSharpness } from "@/hooks/useVisibleSharpness";
 
 const FILMSTRIP_ITEM_WIDTH = 86;
@@ -24,6 +25,8 @@ interface FileGalleryViewProps {
   onSelect: (entry: FileEntry, index: number, event: React.MouseEvent) => void;
   onSelectSingle: (path: string, index: number) => void;
   onDoubleClick: (entry: FileEntry) => void;
+  onToggleTag?: (entries: FileEntry[], tag: string) => void;
+  onCompare?: (entries: [FileEntry, FileEntry]) => void;
 }
 
 const GalleryPreviewStage = memo(function GalleryPreviewStage({
@@ -32,8 +35,11 @@ const GalleryPreviewStage = memo(function GalleryPreviewStage({
   verdict,
   canGoPrev,
   canGoNext,
+  canCompare,
   onPrev,
   onNext,
+  onCompare,
+  onToggleTag,
   onDoubleClick,
 }: {
   entry: FileEntry;
@@ -41,8 +47,11 @@ const GalleryPreviewStage = memo(function GalleryPreviewStage({
   verdict?: VisibleSharpness;
   canGoPrev: boolean;
   canGoNext: boolean;
+  canCompare: boolean;
   onPrev: () => void;
   onNext: () => void;
+  onCompare?: () => void;
+  onToggleTag?: (tag: string) => void;
   onDoubleClick: (entry: FileEntry) => void;
 }) {
   const { t } = useTranslation();
@@ -90,13 +99,52 @@ const GalleryPreviewStage = memo(function GalleryPreviewStage({
           )}
         </div>
 
-        <div className="mt-2 flex max-w-full items-center gap-2">
+        <div className="mt-2 flex w-full max-w-full flex-wrap items-center justify-center gap-2">
           <FinderTagDots tags={entry.tags} size="md" />
-          <span className="truncate text-sm font-medium">{entry.name}</span>
+          <span className="max-w-md truncate text-sm font-medium">{entry.name}</span>
           <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
             {positionLabel}
           </span>
           {isPhoto && <SharpnessBadge verdict={verdict} />}
+          {onToggleTag && (
+            <div
+              className="flex items-center gap-1 pl-1"
+              title={t("file_list.cull_tag_hint")}
+              role="group"
+              aria-label={t("tags.section")}
+            >
+              {FINDER_TAG_PRESETS.map((preset, idx) => {
+                const active = hasFinderTag(entry.tags, preset.id);
+                const label = `${idx + 1}: ${t(preset.labelKey)}`;
+                return (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    title={label}
+                    aria-label={label}
+                    aria-pressed={active}
+                    onClick={() => onToggleTag(preset.id)}
+                    className={`h-3.5 w-3.5 rounded-full transition-transform hover:scale-115 ${
+                      active
+                        ? "ring-foreground ring-offset-background ring-2 ring-offset-1"
+                        : "opacity-75 ring-1 ring-black/15 hover:opacity-100"
+                    }`}
+                    style={{ backgroundColor: preset.color }}
+                  />
+                );
+              })}
+            </div>
+          )}
+          {canCompare && onCompare && (
+            <button
+              type="button"
+              onClick={onCompare}
+              className="border-border/60 hover:bg-accent inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs transition-colors"
+            >
+              <Columns2 className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>{t("file_list.compare_photos")}</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -121,6 +169,8 @@ export function FileGalleryView({
   onSelect,
   onSelectSingle,
   onDoubleClick,
+  onToggleTag,
+  onCompare,
 }: FileGalleryViewProps) {
   const { t } = useTranslation();
   const filmstripRef = useRef<HTMLDivElement>(null);
@@ -153,6 +203,21 @@ export function FileGalleryView({
     }
   }, [activeIndex, virtualizer]);
 
+  const comparePair = useMemo<[FileEntry, FileEntry] | null>(() => {
+    const selectedPhotos = selectedFileEntries.filter(isAnalyzablePhoto);
+    if (selectedPhotos.length >= 2) {
+      return [selectedPhotos[0], selectedPhotos[1]];
+    }
+    if (!activeEntry || !isAnalyzablePhoto(activeEntry)) return null;
+    for (let i = activeIndex + 1; i < entries.length; i += 1) {
+      if (isAnalyzablePhoto(entries[i])) return [activeEntry, entries[i]];
+    }
+    for (let i = activeIndex - 1; i >= 0; i -= 1) {
+      if (isAnalyzablePhoto(entries[i])) return [entries[i], activeEntry];
+    }
+    return null;
+  }, [activeEntry, activeIndex, entries, selectedFileEntries]);
+
   if (!activeEntry) {
     return (
       <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
@@ -180,6 +245,7 @@ export function FileGalleryView({
             verdict={visibleSharpness.get(activeEntry.path)}
             canGoPrev={activeIndex > 0}
             canGoNext={activeIndex < entries.length - 1}
+            canCompare={Boolean(comparePair && onCompare)}
             onPrev={() => {
               const prevIdx = activeIndex - 1;
               if (prevIdx >= 0) onSelectSingle(entries[prevIdx].path, prevIdx);
@@ -188,6 +254,8 @@ export function FileGalleryView({
               const nextIdx = activeIndex + 1;
               if (nextIdx < entries.length) onSelectSingle(entries[nextIdx].path, nextIdx);
             }}
+            onCompare={comparePair && onCompare ? () => onCompare(comparePair) : undefined}
+            onToggleTag={onToggleTag ? (tag) => onToggleTag([activeEntry], tag) : undefined}
             onDoubleClick={onDoubleClick}
           />
         </div>
