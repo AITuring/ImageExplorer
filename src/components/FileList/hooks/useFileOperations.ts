@@ -18,8 +18,8 @@ import {
 
 interface UseFileOperationsOptions {
   currentPath: string;
-  onRefresh: () => void;
-  onNavigate: (path: string) => void;
+  onRefresh: (forceRefresh?: boolean) => void;
+  onNavigate: (path: string, selectFile?: string) => void;
   onStartRename: (path: string, name: string) => void;
 }
 
@@ -247,6 +247,66 @@ export function useFileOperations({
     }
   }, [currentPath]);
 
+  const handleShowPackageContents = useCallback(
+    (entry: FileEntry) => {
+      if (entry.is_dir) {
+        onNavigate(entry.path);
+      }
+    },
+    [onNavigate]
+  );
+
+  const handleShowOriginal = useCallback(
+    async (entry: FileEntry) => {
+      try {
+        const target = await invoke<string>("resolve_original_path", { path: entry.path });
+        const normalized = target.replace(/\/+$/, "");
+        const slashIndex = normalized.lastIndexOf("/");
+        const parentDir = slashIndex <= 0 ? "/" : normalized.slice(0, slashIndex);
+        onNavigate(parentDir, normalized);
+      } catch (error) {
+        console.error("Failed to resolve original path:", error);
+        alert(t("file_list.error_operation", { error: String(error) }));
+      }
+    },
+    [onNavigate, t]
+  );
+
+  const handleToggleTag = useCallback(
+    async (entries: FileEntry[], tag: string) => {
+      if (entries.length === 0) return;
+      try {
+        await invoke<string[]>("toggle_file_tag", {
+          paths: entries.map((entry) => entry.path),
+          tag,
+        });
+        invalidateCache(currentPath);
+        onRefreshRef.current(true);
+      } catch (error) {
+        console.error("Failed to update Finder tag:", error);
+        alert(t("file_list.error_operation", { error: String(error) }));
+      }
+    },
+    [currentPath, t]
+  );
+
+  const handleCopyTo = useCallback(
+    async (sourcePaths: string | string[], targetPath: string) => {
+      try {
+        await enqueueFileOperation({
+          kind: "copy",
+          paths: Array.isArray(sourcePaths) ? sourcePaths : [sourcePaths],
+          destDir: targetPath,
+        });
+        void onRefresh();
+      } catch (error) {
+        console.error("Failed to enqueue copy operation:", error);
+        alert(t("file_list.error_operation", { error: String(error) }));
+      }
+    },
+    [onRefresh, t]
+  );
+
   return {
     handleOpen,
     handleCopy,
@@ -264,6 +324,10 @@ export function useFileOperations({
     handleNewFile,
     handleNewFolder,
     handleOpenInTerminal,
+    handleShowPackageContents,
+    handleShowOriginal,
+    handleToggleTag,
+    handleCopyTo,
     handleMove: useCallback(
       async (sourcePaths: string | string[], targetPath: string) => {
         try {

@@ -28,7 +28,11 @@ export interface FileEntry {
   mode?: number | null;
   uid?: number | null;
   gid?: number | null;
+  owner_name?: string | null;
+  group_name?: string | null;
   file_attributes?: number | null;
+  /** macOS Finder tags read from NSURLTagNamesKey. */
+  tags?: string[];
 }
 
 export interface InstalledApp {
@@ -186,6 +190,9 @@ export interface EmptyAreaCommandActions {
 export interface FileActions {
   onOpen: (entry: FileEntry) => void;
   onOpenInNewTab?: (entry: FileEntry) => void;
+  onShowPackageContents?: (entry: FileEntry) => void;
+  onShowOriginal?: (entry: FileEntry) => void;
+  onToggleTag?: (entries: FileEntry[], tag: string) => void;
   onCopy: (entries: FileEntry[]) => void;
   onCut: (entries: FileEntry[]) => void;
   onPaste: () => void;
@@ -231,4 +238,5 @@ export interface SidebarItemActions {
   isFavorite?: boolean;
   onRemoveRecent?: () => void;
   onRemoveFromSidebar?: () => void;
+  onEject?: () => void;
 }

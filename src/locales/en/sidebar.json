@@ -16,5 +16,7 @@
   "resize": "Resize sidebar",
   "show": "Show sidebar",
   "restore_items": "Restore hidden items",
-  "remove_item": "Remove {{name}} from sidebar"
+  "remove_item": "Remove {{name}} from sidebar",
+  "eject_volume": "Eject {{name}}",
+  "eject_failed": "Could not eject \"{{name}}\": {{error}}"
 }

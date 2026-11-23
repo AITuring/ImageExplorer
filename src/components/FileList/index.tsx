@@ -55,11 +55,12 @@ interface FileListProps {
   fileToSelect?: string | null;
 }
 
-/** 拖拽事件处理工厂 */
+/** 拖拽事件处理工厂（按住 Option / Alt 键执行复制而非移动） */
 function makeDragHandlers(
   entry: FileEntry,
   selectedPaths: string[],
   handleMove: (src: string | string[], dest: string) => void,
+  handleCopyTo: (src: string | string[], dest: string) => void,
   isGrid: boolean
 ) {
   const dragPaths = selectedPaths.includes(entry.path) ? selectedPaths : [entry.path];
@@ -69,7 +70,7 @@ function makeDragHandlers(
     onDragOver: (e: React.DragEvent) => {
       if (!entry.is_dir) return;
       e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
+      e.dataTransfer.dropEffect = e.altKey ? "copy" : "move";
       if (isGrid) {
         e.currentTarget.querySelector(".group")?.classList.add("bg-primary/20", "rounded-lg");
       } else {
@@ -98,7 +99,10 @@ function makeDragHandlers(
       const data = readFileDragData(e.dataTransfer);
       if (data) {
         const paths = data.paths.filter((path) => path !== entry.path);
-        if (paths.length > 0) handleMove(paths, entry.path);
+        if (paths.length > 0) {
+          if (e.altKey) handleCopyTo(paths, entry.path);
+          else handleMove(paths, entry.path);
+        }
       }
     },
   };
@@ -203,10 +207,14 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     handleNewFolder,
     handlePasteAsMove,
     handleOpenInTerminal,
+    handleShowPackageContents,
+    handleShowOriginal,
+    handleToggleTag,
+    handleCopyTo,
     handleMove,
   } = useFileOperations({
     currentPath: operationPath,
-    onRefresh: () => loadEntries(false),
+    onRefresh: (forceRefresh = false) => loadEntries(false, forceRefresh),
     onNavigate,
     onStartRename: (path: string, name: string) => {
       setSelectedPath(path);
@@ -690,7 +698,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       }
       if (operationPath.startsWith(SMART_FOLDER_PREFIX)) return;
       e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
+      e.dataTransfer.dropEffect = e.altKey ? "copy" : "move";
       setIsFileDragOver(true);
     },
     [operationPath]
@@ -712,9 +720,12 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       e.stopPropagation();
       setIsFileDragOver(false);
       const paths = data.paths.filter((path) => path !== operationPath);
-      if (paths.length > 0) handleMove(paths, operationPath);
+      if (paths.length > 0) {
+        if (e.altKey) handleCopyTo(paths, operationPath);
+        else handleMove(paths, operationPath);
+      }
     },
-    [operationPath, handleMove]
+    [operationPath, handleCopyTo, handleMove]
   );
 
   // 文件操作对象
@@ -724,6 +735,9 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       onOpenInNewTab: (entry) => {
         if (entry.is_dir) addTab(entry.path);
       },
+      onShowPackageContents: handleShowPackageContents,
+      onShowOriginal: handleShowOriginal,
+      onToggleTag: handleToggleTag,
       onCopy: handleCopy,
       onCut: handleCut,
       onPaste: handlePaste,
@@ -759,8 +773,11 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       handleGoToLocation,
       handleOpen,
       handlePaste,
+      handleShowOriginal,
+      handleShowPackageContents,
       handleStartRename,
       handleToggleFavorite,
+      handleToggleTag,
       isFavorite,
       operationPath,
     ]
@@ -902,6 +919,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
               onDoubleClick={handleOpen}
               onNavigate={(path) => onNavigate(path)}
               handleMove={handleMove}
+              handleCopyTo={handleCopyTo}
               showHiddenFiles={showHiddenFiles}
             />
           ) : viewMode === "list" ? (
@@ -926,7 +944,13 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                   {listVirtualizer.getVirtualItems().map((virtualItem) => {
                     const entry = sortedEntries[virtualItem.index];
                     if (!entry) return null;
-                    const dragHandlers = makeDragHandlers(entry, selectedPaths, handleMove, false);
+                    const dragHandlers = makeDragHandlers(
+                      entry,
+                      selectedPaths,
+                      handleMove,
+                      handleCopyTo,
+                      false
+                    );
                     return (
                       <div
                         key={entry.path}
@@ -1013,6 +1037,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                               entry,
                               selectedPaths,
                               handleMove,
+                              handleCopyTo,
                               true
                             );
                             const analysis = photoAnalysis.get(entry.path);

@@ -1,6 +1,10 @@
 {
   "open": "Open",
   "open_in_new_tab": "Open in New Tab",
+  "show_package_contents": "Show Package Contents",
+  "show_original": "Show Original",
+  "tags": "Tags",
+  "eject": "Eject",
   "open_in_terminal": "Open in Terminal",
   "open_with": "Open With",
   "no_apps_found": "No apps found",

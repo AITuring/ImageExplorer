@@ -348,38 +348,192 @@ fn is_alias_entry(path: &Path) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn is_native_finder_alias(path: &Path) -> bool {
-    let path_string = path.to_string_lossy();
-    let output = std::process::Command::new("/usr/bin/mdls")
-        .args(["-raw", "-name", "kMDItemContentType", path_string.as_ref()])
-        .output();
-    output
-        .ok()
-        .filter(|value| value.status.success())
-        .map(|value| String::from_utf8_lossy(&value.stdout).trim().to_string())
-        .map(|content_type| content_type == "com.apple.alias-file")
-        .unwrap_or(false)
+fn inspect_native_finder_alias(path: &Path) -> (bool, Option<String>) {
+    use std::ffi::{CStr, CString};
+    use std::os::unix::ffi::OsStrExt;
+
+    extern "C" {
+        fn imageexplorer_resolve_alias(
+            path: *const std::ffi::c_char,
+            out_is_alias: *mut std::ffi::c_int,
+        ) -> *mut std::ffi::c_char;
+        fn imageexplorer_free_c_string(value: *mut std::ffi::c_char);
+    }
+
+    let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
+        return (false, None);
+    };
+    let mut is_alias = 0_i32;
+    let target_ptr = unsafe { imageexplorer_resolve_alias(c_path.as_ptr(), &mut is_alias) };
+    let target = if target_ptr.is_null() {
+        None
+    } else {
+        let value = unsafe { CStr::from_ptr(target_ptr) }
+            .to_string_lossy()
+            .trim()
+            .to_string();
+        unsafe { imageexplorer_free_c_string(target_ptr) };
+        (!value.is_empty()).then_some(value)
+    };
+    (is_alias != 0, target)
 }
 
 #[cfg(target_os = "macos")]
-fn resolve_finder_alias_target(path: &Path) -> Option<String> {
-    let escaped = path
-        .to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
-    let script = format!(
-        "tell application \"Finder\"\nset aliasFile to POSIX file \"{}\" as alias\ntry\nreturn POSIX path of (original item of aliasFile)\non error\nreturn \"\"\nend try\nend tell",
-        escaped
-    );
-    let output = std::process::Command::new("/usr/bin/osascript")
-        .args(["-e", &script])
-        .output()
-        .ok()?;
-    if !output.status.success() {
+pub(crate) fn read_file_tags(path: &Path) -> Vec<String> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    extern "C" {
+        fn imageexplorer_get_file_tags(
+            path: *const std::ffi::c_char,
+            length: *mut usize,
+        ) -> *mut u8;
+        fn imageexplorer_free_thumbnail(buffer: *mut u8);
+    }
+
+    let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
+        return Vec::new();
+    };
+    // Fast xattr probe (~1µs) so untagged items skip Objective-C/NSURL completely.
+    const USER_TAGS_XATTR: &[u8] = b"com.apple.metadata:_kMDItemUserTags\0";
+    let attr_len = unsafe {
+        libc::getxattr(
+            c_path.as_ptr(),
+            USER_TAGS_XATTR.as_ptr().cast::<std::ffi::c_char>(),
+            std::ptr::null_mut(),
+            0,
+            0,
+            libc::XATTR_NOFOLLOW,
+        )
+    };
+    if attr_len <= 0 {
+        return Vec::new();
+    }
+
+    let mut length = 0usize;
+    let buffer = unsafe { imageexplorer_get_file_tags(c_path.as_ptr(), &mut length) };
+    if buffer.is_null() || length == 0 {
+        return Vec::new();
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(buffer, length) };
+    let parsed = serde_json::from_slice::<Vec<String>>(bytes).unwrap_or_default();
+    unsafe { imageexplorer_free_thumbnail(buffer) };
+    parsed
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn read_file_tags(_path: &Path) -> Vec<String> {
+    Vec::new()
+}
+
+#[cfg(target_os = "macos")]
+fn write_file_tags(path: &Path, tags: &[String]) -> Result<(), String> {
+    use std::ffi::{CStr, CString};
+    use std::os::unix::ffi::OsStrExt;
+
+    extern "C" {
+        fn imageexplorer_set_file_tags(
+            path: *const std::ffi::c_char,
+            tags_json: *const std::ffi::c_char,
+            out_error: *mut *mut std::ffi::c_char,
+        ) -> std::ffi::c_int;
+        fn imageexplorer_free_c_string(value: *mut std::ffi::c_char);
+    }
+
+    let c_path =
+        CString::new(path.as_os_str().as_bytes()).map_err(|_| "Path contains NUL".to_string())?;
+    let json = serde_json::to_string(tags).map_err(|error| error.to_string())?;
+    let c_json = CString::new(json).map_err(|_| "Tag list contains NUL".to_string())?;
+    let mut err_ptr: *mut std::ffi::c_char = std::ptr::null_mut();
+    let ok = unsafe { imageexplorer_set_file_tags(c_path.as_ptr(), c_json.as_ptr(), &mut err_ptr) };
+    if ok != 0 {
+        return Ok(());
+    }
+    let message = if !err_ptr.is_null() {
+        let text = unsafe { CStr::from_ptr(err_ptr) }
+            .to_string_lossy()
+            .to_string();
+        unsafe { imageexplorer_free_c_string(err_ptr) };
+        text
+    } else {
+        format!("Failed to update Finder tags for {}", path.display())
+    };
+    Err(message)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn write_file_tags(_path: &Path, _tags: &[String]) -> Result<(), String> {
+    Err("Finder tags are only supported on macOS".to_string())
+}
+
+#[cfg(unix)]
+fn uid_to_owner_name(uid: u32) -> Option<String> {
+    use std::ffi::CStr;
+
+    let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+    let mut buffer = vec![0_u8; 4096];
+    let rc = unsafe {
+        libc::getpwuid_r(
+            uid as libc::uid_t,
+            pwd.as_mut_ptr(),
+            buffer.as_mut_ptr().cast::<std::ffi::c_char>(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    if rc != 0 || result.is_null() {
         return None;
     }
-    let target = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!target.is_empty()).then_some(target)
+    let pwd = unsafe { pwd.assume_init() };
+    if pwd.pw_name.is_null() {
+        return None;
+    }
+    Some(
+        unsafe { CStr::from_ptr(pwd.pw_name) }
+            .to_string_lossy()
+            .to_string(),
+    )
+}
+
+#[cfg(unix)]
+fn gid_to_group_name(gid: u32) -> Option<String> {
+    use std::ffi::CStr;
+
+    let mut grp = std::mem::MaybeUninit::<libc::group>::uninit();
+    let mut result: *mut libc::group = std::ptr::null_mut();
+    let mut buffer = vec![0_u8; 4096];
+    let rc = unsafe {
+        libc::getgrgid_r(
+            gid as libc::gid_t,
+            grp.as_mut_ptr(),
+            buffer.as_mut_ptr().cast::<std::ffi::c_char>(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    if rc != 0 || result.is_null() {
+        return None;
+    }
+    let grp = unsafe { grp.assume_init() };
+    if grp.gr_name.is_null() {
+        return None;
+    }
+    Some(
+        unsafe { CStr::from_ptr(grp.gr_name) }
+            .to_string_lossy()
+            .to_string(),
+    )
+}
+
+#[cfg(not(unix))]
+fn uid_to_owner_name(_uid: u32) -> Option<String> {
+    None
+}
+
+#[cfg(not(unix))]
+fn gid_to_group_name(_gid: u32) -> Option<String> {
+    None
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -403,7 +557,10 @@ pub struct FileEntry {
     pub mode: Option<u32>,
     pub uid: Option<u32>,
     pub gid: Option<u32>,
+    pub owner_name: Option<String>,
+    pub group_name: Option<String>,
     pub file_attributes: Option<u32>,
+    pub tags: Vec<String>,
 }
 
 #[tauri::command]
@@ -549,6 +706,8 @@ fn load_directory_entries(path: &str) -> Result<Vec<FileEntry>, String> {
                         path_utils::is_protected_path_with_home(&file_path, home_dir.as_deref());
                 }
 
+                let tags = read_file_tags(&file_path);
+
                 entries.push(FileEntry {
                     name,
                     path: file_path.to_string_lossy().to_string(),
@@ -569,7 +728,10 @@ fn load_directory_entries(path: &str) -> Result<Vec<FileEntry>, String> {
                     mode,
                     uid,
                     gid,
+                    owner_name: None,
+                    group_name: None,
                     file_attributes,
+                    tags,
                 });
             }
         }
@@ -610,16 +772,15 @@ pub fn get_file_entry(path: String) -> Result<FileEntry, String> {
         .to_string();
     let package_type = package_type(file_path, is_dir);
     #[cfg(target_os = "macos")]
-    let native_alias = is_native_finder_alias(file_path);
-    #[cfg(target_os = "macos")]
-    let resolved_alias_target = (is_alias_entry(file_path) || native_alias)
-        .then(|| resolve_finder_alias_target(file_path))
-        .flatten();
+    let (native_alias, resolved_alias_target) = inspect_native_finder_alias(file_path);
     #[cfg(not(target_os = "macos"))]
     let native_alias = false;
     #[cfg(not(target_os = "macos"))]
     let resolved_alias_target: Option<String> = None;
     let (mode, uid, gid, file_attributes) = metadata_details(&metadata);
+    let owner_name = uid.and_then(uid_to_owner_name);
+    let group_name = gid.and_then(gid_to_group_name);
+    let tags = read_file_tags(file_path);
     let symlink_target = is_symlink
         .then(|| {
             fs::read_link(file_path)
@@ -668,7 +829,10 @@ pub fn get_file_entry(path: String) -> Result<FileEntry, String> {
         mode,
         uid,
         gid,
+        owner_name,
+        group_name,
         file_attributes,
+        tags,
     })
 }
 
@@ -786,6 +950,288 @@ pub fn get_mounted_volumes() -> Result<Vec<MountedVolume>, String> {
     {
         Ok(Vec::new())
     }
+}
+
+/// Safely unmount and eject an external or network volume mounted under `/Volumes`.
+#[tauri::command]
+pub async fn eject_volume(path: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let trimmed = path.trim_end_matches('/').to_string();
+        if !trimmed.starts_with("/Volumes/") || trimmed == "/Volumes" {
+            return Err(format!("Refusing to eject non-volume path: {path}"));
+        }
+        tauri::async_runtime::spawn_blocking(move || {
+            use std::ffi::{CStr, CString};
+
+            extern "C" {
+                fn imageexplorer_eject_volume(
+                    path: *const std::ffi::c_char,
+                    out_error: *mut *mut std::ffi::c_char,
+                ) -> std::ffi::c_int;
+                fn imageexplorer_free_c_string(value: *mut std::ffi::c_char);
+            }
+
+            let c_path = CString::new(trimmed.as_bytes())
+                .map_err(|_| "Volume path contains NUL".to_string())?;
+            let mut err_ptr: *mut std::ffi::c_char = std::ptr::null_mut();
+            let ok = unsafe { imageexplorer_eject_volume(c_path.as_ptr(), &mut err_ptr) };
+            if ok != 0 {
+                Ok(())
+            } else {
+                let message = if !err_ptr.is_null() {
+                    let text = unsafe { CStr::from_ptr(err_ptr) }
+                        .to_string_lossy()
+                        .to_string();
+                    unsafe { imageexplorer_free_c_string(err_ptr) };
+                    text
+                } else {
+                    format!("Could not eject volume: {trimmed}")
+                };
+                Err(message)
+            }
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        Err("Ejecting volumes is only supported on macOS".to_string())
+    }
+}
+
+/// Replace macOS Finder tags on one or more files/folders.
+#[tauri::command]
+pub async fn set_file_tags(paths: Vec<String>, tags: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut invalidated_parents = std::collections::HashSet::new();
+        for raw_path in &paths {
+            let file_path = Path::new(raw_path);
+            write_file_tags(file_path, &tags)?;
+            if let Some(parent) = file_path.parent() {
+                invalidated_parents.insert(parent.to_string_lossy().to_string());
+            }
+        }
+        for parent in invalidated_parents {
+            crate::cache::invalidate_dir_cache(&parent);
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Toggle a Finder tag across selected items using native Finder semantics:
+/// if every target already carries `tag`, remove it from all; otherwise add it
+/// to every target that lacks it. Returns the updated tag list of the first item.
+#[tauri::command]
+pub async fn toggle_file_tag(paths: Vec<String>, tag: String) -> Result<Vec<String>, String> {
+    let trimmed = tag.trim().to_string();
+    if trimmed.is_empty() || paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    tauri::async_runtime::spawn_blocking(move || toggle_file_tag_blocking(&paths, &trimmed))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn toggle_file_tag_blocking(paths: &[String], tag: &str) -> Result<Vec<String>, String> {
+    let existing: Vec<Vec<String>> = paths
+        .iter()
+        .map(|raw_path| read_file_tags(Path::new(raw_path)))
+        .collect();
+    let all_have_tag = existing
+        .iter()
+        .all(|tags| tags.iter().any(|item| item.eq_ignore_ascii_case(tag)));
+
+    let mut first_updated = Vec::new();
+    let mut invalidated_parents = std::collections::HashSet::new();
+    for (index, (raw_path, mut tags)) in paths.iter().zip(existing).enumerate() {
+        if all_have_tag {
+            tags.retain(|item| !item.eq_ignore_ascii_case(tag));
+        } else if !tags.iter().any(|item| item.eq_ignore_ascii_case(tag)) {
+            tags.push(tag.to_string());
+        }
+        let file_path = Path::new(raw_path);
+        write_file_tags(file_path, &tags)?;
+        if index == 0 {
+            first_updated = tags;
+        }
+        if let Some(parent) = file_path.parent() {
+            invalidated_parents.insert(parent.to_string_lossy().to_string());
+        }
+    }
+    for parent in invalidated_parents {
+        crate::cache::invalidate_dir_cache(&parent);
+    }
+    Ok(first_updated)
+}
+
+/// Resolve the original target of a symlink or macOS Finder alias.
+#[tauri::command]
+pub async fn resolve_original_path(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || resolve_original_path_blocking(Path::new(&path)))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn resolve_original_path_blocking(file_path: &Path) -> Result<String, String> {
+    let metadata = fs::symlink_metadata(file_path)
+        .map_err(|error| format!("Could not inspect {}: {}", file_path.display(), error))?;
+    if metadata.file_type().is_symlink() {
+        let canonical = fs::canonicalize(file_path).map_err(|error| {
+            format!(
+                "Original item for symlink {} could not be found: {}",
+                file_path.display(),
+                error
+            )
+        })?;
+        return Ok(canonical.to_string_lossy().to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let (is_alias, target) = inspect_native_finder_alias(file_path);
+        if is_alias {
+            if let Some(resolved) = target {
+                return Ok(resolved);
+            }
+            return Err(format!(
+                "Original item for alias {} could not be found",
+                file_path.display()
+            ));
+        }
+    }
+
+    Err(format!(
+        "{} is neither a symbolic link nor a Finder alias",
+        file_path.display()
+    ))
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct DirectorySizeSummary {
+    pub path: String,
+    pub total_bytes: u64,
+    pub file_count: u64,
+    pub dir_count: u64,
+}
+
+#[derive(Default)]
+pub struct DirectorySizeState {
+    requests: std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Arc<std::sync::atomic::AtomicU64>>,
+    >,
+}
+
+impl DirectorySizeState {
+    fn token_for(
+        &self,
+        window_label: &str,
+    ) -> Result<std::sync::Arc<std::sync::atomic::AtomicU64>, String> {
+        let mut requests = self.requests.lock().map_err(|error| error.to_string())?;
+        Ok(requests
+            .entry(window_label.to_string())
+            .or_insert_with(|| std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)))
+            .clone())
+    }
+}
+
+/// Asynchronously and cancellably compute total size & item counts for a directory.
+#[tauri::command]
+pub async fn calculate_directory_size(
+    window: tauri::Window,
+    state: tauri::State<'_, DirectorySizeState>,
+    path: String,
+    request_id: u64,
+) -> Result<DirectorySizeSummary, String> {
+    use std::sync::atomic::Ordering;
+
+    let token = state.token_for(window.label())?;
+    token.fetch_max(request_id, Ordering::AcqRel);
+    if token.load(Ordering::Acquire) != request_id {
+        return Err("Directory size calculation was superseded".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        calculate_directory_size_blocking(&path, request_id, &token)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub fn cancel_directory_size(
+    window: tauri::Window,
+    state: tauri::State<'_, DirectorySizeState>,
+    request_id: u64,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+
+    state
+        .token_for(window.label())?
+        .fetch_max(request_id, Ordering::AcqRel);
+    Ok(())
+}
+
+fn calculate_directory_size_blocking(
+    path: &str,
+    request_id: u64,
+    token: &std::sync::atomic::AtomicU64,
+) -> Result<DirectorySizeSummary, String> {
+    use ignore::WalkBuilder;
+    use std::sync::atomic::Ordering;
+
+    let root_path = Path::new(path);
+    if !root_path.is_dir() {
+        return Err(format!("Path is not a directory: {path}"));
+    }
+
+    let mut builder = WalkBuilder::new(root_path);
+    builder
+        .hidden(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .ignore(false)
+        .follow_links(false);
+
+    let mut total_bytes = 0_u64;
+    let mut file_count = 0_u64;
+    let mut dir_count = 0_u64;
+    let mut scanned = 0_u64;
+
+    for entry in builder.build().flatten() {
+        scanned += 1;
+        if scanned.is_multiple_of(128) && token.load(Ordering::Acquire) != request_id {
+            return Err("Directory size calculation cancelled".to_string());
+        }
+        let entry_path = entry.path();
+        if entry_path == root_path {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+            dir_count += 1;
+        } else {
+            file_count += 1;
+            total_bytes = total_bytes.saturating_add(metadata.len());
+        }
+    }
+
+    if token.load(Ordering::Acquire) != request_id {
+        return Err("Directory size calculation cancelled".to_string());
+    }
+
+    Ok(DirectorySizeSummary {
+        path: path.to_string(),
+        total_bytes,
+        file_count,
+        dir_count,
+    })
 }
 
 #[tauri::command]
@@ -3347,9 +3793,11 @@ pub fn batch_rename(
 #[cfg(test)]
 mod file_entry_tests {
     use super::{
-        batch_rename, copy_path_resumable, delete_to_trash_with_location, get_file_entry,
-        is_alias_entry, load_directory_entries, move_path_resumable, package_type,
-        partial_path_for, rename, rename_without_replace, validate_file_name,
+        batch_rename, calculate_directory_size_blocking, copy_path_resumable,
+        delete_to_trash_with_location, get_file_entry, gid_to_group_name, is_alias_entry,
+        load_directory_entries, move_path_resumable, package_type, partial_path_for,
+        read_file_tags, rename, rename_without_replace, resolve_original_path_blocking,
+        toggle_file_tag_blocking, uid_to_owner_name, validate_file_name,
     };
     use std::fs;
     use std::path::Path;
@@ -3877,6 +4325,85 @@ mod file_entry_tests {
                 & 0o777,
             0o640
         );
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finder_tags_round_trip_and_toggle_cleanly() {
+        let root = test_root();
+        let file = root.join("tagged.txt");
+        fs::create_dir_all(&root).expect("create root");
+        fs::write(&file, b"hello").expect("write file");
+
+        assert!(read_file_tags(&file).is_empty());
+
+        let file_str = file.to_string_lossy().to_string();
+        let added =
+            toggle_file_tag_blocking(std::slice::from_ref(&file_str), "Red").expect("add Red tag");
+        assert_eq!(added, vec!["Red".to_string()]);
+        assert_eq!(read_file_tags(&file), vec!["Red".to_string()]);
+
+        let added_second = toggle_file_tag_blocking(std::slice::from_ref(&file_str), "Blue")
+            .expect("add Blue tag");
+        assert_eq!(added_second, vec!["Red".to_string(), "Blue".to_string()]);
+
+        let removed = toggle_file_tag_blocking(std::slice::from_ref(&file_str), "Red")
+            .expect("remove Red tag");
+        assert_eq!(removed, vec!["Blue".to_string()]);
+        assert_eq!(read_file_tags(&file), vec!["Blue".to_string()]);
+
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn directory_size_calculation_counts_files_dirs_and_respects_cancellation() {
+        use std::sync::atomic::AtomicU64;
+
+        let root = test_root();
+        let sub = root.join("nested");
+        fs::create_dir_all(&sub).expect("create nested dir");
+        fs::write(root.join("a.bin"), vec![1_u8; 100]).expect("write a");
+        fs::write(sub.join("b.bin"), vec![2_u8; 250]).expect("write b");
+
+        let token = AtomicU64::new(7);
+        let summary =
+            calculate_directory_size_blocking(&root.to_string_lossy(), 7, &token).expect("size");
+        assert_eq!(summary.total_bytes, 350);
+        assert_eq!(summary.file_count, 2);
+        assert_eq!(summary.dir_count, 1);
+
+        let cancelled_token = AtomicU64::new(9);
+        assert!(
+            calculate_directory_size_blocking(&root.to_string_lossy(), 7, &cancelled_token)
+                .is_err()
+        );
+
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_original_path_follows_symlink_and_resolves_owner_name() {
+        use std::os::unix::fs::{symlink, MetadataExt};
+
+        let root = test_root();
+        let target = root.join("real.txt");
+        let link = root.join("link.txt");
+        fs::create_dir_all(&root).expect("create root");
+        fs::write(&target, b"data").expect("write target");
+        symlink(&target, &link).expect("create symlink");
+
+        let resolved = resolve_original_path_blocking(&link).expect("resolve symlink");
+        assert_eq!(
+            Path::new(&resolved),
+            fs::canonicalize(&target).expect("canonical target")
+        );
+
+        let meta = fs::metadata(&target).expect("meta");
+        assert!(uid_to_owner_name(meta.uid()).is_some());
+        assert!(gid_to_group_name(meta.gid()).is_some());
+
         fs::remove_dir_all(root).expect("remove test root");
     }
 }

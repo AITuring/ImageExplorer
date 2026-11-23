@@ -29,6 +29,7 @@ import { isCommandEnabled, runCommand } from "@/lib/commands";
 import { registerKeyboardCommands } from "@/lib/keyboardShortcuts";
 import { viewModeCommands } from "@/lib/viewModeCommands";
 import { PhotoAnalysisProgressIndicator } from "@/components/PhotoAnalysisProgressIndicator";
+import { matchFinderTagPreset } from "@/lib/finderTags";
 import {
   enqueueCompressOperation,
   enqueueExtractOperation,
@@ -757,7 +758,15 @@ export function TopBar({ onNavigate }: TopBarProps) {
                 aria-label={t("nav.edit_path")}
               >
                 <Folder className="h-4 w-4 shrink-0" aria-hidden="true" />
-                <span className="truncate">{pathSegments[pathSegments.length - 1] || "/"}</span>
+                <span className="truncate">
+                  {currentPath.startsWith(`${SMART_FOLDER_PREFIX}tag:`)
+                    ? (() => {
+                        const rawTag = currentPath.slice(`${SMART_FOLDER_PREFIX}tag:`.length);
+                        const preset = matchFinderTagPreset(rawTag);
+                        return preset ? t(preset.labelKey) : rawTag;
+                      })()
+                    : pathSegments[pathSegments.length - 1] || "/"}
+                </span>
               </button>
             </AppContextMenu>
           )}

@@ -10,6 +10,7 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=CoreImage");
         println!("cargo:rustc-link-lib=framework=ImageIO");
         println!("cargo:rustc-link-lib=framework=CoreGraphics");
+        println!("cargo:rustc-link-lib=framework=AppKit");
     }
 
     println!("cargo:rerun-if-changed=native/quicklook_thumbnail.m");

@@ -1,3 +1,4 @@
+#import <AppKit/AppKit.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <CoreImage/CoreImage.h>
 #import <Foundation/Foundation.h>
@@ -6,6 +7,7 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 static BOOL imageexplorer_is_raw_extension(NSString *extension) {
     static NSSet<NSString *> *rawExtensions = nil;
@@ -642,5 +644,165 @@ int imageexplorer_image_dimensions(const char *path, uint32_t *outWidth, uint32_
         *outWidth = width;
         *outHeight = height;
         return 1;
+    }
+}
+
+static char *imageexplorer_copy_utf8(NSString *value) {
+    if (value == nil) {
+        return NULL;
+    }
+    const char *utf8 = value.UTF8String;
+    if (utf8 == NULL) {
+        return NULL;
+    }
+    return strdup(utf8);
+}
+
+void imageexplorer_free_c_string(char *value) {
+    free(value);
+}
+
+// Read macOS Finder tags via NSURLTagNamesKey and return a UTF-8 JSON array.
+uint8_t *imageexplorer_get_file_tags(const char *path, size_t *length) {
+    if (path == NULL || length == NULL) {
+        return NULL;
+    }
+    *length = 0;
+
+    @autoreleasepool {
+        NSString *filePath = [NSString stringWithUTF8String:path];
+        if (filePath == nil) {
+            return NULL;
+        }
+        NSURL *fileURL = [NSURL fileURLWithPath:filePath];
+        id tagValue = nil;
+        if (![fileURL getResourceValue:&tagValue forKey:NSURLTagNamesKey error:NULL]) {
+            return NULL;
+        }
+        if (![tagValue isKindOfClass:NSArray.class]) {
+            return NULL;
+        }
+        NSArray *tags = (NSArray *)tagValue;
+        if (tags.count == 0) {
+            return NULL;
+        }
+        NSData *json = [NSJSONSerialization dataWithJSONObject:tags options:0 error:NULL];
+        if (json == nil || json.length == 0) {
+            return NULL;
+        }
+        uint8_t *result = malloc(json.length);
+        if (result == NULL) {
+            return NULL;
+        }
+        [json getBytes:result length:json.length];
+        *length = json.length;
+        return result;
+    }
+}
+
+// Write macOS Finder tags via NSURLTagNamesKey from a UTF-8 JSON string array.
+int imageexplorer_set_file_tags(const char *path, const char *tagsJson, char **outError) {
+    if (outError != NULL) {
+        *outError = NULL;
+    }
+    if (path == NULL || tagsJson == NULL) {
+        return 0;
+    }
+
+    @autoreleasepool {
+        NSString *filePath = [NSString stringWithUTF8String:path];
+        NSData *jsonData = [NSData dataWithBytes:tagsJson length:strlen(tagsJson)];
+        if (filePath == nil || jsonData == nil) {
+            return 0;
+        }
+        NSError *parseError = nil;
+        id parsed = [NSJSONSerialization JSONObjectWithData:jsonData options:0 error:&parseError];
+        if (![parsed isKindOfClass:NSArray.class]) {
+            if (outError != NULL && parseError != nil) {
+                *outError = imageexplorer_copy_utf8(parseError.localizedDescription);
+            }
+            return 0;
+        }
+        NSMutableArray<NSString *> *cleanTags = [NSMutableArray array];
+        for (id item in (NSArray *)parsed) {
+            if ([item isKindOfClass:NSString.class]) {
+                NSString *trimmed = [(NSString *)item stringByTrimmingCharactersInSet:
+                    [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                if (trimmed.length > 0 && ![cleanTags containsObject:trimmed]) {
+                    [cleanTags addObject:trimmed];
+                }
+            }
+        }
+
+        NSURL *fileURL = [NSURL fileURLWithPath:filePath];
+        NSError *writeError = nil;
+        BOOL ok = [fileURL setResourceValue:cleanTags forKey:NSURLTagNamesKey error:&writeError];
+        if (!ok && outError != NULL && writeError != nil) {
+            *outError = imageexplorer_copy_utf8(writeError.localizedDescription);
+        }
+        return ok ? 1 : 0;
+    }
+}
+
+// Safely unmount and eject an external or network volume via NSWorkspace.
+int imageexplorer_eject_volume(const char *path, char **outError) {
+    if (outError != NULL) {
+        *outError = NULL;
+    }
+    if (path == NULL) {
+        return 0;
+    }
+
+    @autoreleasepool {
+        NSString *volumePath = [NSString stringWithUTF8String:path];
+        if (volumePath == nil) {
+            return 0;
+        }
+        NSURL *volumeURL = [NSURL fileURLWithPath:volumePath];
+        NSError *error = nil;
+        BOOL ok = [[NSWorkspace sharedWorkspace] unmountAndEjectDeviceAtURL:volumeURL error:&error];
+        if (!ok && outError != NULL && error != nil) {
+            *outError = imageexplorer_copy_utf8(error.localizedDescription);
+        }
+        return ok ? 1 : 0;
+    }
+}
+
+// Resolve a macOS Finder alias file in-process without spawning mdls/osascript.
+// Sets *outIsAlias to 1 when the URL is a native Finder alias file (even if its
+// target is missing), and returns a newly allocated UTF-8 target path if resolved.
+char *imageexplorer_resolve_alias(const char *path, int *outIsAlias) {
+    if (outIsAlias != NULL) {
+        *outIsAlias = 0;
+    }
+    if (path == NULL) {
+        return NULL;
+    }
+
+    @autoreleasepool {
+        NSString *filePath = [NSString stringWithUTF8String:path];
+        if (filePath == nil) {
+            return NULL;
+        }
+        NSURL *fileURL = [NSURL fileURLWithPath:filePath];
+        NSNumber *isAlias = nil;
+        NSNumber *isSymlink = nil;
+        [fileURL getResourceValue:&isAlias forKey:NSURLIsAliasFileKey error:NULL];
+        [fileURL getResourceValue:&isSymlink forKey:NSURLIsSymbolicLinkKey error:NULL];
+        BOOL nativeAlias = isAlias.boolValue && !isSymlink.boolValue;
+        if (outIsAlias != NULL) {
+            *outIsAlias = nativeAlias ? 1 : 0;
+        }
+        if (!nativeAlias) {
+            return NULL;
+        }
+
+        NSURLBookmarkResolutionOptions options =
+            NSURLBookmarkResolutionWithoutUI | NSURLBookmarkResolutionWithoutMounting;
+        NSURL *resolved = [NSURL URLByResolvingAliasFileAtURL:fileURL options:options error:NULL];
+        if (resolved == nil || resolved.path.length == 0) {
+            return NULL;
+        }
+        return imageexplorer_copy_utf8(resolved.path);
     }
 }

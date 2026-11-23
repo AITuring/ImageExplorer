@@ -11,6 +11,7 @@ import { getPhotoMetadataSummary } from "@/lib/photoMetadata";
 import { useCameraAfMetadata } from "@/hooks/useCameraAfMetadata";
 import { usePhotoMetadata } from "@/hooks/usePhotoMetadata";
 import type { VisibleSharpness } from "@/hooks/useVisibleSharpness";
+import { FinderTagDots } from "@/components/FinderTagDots";
 import { Input } from "@/components/ui/input";
 
 interface FileGridItemProps {
@@ -180,6 +181,7 @@ export const FileGridItem = memo(function FileGridItem({
           }}
         >
           <div className="flex w-full min-w-0 items-center justify-center gap-1">
+            <FinderTagDots tags={entry.tags} />
             <span
               className={`min-w-0 truncate rounded px-0.5 text-xs font-medium ${
                 isSelected ? "bg-primary/10" : ""

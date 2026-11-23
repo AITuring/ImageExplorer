@@ -17,6 +17,8 @@ import {
   Star,
   Clock3,
   X,
+  LogOut,
+  Loader2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AppContextMenu } from "@/components/AppContextMenu";
@@ -25,6 +27,8 @@ import { filterHiddenEntries } from "@/utils/file";
 import { useSetting } from "@/hooks/useSetting";
 import { useTrashDialog } from "@/stores/trashDialog";
 import { getLocationName, useLocations } from "@/stores/locations";
+import { FINDER_TAG_PRESETS } from "@/lib/finderTags";
+import { SMART_FOLDER_PREFIX } from "@/constants/config";
 
 import { FileEntry, FolderItem, MountedVolume, SidebarItemActions } from "@/types";
 
@@ -334,6 +338,26 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [home, setHome] = useState<string>("");
   const [mountedVolumes, setMountedVolumes] = useState<MountedVolume[]>([]);
+  const [ejectingVolumePath, setEjectingVolumePath] = useState<string | null>(null);
+
+  const handleEjectVolume = useCallback(
+    async (volume: MountedVolume) => {
+      setEjectingVolumePath(volume.path);
+      try {
+        await invoke("eject_volume", { path: volume.path });
+        if (currentPath === volume.path || currentPath.startsWith(`${volume.path}/`)) {
+          onNavigate(home || "/");
+        }
+        const refreshed = await invoke<MountedVolume[]>("get_mounted_volumes");
+        setMountedVolumes(refreshed);
+      } catch (error) {
+        alert(t("sidebar.eject_failed", { name: volume.name, error: String(error) }));
+      } finally {
+        setEjectingVolumePath((current) => (current === volume.path ? null : current));
+      }
+    },
+    [currentPath, home, onNavigate, t]
+  );
   const [showHiddenFiles] = useSetting<boolean>("show_hidden_files", false);
   const [storedSidebarWidth, setStoredSidebarWidth] = useSetting<number>(
     "sidebar_width",
@@ -493,8 +517,7 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
 
     void refreshMountedVolumes();
     window.addEventListener("focus", refreshMountedVolumes);
-    void import("@tauri-apps/api/event")
-      .then(({ listen }) => listen("volumes-changed", () => void refreshMountedVolumes()))
+    void listen("volumes-changed", () => void refreshMountedVolumes())
       .then((dispose) => {
         if (cancelled) {
           dispose();
@@ -667,11 +690,13 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
                   {mountedVolumes
                     .filter((volume) => !hiddenSidebarPaths.includes(volume.path))
                     .map((volume) => {
+                      const isEjecting = ejectingVolumePath === volume.path;
                       const sidebarItemActions: SidebarItemActions = {
                         onOpen: () => onNavigate(volume.path),
                         onOpenInTerminal: () => invoke("open_in_terminal", { path: volume.path }),
                         path: volume.path,
                         name: volume.name,
+                        onEject: () => void handleEjectVolume(volume),
                         onRemoveFromSidebar: () => void hideSidebarPath(volume.path),
                       };
 
@@ -681,26 +706,76 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
                           type="sidebar-item"
                           sidebarItemActions={sidebarItemActions}
                         >
-                          <button
-                            className="finder-sidebar-row flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
-                            aria-current={currentPath === volume.path ? "page" : undefined}
-                            data-active={currentPath === volume.path}
-                            onClick={() => onNavigate(volume.path)}
-                            title={volume.path}
-                          >
-                            <SmartIcon
-                              icon={HardDrive}
-                              className="text-muted-foreground h-4 w-4 shrink-0"
-                              sysIcon={{ type: "path", value: volume.path }}
-                            />
-                            <span className="truncate">{volume.name}</span>
-                          </button>
+                          <div className="group flex items-center gap-0.5">
+                            <button
+                              className="finder-sidebar-row flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
+                              aria-current={currentPath === volume.path ? "page" : undefined}
+                              data-active={currentPath === volume.path}
+                              onClick={() => onNavigate(volume.path)}
+                              title={volume.path}
+                            >
+                              <SmartIcon
+                                icon={HardDrive}
+                                className="text-muted-foreground h-4 w-4 shrink-0"
+                                sysIcon={{ type: "path", value: volume.path }}
+                              />
+                              <span className="truncate">{volume.name}</span>
+                            </button>
+                            <button
+                              type="button"
+                              disabled={isEjecting}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void handleEjectVolume(volume);
+                              }}
+                              title={t("sidebar.eject_volume", { name: volume.name })}
+                              aria-label={t("sidebar.eject_volume", { name: volume.name })}
+                              className="text-muted-foreground hover:bg-accent hover:text-foreground shrink-0 rounded p-1 opacity-60 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 disabled:opacity-40"
+                            >
+                              {isEjecting ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                              ) : (
+                                <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
+                              )}
+                            </button>
+                          </div>
                         </AppContextMenu>
                       );
                     })}
                 </div>
               </div>
             )}
+
+            {/* Finder 颜色标签 */}
+            <div className="border-border/50 mt-4 border-t pt-3">
+              <h3 className="text-muted-foreground mb-2 px-2 text-xs font-medium">
+                {t("tags.section")}
+              </h3>
+              <div className="space-y-0.5">
+                {FINDER_TAG_PRESETS.map((preset) => {
+                  const tagPath = `${SMART_FOLDER_PREFIX}tag:${preset.id}`;
+                  const label = t(preset.labelKey);
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      className="finder-sidebar-row flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-sm transition-colors"
+                      aria-current={currentPath === tagPath ? "page" : undefined}
+                      data-active={currentPath === tagPath}
+                      onClick={() => onNavigate(tagPath)}
+                      title={label}
+                    >
+                      <span
+                        className="h-2.5 w-2.5 shrink-0 rounded-full ring-1 ring-black/15 dark:ring-white/20"
+                        style={{ backgroundColor: preset.color }}
+                        aria-hidden="true"
+                      />
+                      <span className="truncate">{label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         </div>
 

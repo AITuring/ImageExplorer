@@ -6,6 +6,7 @@ import { DIR_CHANGE_DEBOUNCE_MS } from "@/constants/config";
 import { ChevronRight } from "lucide-react";
 import { FileEntry } from "@/types";
 import { CompactFileThumbnail } from "./CompactFileThumbnail";
+import { FinderTagDots } from "@/components/FinderTagDots";
 import { filterHiddenEntries } from "@/utils/file";
 import { sortFileEntries } from "../hooks/useFileSort";
 import { readFileDragData } from "@/lib/dragData";
@@ -54,6 +55,7 @@ interface FileColumnViewProps {
   onDoubleClick: (entry: FileEntry) => void;
   onNavigate: (path: string) => void;
   handleMove: (src: string | string[], dest: string) => void;
+  handleCopyTo: (src: string | string[], dest: string) => void;
   showHiddenFiles: boolean;
 }
 
@@ -80,6 +82,7 @@ interface ColumnPaneProps {
   onSelect: (colIdx: number, entry: FileEntry, entryIdx: number, e: React.MouseEvent) => void;
   onDoubleClick: (entry: FileEntry) => void;
   handleMove: (src: string | string[], dest: string) => void;
+  handleCopyTo: (src: string | string[], dest: string) => void;
 }
 
 const ColumnPane = memo(function ColumnPane({
@@ -99,6 +102,7 @@ const ColumnPane = memo(function ColumnPane({
   onSelect,
   onDoubleClick,
   handleMove,
+  handleCopyTo,
 }: ColumnPaneProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line react-hooks/incompatible-library
@@ -176,7 +180,7 @@ const ColumnPane = memo(function ColumnPane({
                       onDragOver={(event) => {
                         if (!entry.is_dir) return;
                         event.preventDefault();
-                        event.dataTransfer.dropEffect = "move";
+                        event.dataTransfer.dropEffect = event.altKey ? "copy" : "move";
                         event.currentTarget.classList.add("bg-primary/20");
                       }}
                       onDragLeave={(event) => {
@@ -195,7 +199,10 @@ const ColumnPane = memo(function ColumnPane({
                         event.currentTarget.classList.remove("bg-primary/20");
                         const data = readFileDragData(event.dataTransfer);
                         const paths = data?.paths.filter((path) => path !== entry.path) ?? [];
-                        if (paths.length > 0) handleMove(paths, entry.path);
+                        if (paths.length > 0) {
+                          if (event.altKey) handleCopyTo(paths, entry.path);
+                          else handleMove(paths, entry.path);
+                        }
                       }}
                     >
                       <CompactFileThumbnail
@@ -224,7 +231,10 @@ const ColumnPane = memo(function ColumnPane({
                           className="h-6 min-w-0 flex-1 px-1 text-xs"
                         />
                       ) : (
-                        <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+                        <>
+                          <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+                          <FinderTagDots tags={entry.tags} />
+                        </>
                       )}
                       {entry.is_dir && (
                         <ChevronRight className="text-muted-foreground h-3 w-3 shrink-0" />
@@ -259,6 +269,7 @@ export function FileColumnView({
   onDoubleClick,
   onNavigate,
   handleMove,
+  handleCopyTo,
   showHiddenFiles,
 }: FileColumnViewProps) {
   const selectionRequests = useRef(new RequestGeneration());
@@ -611,6 +622,7 @@ export function FileColumnView({
           onSelect={handleSelect}
           onDoubleClick={handleDoubleClick}
           handleMove={handleMove}
+          handleCopyTo={handleCopyTo}
         />
       ))}
       {previewEntry && <ColumnFilePreview key={previewEntry.path} entry={previewEntry} />}

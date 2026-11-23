@@ -7,6 +7,7 @@ import {
 } from "@/components/ui/context-menu";
 import { useClipboard } from "@/stores/clipboard";
 import { isCommandEnabled, runCommand } from "@/lib/commands";
+import { FINDER_TAG_PRESETS, hasFinderTag } from "@/lib/finderTags";
 import { FileEntry, FileActions } from "@/types";
 import { SYSTEM_PATHS, SF_SYMBOLS } from "@/constants/paths";
 import { MenuItem } from "../MenuItem";
@@ -65,6 +66,23 @@ export function FileMenuContent({ entry, selectedEntries, actions }: FileMenuCon
           fallbackIcon={FolderPlus}
           label={t("context_menu.open_in_new_tab")}
           onClick={() => actions.onOpenInNewTab?.(entry)}
+        />
+      )}
+
+      {entry.is_package && entry.is_dir && actions.onShowPackageContents && (
+        <MenuItem
+          fallbackIcon={PackageOpen}
+          label={t("context_menu.show_package_contents")}
+          onClick={() => actions.onShowPackageContents?.(entry)}
+        />
+      )}
+
+      {(entry.is_symlink || entry.is_alias) && actions.onShowOriginal && (
+        <MenuItem
+          sysIcon={{ type: "sfsymbol", value: "arrow.turn.up.right" }}
+          fallbackIcon={ArrowUpRight}
+          label={t("context_menu.show_original")}
+          onClick={() => actions.onShowOriginal?.(entry)}
         />
       )}
 
@@ -219,6 +237,44 @@ export function FileMenuContent({ entry, selectedEntries, actions }: FileMenuCon
           )}
           onClick={() => actions.onToggleFavorite?.(entry)}
         />
+      )}
+
+      {actions.onToggleTag && (
+        <>
+          <ContextMenuSeparator />
+          <div className="px-2 py-1.5">
+            <div className="text-muted-foreground mb-1.5 text-[11px] font-medium">
+              {t("context_menu.tags")}
+            </div>
+            <div className="flex items-center gap-1.5">
+              {FINDER_TAG_PRESETS.map((preset) => {
+                const isActive = targets.every((item) => hasFinderTag(item.tags, preset.id));
+                const label = t(preset.labelKey);
+                return (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    title={label}
+                    aria-label={label}
+                    aria-pressed={isActive}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      actions.onToggleTag?.(targets, preset.id);
+                    }}
+                    className={`flex h-5 w-5 items-center justify-center rounded-full transition-transform hover:scale-110 ${
+                      isActive
+                        ? "ring-foreground ring-offset-popover ring-2 ring-offset-1"
+                        : "ring-1 ring-black/15 dark:ring-white/20"
+                    }`}
+                    style={{ backgroundColor: preset.color }}
+                  >
+                    {isActive && <span className="h-1.5 w-1.5 rounded-full bg-white shadow-sm" />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </>
       )}
 
       {!entry.readonly && (

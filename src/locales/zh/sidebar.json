@@ -16,5 +16,7 @@
   "resize": "调整侧边栏宽度",
   "show": "显示侧边栏",
   "restore_items": "恢复隐藏的项目",
-  "remove_item": "从侧边栏移除 {{name}}"
+  "remove_item": "从侧边栏移除 {{name}}",
+  "eject_volume": "推出 {{name}}",
+  "eject_failed": "无法推出“{{name}}”：{{error}}"
 }

@@ -153,6 +153,9 @@
     "file": "File",
     "path": "Path",
     "size": "Size",
+    "size_calculating": "Calculating…",
+    "size_folder_detail": "{{size}} ({{files}} files, {{dirs}} folders)",
+    "tags": "Tags",
     "modified": "Modified",
     "created": "Created",
     "accessed": "Accessed",
@@ -177,5 +180,15 @@
     "scanning": "Checking sharpness {{done}} / {{total}}",
     "summary": "Possibly blurry: {{count}} · Unavailable: {{unavailable}}",
     "unavailable": "Could not analyze {{count}} photos; these are not classified as blurry."
+  },
+  "tags": {
+    "section": "Tags",
+    "red": "Red",
+    "orange": "Orange",
+    "yellow": "Yellow",
+    "green": "Green",
+    "blue": "Blue",
+    "purple": "Purple",
+    "gray": "Gray"
   }
 }

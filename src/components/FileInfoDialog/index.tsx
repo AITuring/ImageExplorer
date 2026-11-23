@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { File, Folder, Link, Package, Info } from "lucide-react";
+import { File, Folder, Link, Package, Info, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
   Dialog,
@@ -10,8 +10,17 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useFileInfoDialog } from "@/stores/fileInfoDialog";
+import { FINDER_TAG_PRESETS, hasFinderTag } from "@/lib/finderTags";
+import { invalidateCache } from "@/lib/entriesCache";
 import type { FileEntry } from "@/types";
 import { formatFileSize } from "@/utils/format";
+
+interface DirectorySizeSummary {
+  path: string;
+  total_bytes: number;
+  file_count: number;
+  dir_count: number;
+}
 
 function formatTimestamp(value: number | null | undefined) {
   if (value === null || value === undefined) return null;
@@ -26,11 +35,24 @@ function formatMode(mode: number | null | undefined) {
   return `0${(mode & 0o7777).toString(8).padStart(4, "0")}`;
 }
 
+function formatOwner(details: FileEntry): string | null {
+  if (details.owner_name || details.group_name) {
+    const owner = details.owner_name ?? details.uid?.toString() ?? "—";
+    const group = details.group_name ?? details.gid?.toString() ?? "—";
+    return `${owner} (${group})`;
+  }
+  if (details.uid === null || details.uid === undefined) return null;
+  return `${details.uid}:${details.gid ?? "—"}`;
+}
+
 export function FileInfoDialog() {
   const { t } = useTranslation();
   const entry = useFileInfoDialog((state) => state.entry);
   const close = useFileInfoDialog((state) => state.close);
   const [loadedEntry, setLoadedEntry] = useState<FileEntry | null>(null);
+  const [dirSize, setDirSize] = useState<DirectorySizeSummary | null>(null);
+  const [calculatingSize, setCalculatingSize] = useState(false);
+  const sizeRequestIdRef = useRef(0);
 
   useEffect(() => {
     if (!entry) return;
@@ -50,31 +72,93 @@ export function FileInfoDialog() {
   }, [entry]);
 
   const details = entry && loadedEntry?.path === entry.path ? loadedEntry : entry;
+  const dirTargetPath = details?.is_dir ? details.path : null;
+
+  useEffect(() => {
+    if (!dirTargetPath) return;
+
+    let cancelled = false;
+    const requestId = Date.now() * 1000 + ((sizeRequestIdRef.current += 1) % 1000);
+
+    const run = async () => {
+      setCalculatingSize(true);
+      try {
+        const summary = await invoke<DirectorySizeSummary>("calculate_directory_size", {
+          path: dirTargetPath,
+          requestId,
+        });
+        if (!cancelled) {
+          setDirSize(summary);
+        }
+      } catch {
+        // Cancelled or unreadable directory; leave size as fallback.
+      } finally {
+        if (!cancelled) {
+          setCalculatingSize(false);
+        }
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+      void invoke("cancel_directory_size", { requestId: requestId + 1 }).catch(() => undefined);
+    };
+  }, [dirTargetPath]);
+
+  const handleToggleTag = useCallback(
+    async (tagId: string) => {
+      if (!details) return;
+      try {
+        const updatedTags = await invoke<string[]>("toggle_file_tag", {
+          paths: [details.path],
+          tag: tagId,
+        });
+        const parent = details.path.slice(0, details.path.lastIndexOf("/")) || "/";
+        invalidateCache(parent);
+        setLoadedEntry({ ...details, tags: updatedTags });
+      } catch (error) {
+        console.error("Failed to toggle Finder tag:", error);
+      }
+    },
+    [details]
+  );
+
+  const matchingDirSize = details?.is_dir && dirSize?.path === details.path ? dirSize : null;
+
+  const sizeValue = useMemo(() => {
+    if (!details) return null;
+    if (!details.is_dir) return formatFileSize(details.size);
+    if (matchingDirSize) {
+      return t("file_info.size_folder_detail", {
+        size:
+          matchingDirSize.total_bytes === 0 ? "0 B" : formatFileSize(matchingDirSize.total_bytes),
+        files: matchingDirSize.file_count,
+        dirs: matchingDirSize.dir_count,
+      });
+    }
+    return calculatingSize ? t("file_info.size_calculating") : "—";
+  }, [calculatingSize, details, matchingDirSize, t]);
 
   const rows = useMemo(() => {
     if (!details) return [];
     const values: Array<[string, string | null]> = [
       [t("file_info.kind"), details.is_dir ? t("file_info.folder") : t("file_info.file")],
       [t("file_info.path"), details.path],
-      [t("file_info.size"), details.is_dir ? "—" : formatFileSize(details.size)],
+      [t("file_info.size"), sizeValue],
       [t("file_info.modified"), formatTimestamp(details.modified)],
       [t("file_info.created"), formatTimestamp(details.created)],
       [t("file_info.accessed"), formatTimestamp(details.accessed)],
       [t("file_info.readonly"), details.readonly ? t("common.yes") : t("common.no")],
       [t("file_info.mode"), formatMode(details.mode)],
-      [
-        t("file_info.owner"),
-        details.uid === null || details.uid === undefined
-          ? null
-          : `${details.uid}:${details.gid ?? "—"}`,
-      ],
+      [t("file_info.owner"), formatOwner(details)],
       [t("file_info.file_attributes"), details.file_attributes?.toString() ?? null],
       [t("file_info.symlink_target"), details.symlink_target ?? null],
       [t("file_info.alias_target"), details.alias_target ?? null],
       [t("file_info.package_type"), details.package_type ?? null],
     ];
     return values.filter(([, value]) => value !== null);
-  }, [details, t]);
+  }, [details, sizeValue, t]);
 
   return (
     <Dialog open={Boolean(entry)} onOpenChange={(open) => !open && close()}>
@@ -119,13 +203,52 @@ export function FileInfoDialog() {
                 <dd className="font-medium">{t("file_info.symlink_value")}</dd>
               </div>
             )}
+
+            <div className="grid grid-cols-[7rem_minmax(0,1fr)] items-center gap-3 border-b pb-2">
+              <dt className="text-muted-foreground">{t("file_info.tags")}</dt>
+              <dd className="flex flex-wrap items-center gap-1.5">
+                {FINDER_TAG_PRESETS.map((preset) => {
+                  const active = hasFinderTag(details.tags, preset.id);
+                  const label = t(preset.labelKey);
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => void handleToggleTag(preset.id)}
+                      aria-pressed={active}
+                      title={label}
+                      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors ${
+                        active
+                          ? "border-foreground/30 bg-accent text-foreground font-medium"
+                          : "border-border/60 text-muted-foreground hover:bg-accent/50"
+                      }`}
+                    >
+                      <span
+                        className="h-2 w-2 rounded-full ring-1 ring-black/15"
+                        style={{ backgroundColor: preset.color }}
+                      />
+                      <span>{label}</span>
+                    </button>
+                  );
+                })}
+              </dd>
+            </div>
+
             {rows.map(([label, value]) => (
               <div
                 key={label}
                 className="grid grid-cols-[7rem_minmax(0,1fr)] gap-3 border-b pb-2 last:border-b-0"
               >
                 <dt className="text-muted-foreground">{label}</dt>
-                <dd className="min-w-0 font-mono text-xs break-words">{value}</dd>
+                <dd className="flex min-w-0 items-center gap-1.5 font-mono text-xs break-words">
+                  {label === t("file_info.size") &&
+                    details.is_dir &&
+                    calculatingSize &&
+                    !matchingDirSize && (
+                      <Loader2 className="h-3 w-3 shrink-0 animate-spin" aria-hidden="true" />
+                    )}
+                  <span className="min-w-0 break-words">{value}</span>
+                </dd>
               </div>
             ))}
           </dl>

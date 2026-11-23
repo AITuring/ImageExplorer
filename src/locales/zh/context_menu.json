@@ -1,6 +1,10 @@
 {
   "open": "打开",
   "open_in_new_tab": "在新标签页打开",
+  "show_package_contents": "显示包内容",
+  "show_original": "显示原身",
+  "tags": "标签",
+  "eject": "推出",
   "open_in_terminal": "在终端打开",
   "open_with": "打开方式",
   "no_apps_found": "未找到应用",

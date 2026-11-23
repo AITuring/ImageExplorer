@@ -6,6 +6,7 @@ import type { VisibleSharpness } from "@/hooks/useVisibleSharpness";
 import { memo, useEffect, useRef } from "react";
 import type { FileEntry } from "@/types/index";
 import { CompactFileThumbnail } from "./CompactFileThumbnail";
+import { FinderTagDots } from "@/components/FinderTagDots";
 import { Input } from "@/components/ui/input";
 import { formatFileSize, formatDate } from "@/utils/format";
 
@@ -122,6 +123,7 @@ export const FileListItem = memo(function FileListItem({
             {entry.name}
           </span>
         )}
+        {!isEditing && <FinderTagDots tags={entry.tags} />}
       </div>
       <div className="finder-list-sharpness shrink-0 px-2">
         {isPhoto && <SharpnessBadge verdict={visibleSharpness} />}

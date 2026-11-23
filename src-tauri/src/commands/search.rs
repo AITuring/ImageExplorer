@@ -245,6 +245,97 @@ use crate::db::SearchEngine;
 use crate::index::{IndexedFile, SharedIndex};
 use crate::SharedDatabase;
 
+#[cfg(target_os = "macos")]
+fn mdfind_tag_aliases(tag: &str) -> Vec<String> {
+    let mut names = vec![tag.to_string()];
+    let pair = match tag.to_lowercase().as_str() {
+        "red" | "红色" => Some(("Red", "红色")),
+        "orange" | "橙色" => Some(("Orange", "橙色")),
+        "yellow" | "黄色" => Some(("Yellow", "黄色")),
+        "green" | "绿色" => Some(("Green", "绿色")),
+        "blue" | "蓝色" => Some(("Blue", "蓝色")),
+        "purple" | "紫色" => Some(("Purple", "紫色")),
+        "gray" | "grey" | "灰色" => Some(("Gray", "灰色")),
+        _ => None,
+    };
+    if let Some((en, zh)) = pair {
+        for candidate in [en, zh] {
+            if !names.iter().any(|existing| existing == candidate) {
+                names.push(candidate.to_string());
+            }
+        }
+    }
+    names
+}
+
+#[cfg(target_os = "macos")]
+fn find_files_by_finder_tag(tag: &str, limit: usize) -> Result<Vec<IndexedFile>, String> {
+    use std::time::UNIX_EPOCH;
+
+    let aliases = mdfind_tag_aliases(tag);
+    let query = aliases
+        .iter()
+        .map(|name| {
+            let escaped = name.replace('\\', "\\\\").replace('\'', "\\'");
+            format!("kMDItemUserTags == '{escaped}'")
+        })
+        .collect::<Vec<_>>()
+        .join(" || ");
+
+    let output = std::process::Command::new("/usr/bin/mdfind")
+        .arg(&query)
+        .output()
+        .map_err(|error| format!("Failed to query Finder tags via Spotlight: {error}"))?;
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut results = Vec::new();
+    for line in stdout.lines() {
+        if results.len() >= limit {
+            break;
+        }
+        let path_str = line.trim();
+        if path_str.is_empty() {
+            continue;
+        }
+        let path = Path::new(path_str);
+        let Ok(metadata) = std::fs::symlink_metadata(path) else {
+            continue;
+        };
+        let Some(name) = path
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+        else {
+            continue;
+        };
+        let is_dir = metadata.is_dir();
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs());
+        let extension = if is_dir {
+            None
+        } else {
+            path.extension()
+                .map(|value| value.to_string_lossy().to_string())
+        };
+        results.push(IndexedFile {
+            name_lower: name.to_lowercase(),
+            is_hidden: name.starts_with('.'),
+            name,
+            path: path_str.to_string(),
+            is_dir,
+            size: if is_dir { 0 } else { metadata.len() },
+            modified,
+            extension,
+        });
+    }
+    Ok(results)
+}
+
 #[tauri::command]
 pub async fn get_smart_files(
     index: tauri::State<'_, SharedIndex>,
@@ -252,6 +343,28 @@ pub async fn get_smart_files(
     category: String,
     limit: Option<usize>,
 ) -> Result<Vec<IndexedFile>, String> {
+    let limit_val = limit.unwrap_or(200);
+
+    // Finder 标签智能视图：smart://tag:<TagName>
+    if let Some(tag_name) = category.strip_prefix("tag:") {
+        let tag_name = tag_name.trim().to_string();
+        if tag_name.is_empty() {
+            return Ok(Vec::new());
+        }
+        #[cfg(target_os = "macos")]
+        {
+            return tauri::async_runtime::spawn_blocking(move || {
+                find_files_by_finder_tag(&tag_name, limit_val)
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            return Ok(Vec::new());
+        }
+    }
+
     // 定义分类扩展名
     let extensions: Vec<String> = match category.as_str() {
         "image" => vec![
@@ -275,8 +388,6 @@ pub async fn get_smart_files(
     .iter()
     .map(|s| s.to_string())
     .collect();
-
-    let limit_val = limit.unwrap_or(200);
 
     // 优先使用 SQLite 数据库（使用只读连接以支持 WAL 并发）
     if let Some(ref db) = *database.inner() {

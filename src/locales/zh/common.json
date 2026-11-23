@@ -153,6 +153,9 @@
     "file": "文件",
     "path": "路径",
     "size": "大小",
+    "size_calculating": "正在计算…",
+    "size_folder_detail": "{{size}}（{{files}} 个文件，{{dirs}} 个文件夹）",
+    "tags": "标签",
     "modified": "修改时间",
     "created": "创建时间",
     "accessed": "访问时间",
@@ -177,5 +180,15 @@
     "scanning": "清晰度扫描 {{done}} / {{total}}",
     "summary": "疑似不清晰 {{count}} 张 · 无法分析 {{unavailable}} 张",
     "unavailable": "{{count}} 张无法分析，未归入不清晰图片。"
+  },
+  "tags": {
+    "section": "标签",
+    "red": "红色",
+    "orange": "橙色",
+    "yellow": "黄色",
+    "green": "绿色",
+    "blue": "蓝色",
+    "purple": "紫色",
+    "gray": "灰色"
   }
 }

@@ -21,11 +21,12 @@ use commands::apps::{
 use commands::clipboard::{consume_cut_file_clipboard, read_file_clipboard, write_file_clipboard};
 use commands::drag::start_native_file_drag;
 use commands::fs::{
-    batch_rename, check_full_disk_access, copy_file, create_directory, create_file,
-    delete_to_trash, exists, get_disk_space, get_entries, get_file_entry, get_home_dir,
-    get_mounted_volumes, get_parent_dir, move_file, open_file, open_in_terminal, open_url,
-    read_camera_af_metadata, read_image_base64, read_image_dimensions, read_image_metadata,
-    read_text_file, rename,
+    batch_rename, calculate_directory_size, cancel_directory_size, check_full_disk_access,
+    copy_file, create_directory, create_file, delete_to_trash, eject_volume, exists,
+    get_disk_space, get_entries, get_file_entry, get_home_dir, get_mounted_volumes, get_parent_dir,
+    move_file, open_file, open_in_terminal, open_url, read_camera_af_metadata, read_image_base64,
+    read_image_dimensions, read_image_metadata, read_text_file, rename, resolve_original_path,
+    set_file_tags, toggle_file_tag, DirectorySizeState,
 };
 use commands::search::{
     cancel_directory_search, get_smart_files, search_directory, search_files, DirectorySearchState,
@@ -952,6 +953,7 @@ pub fn run() {
         .manage(shared_database.clone())
         .manage(operation_manager)
         .manage(DirectorySearchState::default())
+        .manage(DirectorySizeState::default())
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
 
@@ -1034,7 +1036,13 @@ pub fn run() {
             get_file_entry,
             get_home_dir,
             get_mounted_volumes,
+            eject_volume,
             get_disk_space,
+            calculate_directory_size,
+            cancel_directory_size,
+            set_file_tags,
+            toggle_file_tag,
+            resolve_original_path,
             get_parent_dir,
             open_file,
             delete_to_trash,

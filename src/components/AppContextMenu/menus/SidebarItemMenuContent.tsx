@@ -8,7 +8,7 @@ import {
 import { SidebarItemActions } from "@/types";
 import { SYSTEM_PATHS } from "@/constants/paths";
 import { MenuItem } from "../MenuItem";
-import { Star, Terminal, X } from "lucide-react";
+import { LogOut, Star, Terminal, X } from "lucide-react";
 
 interface SidebarItemMenuContentProps {
   actions: SidebarItemActions;
@@ -49,6 +49,16 @@ export function SidebarItemMenuContent({ actions }: SidebarItemMenuContentProps)
           label={t("context_menu.remove_from_recent")}
           onClick={actions.onRemoveRecent}
         />
+      )}
+      {actions.onEject && (
+        <>
+          <ContextMenuSeparator />
+          <MenuItem
+            fallbackIcon={LogOut}
+            label={t("context_menu.eject")}
+            onClick={actions.onEject}
+          />
+        </>
       )}
       {actions.onRemoveFromSidebar && (
         <MenuItem
