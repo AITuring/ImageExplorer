@@ -63,7 +63,164 @@ impl IndexBuilder {
         if !batch.is_empty() {
             self.batch_insert_staging(&batch)?;
         }
-        self.activate_staging_table()?;
+        self.activate_staging_table(root)?;
+        Ok(count)
+    }
+
+    /// Fast incremental startup reconciliation using directory `mtime` checks.
+    ///
+    /// Instead of walking all 300k+ files and rewriting the entire `files` and
+    /// FTS5 tables on every launch, checks only indexed directories in parallel
+    /// (`rayon`) and updates only directories whose `mtime` changed or disappeared
+    /// while the app was closed.
+    pub fn reconcile_incremental(&self, root: &str) -> Result<usize, String> {
+        use rayon::prelude::*;
+        use std::collections::{HashMap, HashSet};
+
+        let root_path = Path::new(root);
+        let root_mtime = directory_mtime_secs(root_path)
+            .ok_or_else(|| format!("Root directory is unavailable: {root}"))?;
+
+        let (indexed_dirs, recorded_root_mtime): (Vec<(String, Option<i64>)>, Option<i64>) = {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            let mut stmt = conn
+                .prepare("SELECT path, modified_at FROM files WHERE is_dir = 1")
+                .map_err(|e| e.to_string())?;
+            let dirs = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+
+            let root_mtime_recorded = conn
+                .query_row(
+                    "SELECT value FROM metadata WHERE key = 'root_mtime'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .ok()
+                .and_then(|value| value.parse::<i64>().ok());
+
+            (dirs, root_mtime_recorded)
+        };
+
+        let indexed_dir_set: HashSet<String> =
+            indexed_dirs.iter().map(|(path, _)| path.clone()).collect();
+
+        enum DirCheck {
+            Unchanged,
+            Removed(String),
+            Dirty(String),
+        }
+
+        let checks: Vec<DirCheck> = indexed_dirs
+            .par_iter()
+            .map(
+                |(path, recorded_mtime)| match directory_mtime_secs(Path::new(path)) {
+                    None => DirCheck::Removed(path.clone()),
+                    Some(current_mtime) if Some(current_mtime) != *recorded_mtime => {
+                        DirCheck::Dirty(path.clone())
+                    }
+                    Some(_) => DirCheck::Unchanged,
+                },
+            )
+            .collect();
+
+        let mut removed_dirs = Vec::new();
+        let mut dirty_dirs = Vec::new();
+        for check in checks {
+            match check {
+                DirCheck::Unchanged => {}
+                DirCheck::Removed(path) => removed_dirs.push(path),
+                DirCheck::Dirty(path) => dirty_dirs.push(path),
+            }
+        }
+        if recorded_root_mtime != Some(root_mtime) {
+            dirty_dirs.push(root.to_string());
+        }
+
+        let updater = IndexUpdater::new(self.conn.clone());
+
+        // Sort shortest paths first so removing a deleted parent skips redundant child deletes.
+        removed_dirs.sort_by_key(|path| path.len());
+        let mut removed_prefixes: Vec<String> = Vec::new();
+        for removed in removed_dirs {
+            let covered = removed_prefixes
+                .iter()
+                .any(|prefix| removed.starts_with(prefix));
+            if covered {
+                continue;
+            }
+            updater.remove(&removed)?;
+            removed_prefixes.push(format!("{removed}{MAIN_SEPARATOR}"));
+        }
+
+        for dir in dirty_dirs {
+            if removed_prefixes
+                .iter()
+                .any(|prefix| dir.starts_with(prefix))
+            {
+                continue;
+            }
+            let dir_path = Path::new(&dir);
+            let Ok(read_dir) = std::fs::read_dir(dir_path) else {
+                continue;
+            };
+
+            let mut current_children: HashMap<String, bool> = HashMap::new();
+            for entry in read_dir.flatten() {
+                let child_path = entry.path();
+                if crate::config::is_index_excluded(&child_path) {
+                    continue;
+                }
+                let is_dir = entry
+                    .file_type()
+                    .map(|kind| kind.is_dir())
+                    .unwrap_or_else(|_| child_path.is_dir());
+                current_children.insert(child_path.to_string_lossy().to_string(), is_dir);
+            }
+
+            let indexed_children: Vec<String> = {
+                let conn = self.conn.lock().map_err(|e| e.to_string())?;
+                let mut stmt = conn
+                    .prepare("SELECT path FROM files WHERE parent_path = ?1")
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map([&dir], |row| row.get::<_, String>(0))
+                    .map_err(|e| e.to_string())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?;
+                rows
+            };
+
+            for stale in indexed_children {
+                if !current_children.contains_key(&stale) {
+                    updater.remove(&stale)?;
+                }
+            }
+
+            for (child_path, is_dir) in current_children {
+                if is_dir && !indexed_dir_set.contains(&child_path) {
+                    let _ = updater.upsert_subtree(&child_path)?;
+                } else {
+                    updater.upsert(&child_path, is_dir)?;
+                }
+            }
+
+            if dir != root {
+                updater.upsert(&dir, true)?;
+            }
+        }
+
+        self.set_metadata("root_mtime", &root_mtime.to_string())?;
+        let count = {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            conn.query_row("SELECT COUNT(*) FROM files", [], |row| row.get::<_, i64>(0))
+                .map_err(|e| e.to_string())?
+                .max(0) as usize
+        };
         Ok(count)
     }
 
@@ -273,7 +430,7 @@ impl IndexBuilder {
 
     /// 在单个事务中替换活动索引并同步 FTS。WAL 读者在提交前仍可读取旧索引。
     /// 批量替换前先移除 FTS 触发器，避免逐行维护 FTS 后又全量 rebuild 的双倍开销。
-    fn activate_staging_table(&self) -> Result<(), String> {
+    fn activate_staging_table(&self, root: &str) -> Result<(), String> {
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         crate::db::schema::drop_fts_triggers(&tx).map_err(|e| e.to_string())?;
@@ -301,6 +458,13 @@ impl IndexBuilder {
             [indexed_at],
         )
         .map_err(|e| e.to_string())?;
+        if let Some(root_mtime) = directory_mtime_secs(Path::new(root)) {
+            tx.execute(
+                "INSERT OR REPLACE INTO metadata(key, value) VALUES ('root_mtime', ?1)",
+                [root_mtime.to_string()],
+            )
+            .map_err(|e| e.to_string())?;
+        }
         tx.execute(
             "INSERT OR REPLACE INTO metadata(key, value) VALUES ('index_building', '0')",
             [],
@@ -321,6 +485,17 @@ impl IndexBuilder {
         .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())
     }
+}
+
+fn directory_mtime_secs(path: &Path) -> Option<i64> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_dir() {
+        return None;
+    }
+    meta.modified()
+        .ok()
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs() as i64)
 }
 
 /// 索引更新器（用于增量更新）
@@ -940,6 +1115,51 @@ mod tests {
         let paths = indexed_paths(&conn);
         assert!(!paths.contains(&stale_file.to_string_lossy().to_string()));
         assert!(paths.contains(&current_file.to_string_lossy().to_string()));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn incremental_reconcile_updates_changed_directories_and_removes_deleted_subtrees() {
+        let conn = connection();
+        let builder = IndexBuilder::new(conn.clone());
+        let root = temp_dir("incremental-reconcile");
+        let keep_dir = root.join("keep");
+        let drop_dir = root.join("drop");
+        std::fs::create_dir_all(&keep_dir).expect("create keep dir");
+        std::fs::create_dir_all(&drop_dir).expect("create drop dir");
+        let keep_file = keep_dir.join("unchanged.txt");
+        let drop_file = drop_dir.join("gone.txt");
+        std::fs::write(&keep_file, "keep").expect("write keep");
+        std::fs::write(&drop_file, "drop").expect("write drop");
+
+        let root_str = root.to_str().expect("utf-8 root");
+        builder.build(root_str, None).expect("initial full build");
+
+        // Wait >1s so directory mtime seconds advance cleanly on filesystems with 1s granularity.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        // Simulate offline changes while app was closed:
+        // 1) add a new file in an existing dir, 2) add a brand new nested dir, 3) remove an entire dir.
+        let added_file = keep_dir.join("added.txt");
+        std::fs::write(&added_file, "added").expect("write added");
+        let new_nested = root.join("brand_new/deep");
+        std::fs::create_dir_all(&new_nested).expect("create brand new nested dir");
+        let nested_file = new_nested.join("photo.arw");
+        std::fs::write(&nested_file, "raw").expect("write nested file");
+        std::fs::remove_dir_all(&drop_dir).expect("remove drop dir");
+
+        let count = builder
+            .reconcile_incremental(root_str)
+            .expect("incremental reconcile");
+        assert!(count >= 5);
+
+        let paths = indexed_paths(&conn);
+        assert!(paths.contains(&keep_file.to_string_lossy().to_string()));
+        assert!(paths.contains(&added_file.to_string_lossy().to_string()));
+        assert!(paths.contains(&nested_file.to_string_lossy().to_string()));
+        assert!(!paths.contains(&drop_dir.to_string_lossy().to_string()));
+        assert!(!paths.contains(&drop_file.to_string_lossy().to_string()));
 
         let _ = std::fs::remove_dir_all(root);
     }

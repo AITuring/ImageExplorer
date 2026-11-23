@@ -5,6 +5,7 @@ import {
   getCachedPhotoMetadata,
   getPhotoMetadataKey,
   loadPhotoMetadata,
+  subscribePhotoMetadataCache,
   type PhotoMetadata,
 } from "@/lib/photoMetadata";
 
@@ -33,7 +34,13 @@ export function usePhotoMetadata(entry: FileEntry | null, enabled = true) {
 
     let cancelled = false;
     const controller = new AbortController();
+    const unsubscribe = subscribePhotoMetadataCache(metadataKey, (hydrated) => {
+      if (!cancelled) {
+        setState({ key: metadataKey, data: hydrated });
+      }
+    });
     const startTimer = window.setTimeout(() => {
+      if (getCachedPhotoMetadata(currentEntry) !== undefined) return;
       void loadPhotoMetadata(currentEntry, controller.signal).then((data) => {
         if (!cancelled) {
           setState({ key: metadataKey, data });
@@ -43,6 +50,7 @@ export function usePhotoMetadata(entry: FileEntry | null, enabled = true) {
 
     return () => {
       cancelled = true;
+      unsubscribe();
       window.clearTimeout(startTimer);
       controller.abort();
     };

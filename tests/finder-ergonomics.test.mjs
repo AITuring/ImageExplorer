@@ -33,6 +33,8 @@ test("sortFileEntries uses Finder natural numeric ordering with directories firs
     sorted.map((entry) => entry.name),
     ["Album 2", "Album 10", "img_1.jpg", "IMG_2.jpg", "IMG_10.jpg"]
   );
+  // Pre-sorted entries from Rust return the original array reference without copying/re-sorting.
+  assert.equal(sortFileEntries(sorted, "name", "asc"), sorted);
 });
 
 test("findTypeAheadMatch matches prefixes and cycles repeated single characters", () => {

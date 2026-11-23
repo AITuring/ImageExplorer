@@ -9,7 +9,8 @@ mod search;
 
 pub use indexer::{IndexBuilder, IndexUpdater};
 pub use photo_cache::{
-    CachedPhotoFeatureRecord, CachedPhotoSharpnessRecord, PhotoCacheLookup, PhotoCacheStore,
+    CachedPhotoFeatureRecord, CachedPhotoMetadataRecord, CachedPhotoSharpnessRecord,
+    PhotoCacheLookup, PhotoCacheStore,
 };
 pub use search::SearchEngine;
 
@@ -255,6 +256,6 @@ mod tests {
                 row.get(0)
             })
             .expect("schema version");
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
     }
 }

@@ -738,10 +738,83 @@ fn load_directory_entries(path: &str) -> Result<Vec<FileEntry>, String> {
         Err(e) => return Err(format!("Failed to read directory: {}", e)),
     }
 
-    // Sort: directories first, then alphabetically
-    // Cache lowercase keys once instead of allocating them for every
-    // comparison in the O(n log n) sort.
-    entries.sort_by_cached_key(|entry| (!entry.is_dir, entry.name.to_lowercase()));
+    /// Zero-allocation natural numeric case-insensitive comparator matching macOS
+    /// Finder (`IMG_2.jpg` sorts before `IMG_10.jpg`).
+    fn natural_cmp_case_insensitive(left: &str, right: &str) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+
+        let lb = left.as_bytes();
+        let rb = right.as_bytes();
+        let mut i = 0;
+        let mut j = 0;
+
+        while i < lb.len() && j < rb.len() {
+            if lb[i].is_ascii_digit() && rb[j].is_ascii_digit() {
+                let l_start = i;
+                while i < lb.len() && lb[i] == b'0' {
+                    i += 1;
+                }
+                let l_num_start = i;
+                while i < lb.len() && lb[i].is_ascii_digit() {
+                    i += 1;
+                }
+
+                let r_start = j;
+                while j < rb.len() && rb[j] == b'0' {
+                    j += 1;
+                }
+                let r_num_start = j;
+                while j < rb.len() && rb[j].is_ascii_digit() {
+                    j += 1;
+                }
+
+                let l_digits = &lb[l_num_start..i];
+                let r_digits = &rb[r_num_start..j];
+                let num_cmp = l_digits
+                    .len()
+                    .cmp(&r_digits.len())
+                    .then_with(|| l_digits.cmp(r_digits));
+                if num_cmp != Ordering::Equal {
+                    return num_cmp;
+                }
+                // Tie-break equal numeric values (e.g. "01" vs "1") deterministically.
+                let zero_cmp = (l_num_start - l_start).cmp(&(r_num_start - r_start));
+                if zero_cmp != Ordering::Equal {
+                    return zero_cmp;
+                }
+                continue;
+            }
+
+            if lb[i].is_ascii() && rb[j].is_ascii() {
+                let lc = lb[i].to_ascii_lowercase();
+                let rc = rb[j].to_ascii_lowercase();
+                if lc != rc {
+                    return lc.cmp(&rc);
+                }
+                i += 1;
+                j += 1;
+            } else {
+                let l_char = left[i..].chars().next().unwrap();
+                let r_char = right[j..].chars().next().unwrap();
+                let cmp = l_char.to_lowercase().cmp(r_char.to_lowercase());
+                if cmp != Ordering::Equal {
+                    return cmp;
+                }
+                i += l_char.len_utf8();
+                j += r_char.len_utf8();
+            }
+        }
+
+        lb.len().cmp(&rb.len())
+    }
+
+    // Sort: directories first, then Finder-style natural numeric order.
+    entries.sort_by(|left, right| {
+        right
+            .is_dir
+            .cmp(&left.is_dir)
+            .then_with(|| natural_cmp_case_insensitive(&left.name, &right.name))
+    });
 
     Ok(entries)
 }
@@ -4403,6 +4476,31 @@ mod file_entry_tests {
         let meta = fs::metadata(&target).expect("meta");
         assert!(uid_to_owner_name(meta.uid()).is_some());
         assert!(gid_to_group_name(meta.gid()).is_some());
+
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn natural_sort_orders_numeric_filenames_like_finder() {
+        let root = test_root();
+        fs::create_dir_all(root.join("Album 10")).expect("dir 10");
+        fs::create_dir_all(root.join("Album 2")).expect("dir 2");
+        fs::write(root.join("IMG_10.jpg"), b"").expect("f10");
+        fs::write(root.join("IMG_2.jpg"), b"").expect("f2");
+        fs::write(root.join("img_1.jpg"), b"").expect("f1");
+
+        let entries = load_directory_entries(&root.to_string_lossy()).expect("load entries");
+        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "Album 2",
+                "Album 10",
+                "img_1.jpg",
+                "IMG_2.jpg",
+                "IMG_10.jpg"
+            ]
+        );
 
         fs::remove_dir_all(root).expect("remove test root");
     }

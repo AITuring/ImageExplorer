@@ -42,6 +42,15 @@ pub struct CachedPhotoSharpnessRecord {
     pub verdict: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedPhotoMetadataRecord {
+    pub path: String,
+    pub modified: i64,
+    pub file_size: i64,
+    pub metadata_json: String,
+}
+
 pub struct PhotoCacheStore {
     read_conn: Arc<Mutex<Connection>>,
     write_conn: Arc<Mutex<Connection>>,
@@ -289,6 +298,118 @@ impl PhotoCacheStore {
         tx.commit()
             .map_err(|error| format!("Failed to commit sharpness cache: {error}"))
     }
+
+    pub fn get_metadata(
+        &self,
+        items: &[PhotoCacheLookup],
+        metadata_version: i64,
+    ) -> Result<Vec<CachedPhotoMetadataRecord>, String> {
+        if items.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let expected: HashMap<&str, (i64, i64)> = items
+            .iter()
+            .map(|item| (item.path.as_str(), (item.modified, item.file_size)))
+            .collect();
+
+        let conn = self
+            .read_conn
+            .lock()
+            .map_err(|error| format!("Failed to acquire metadata cache read lock: {error}"))?;
+        let mut results = Vec::new();
+
+        for chunk in items.chunks(LOOKUP_CHUNK_SIZE) {
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            let sql = format!(
+                "SELECT path, modified, file_size, metadata_json
+                 FROM photo_metadata_cache
+                 WHERE metadata_version = ?1 AND path IN ({placeholders})"
+            );
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|error| format!("Failed to prepare metadata cache lookup: {error}"))?;
+
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(chunk.len() + 1);
+            params.push(Box::new(metadata_version));
+            for item in chunk {
+                params.push(Box::new(item.path.clone()));
+            }
+            let param_refs: Vec<&dyn rusqlite::ToSql> =
+                params.iter().map(|value| value.as_ref()).collect();
+
+            let rows = stmt
+                .query_map(param_refs.as_slice(), |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })
+                .map_err(|error| format!("Failed to query metadata cache: {error}"))?;
+
+            for row in rows {
+                let (path, modified, file_size, metadata_json) =
+                    row.map_err(|error| format!("Failed to read metadata cache row: {error}"))?;
+                if expected.get(path.as_str()) == Some(&(modified, file_size)) {
+                    results.push(CachedPhotoMetadataRecord {
+                        path,
+                        modified,
+                        file_size,
+                        metadata_json,
+                    });
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    pub fn save_metadata(
+        &self,
+        records: &[CachedPhotoMetadataRecord],
+        metadata_version: i64,
+    ) -> Result<(), String> {
+        if records.is_empty() {
+            return Ok(());
+        }
+
+        let now = now_seconds();
+        let mut conn = self
+            .write_conn
+            .lock()
+            .map_err(|error| format!("Failed to acquire metadata cache write lock: {error}"))?;
+        let tx = conn
+            .transaction()
+            .map_err(|error| format!("Failed to start metadata cache transaction: {error}"))?;
+
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT OR REPLACE INTO photo_metadata_cache
+                     (path, modified, file_size, metadata_version, metadata_json, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                )
+                .map_err(|error| format!("Failed to prepare metadata cache insert: {error}"))?;
+
+            for record in records {
+                stmt.execute(rusqlite::params![
+                    record.path,
+                    record.modified,
+                    record.file_size,
+                    metadata_version,
+                    record.metadata_json,
+                    now,
+                ])
+                .map_err(|error| format!("Failed to save metadata cache: {error}"))?;
+            }
+        }
+
+        prune_table_if_needed(&tx, "photo_metadata_cache")?;
+        tx.commit()
+            .map_err(|error| format!("Failed to commit metadata cache: {error}"))
+    }
 }
 
 fn now_seconds() -> i64 {
@@ -322,7 +443,8 @@ fn prune_table_if_needed(tx: &rusqlite::Transaction<'_>, table: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::{
-        CachedPhotoFeatureRecord, CachedPhotoSharpnessRecord, PhotoCacheLookup, PhotoCacheStore,
+        CachedPhotoFeatureRecord, CachedPhotoMetadataRecord, CachedPhotoSharpnessRecord,
+        PhotoCacheLookup, PhotoCacheStore,
     };
     use crate::db::schema;
     use base64::Engine as _;
@@ -445,5 +567,47 @@ mod tests {
             .expect("query overwritten sharpness");
         assert_eq!(updated.len(), 1);
         assert_eq!(updated[0].verdict, "soft");
+    }
+
+    #[test]
+    fn metadata_cache_round_trips_and_invalidates_on_file_change() {
+        let store = store();
+        let json = r#"{"width":6000,"height":4000,"iso":"100","aperture":"2.8"}"#.to_string();
+        store
+            .save_metadata(
+                &[CachedPhotoMetadataRecord {
+                    path: "/photos/c.arw".to_string(),
+                    modified: 500,
+                    file_size: 40_000_000,
+                    metadata_json: json.clone(),
+                }],
+                1,
+            )
+            .expect("save metadata");
+
+        let hit = store
+            .get_metadata(
+                &[PhotoCacheLookup {
+                    path: "/photos/c.arw".to_string(),
+                    modified: 500,
+                    file_size: 40_000_000,
+                }],
+                1,
+            )
+            .expect("get metadata");
+        assert_eq!(hit.len(), 1);
+        assert_eq!(hit[0].metadata_json, json);
+
+        let stale = store
+            .get_metadata(
+                &[PhotoCacheLookup {
+                    path: "/photos/c.arw".to_string(),
+                    modified: 501,
+                    file_size: 40_000_000,
+                }],
+                1,
+            )
+            .expect("get stale metadata");
+        assert!(stale.is_empty());
     }
 }

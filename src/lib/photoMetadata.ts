@@ -22,12 +22,131 @@ export interface PhotoMetadataSummary {
   camera: string[];
 }
 
+const METADATA_CACHE_VERSION = 1;
 const metadataCache = new Map<string, PhotoMetadata | null>();
-const MAX_METADATA_CACHE_ENTRIES = 500;
+const MAX_METADATA_CACHE_ENTRIES = 4000;
+const metadataSubscribers = new Map<string, Set<(metadata: PhotoMetadata | null) => void>>();
+
+interface CachedPhotoMetadataRecord {
+  path: string;
+  modified: number;
+  fileSize: number;
+  metadataJson: string;
+}
+
+const pendingMetadataWrites = new Map<string, CachedPhotoMetadataRecord>();
+let metadataWriteTimer: ReturnType<typeof setTimeout> | null = null;
+const METADATA_WRITE_DEBOUNCE_MS = 300;
+const METADATA_WRITE_FLUSH_THRESHOLD = 24;
+
+function flushMetadataWrites() {
+  if (metadataWriteTimer !== null) {
+    clearTimeout(metadataWriteTimer);
+    metadataWriteTimer = null;
+  }
+  if (pendingMetadataWrites.size === 0) return;
+  const records = Array.from(pendingMetadataWrites.values());
+  pendingMetadataWrites.clear();
+  void invoke("save_cached_photo_metadata", {
+    records,
+    metadataVersion: METADATA_CACHE_VERSION,
+  }).catch(() => undefined);
+}
+
+function queueMetadataPersist(
+  entry: { path: string; modified: number | null; size: number },
+  metadata: PhotoMetadata | null
+) {
+  if (!metadata) return;
+  const key = `${entry.path}:${entry.modified ?? 0}:${entry.size}`;
+  pendingMetadataWrites.set(key, {
+    path: entry.path,
+    modified: entry.modified ?? 0,
+    fileSize: entry.size,
+    metadataJson: JSON.stringify(metadata),
+  });
+  if (pendingMetadataWrites.size >= METADATA_WRITE_FLUSH_THRESHOLD) {
+    flushMetadataWrites();
+    return;
+  }
+  if (metadataWriteTimer === null) {
+    metadataWriteTimer = setTimeout(flushMetadataWrites, METADATA_WRITE_DEBOUNCE_MS);
+  }
+}
+
+function notifyMetadataSubscribers(key: string, metadata: PhotoMetadata | null) {
+  const listeners = metadataSubscribers.get(key);
+  if (!listeners) return;
+  for (const listener of listeners) {
+    listener(metadata);
+  }
+}
+
+export function subscribePhotoMetadataCache(
+  key: string,
+  listener: (metadata: PhotoMetadata | null) => void
+): () => void {
+  let bucket = metadataSubscribers.get(key);
+  if (!bucket) {
+    bucket = new Set();
+    metadataSubscribers.set(key, bucket);
+  }
+  bucket.add(listener);
+  return () => {
+    const current = metadataSubscribers.get(key);
+    if (!current) return;
+    current.delete(listener);
+    if (current.size === 0) {
+      metadataSubscribers.delete(key);
+    }
+  };
+}
+
+/**
+ * Batch-hydrate EXIF photo metadata from SQLite for all photos in a directory
+ * so repeated folder visits render shooting parameters immediately without
+ * per-file ImageIO/ExifTool IPC calls.
+ */
+export async function hydratePhotoMetadataCache(entries: FileEntry[]): Promise<void> {
+  const missing: Array<{ path: string; modified: number; fileSize: number }> = [];
+  for (const entry of entries) {
+    if (entry.is_dir || !entry.extension || entry.name.startsWith("._")) continue;
+    const key = getPhotoMetadataKey(entry);
+    if (metadataCache.has(key)) continue;
+    missing.push({
+      path: entry.path,
+      modified: entry.modified ?? 0,
+      fileSize: entry.size,
+    });
+  }
+  if (missing.length === 0) return;
+
+  try {
+    const cachedRecords = await invoke<CachedPhotoMetadataRecord[]>("get_cached_photo_metadata", {
+      items: missing,
+      metadataVersion: METADATA_CACHE_VERSION,
+    });
+    for (const record of cachedRecords) {
+      try {
+        const parsed = JSON.parse(record.metadataJson) as PhotoMetadata;
+        const key = `${record.path}:${record.modified}:${record.fileSize}`;
+        cacheMetadata(key, parsed);
+        notifyMetadataSubscribers(key, parsed);
+      } catch {
+        // Ignore malformed JSON rows.
+      }
+    }
+  } catch {
+    // SQLite cache is best-effort; individual loads still fall back to read_image_metadata.
+  }
+}
+
 interface PendingMetadataLoad {
   promise: Promise<PhotoMetadata | null>;
   cacheKey: string;
   path: string;
+  modified: number | null;
+  size: number;
   consumers: Set<symbol>;
   started: boolean;
   settled: boolean;
@@ -76,6 +195,11 @@ function pumpMetadataQueue() {
       })
       .then((metadata) => {
         cacheMetadata(pending.cacheKey, metadata);
+        queueMetadataPersist(
+          { path: pending.path, modified: pending.modified, size: pending.size },
+          metadata
+        );
+        notifyMetadataSubscribers(pending.cacheKey, metadata);
         pending.resolve(metadata);
         return metadata;
       })
@@ -149,6 +273,8 @@ export function loadPhotoMetadata(
     }),
     cacheKey,
     path: entry.path,
+    modified: entry.modified,
+    size: entry.size,
     consumers: new Set<symbol>(),
     started: false,
     settled: false,

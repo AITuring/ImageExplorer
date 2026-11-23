@@ -263,20 +263,35 @@ impl BytesLruCache {
 static THUMB_BYTES_CACHE: Lazy<Mutex<BytesLruCache>> =
     Lazy::new(|| Mutex::new(BytesLruCache::default()));
 
-/// 获取原始二进制缩略图缓存
+/// 获取原始二进制缩略图缓存（L1 内存 LRU -> L2 磁盘持久化 LRU）
 pub fn get_thumb_bytes_cache(key: &str) -> Option<CachedImageBytes> {
+    {
+        let mut cache = THUMB_BYTES_CACHE
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(hit) = cache.get(key) {
+            return Some(hit);
+        }
+    }
+
+    // L2 磁盘持久化缓存命中时，直接回填 L1 内存 LRU 并返回
+    let disk_bytes = crate::thumb_disk_cache::get(key)?;
     let mut cache = THUMB_BYTES_CACHE
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    cache.get(key)
+    Some(cache.insert(key.to_string(), disk_bytes))
 }
 
-/// 设置原始二进制缩略图缓存
+/// 设置原始二进制缩略图缓存（同步写 L1，异步落盘 L2）
 pub fn set_thumb_bytes_cache(key: String, bytes: Vec<u8>) -> CachedImageBytes {
-    let mut cache = THUMB_BYTES_CACHE
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    cache.insert(key, bytes)
+    let image = {
+        let mut cache = THUMB_BYTES_CACHE
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        cache.insert(key.clone(), bytes)
+    };
+    crate::thumb_disk_cache::put_async(key, Arc::clone(&image.bytes));
+    image
 }
 
 /// 淘汰过期条目，如果仍超限则移除最旧的条目

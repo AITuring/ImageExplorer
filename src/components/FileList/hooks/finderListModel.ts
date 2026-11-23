@@ -33,17 +33,36 @@ export function sortFileEntries<
 >(entries: T[], sortField: SortField = "name", sortDirection: SortDirection = "asc"): T[] {
   if (entries.length <= 1) return entries;
   const direction = sortDirection === "asc" ? 1 : -1;
-  const next = entries.slice();
-
-  // Array.prototype.sort is guaranteed stable in modern JS engines, so we can
-  // sort a shallow copy directly without allocating N wrapper objects + a
-  // second output array on 100k-entry directories.
   if (sortField === "name") {
+    // Fast O(N) pre-check: Rust `get_entries` already delivers directories in
+    // Finder natural order, so default name/asc skips allocating & re-sorting.
+    let alreadySorted = true;
+    for (let index = 1; index < entries.length; index += 1) {
+      const prev = entries[index - 1];
+      const curr = entries[index];
+      const order =
+        prev.is_dir !== curr.is_dir
+          ? prev.is_dir
+            ? -1
+            : 1
+          : FILE_NAME_COLLATOR.compare(prev.name, curr.name) * direction;
+      if (order > 0) {
+        alreadySorted = false;
+        break;
+      }
+    }
+    if (alreadySorted) return entries;
+
+    const next = entries.slice();
     next.sort((a, b) => {
       if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
       return FILE_NAME_COLLATOR.compare(a.name, b.name) * direction;
     });
-  } else if (sortField === "kind") {
+    return next;
+  }
+
+  const next = entries.slice();
+  if (sortField === "kind") {
     next.sort((a, b) => {
       if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
       const kindCmp = FILE_NAME_COLLATOR.compare(getEntryKind(a), getEntryKind(b)) * direction;

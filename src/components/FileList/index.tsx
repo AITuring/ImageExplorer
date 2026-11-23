@@ -25,6 +25,7 @@ import { usePhotoAnalysis } from "@/hooks/usePhotoAnalysis";
 import { FolderSharpnessPanel } from "@/components/FolderSharpnessPanel";
 import { useVisibleSharpness } from "@/hooks/useVisibleSharpness";
 import { getPhotoGroupColor } from "@/lib/photoAnalysis";
+import { hydratePhotoMetadataCache } from "@/lib/photoMetadata";
 import { FileListHeader } from "./components/FileListHeader";
 import { FileListItem } from "./components/FileListItem";
 import { FileGridItem } from "./components/FileGridItem";
@@ -125,6 +126,13 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   // 1. 数据加载
   const { entries, showHiddenFiles, loading, error, loadEntries } = useFileEntries(currentPath);
   const [requestingAccess, setRequestingAccess] = useState(false);
+
+  // Batch-hydrate EXIF shooting parameters from SQLite once per directory load.
+  useEffect(() => {
+    if (!loading && !error && entries.length > 0) {
+      void hydratePhotoMetadataCache(entries);
+    }
+  }, [entries, error, loading]);
 
   // 2. 排序
   const { sortField, sortDirection, handleSort, handleArrange, sortedEntries } =

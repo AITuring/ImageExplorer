@@ -2,7 +2,7 @@
 
 use rusqlite::Connection;
 
-const CURRENT_SCHEMA_VERSION: i64 = 4;
+const CURRENT_SCHEMA_VERSION: i64 = 5;
 
 /// 初始化数据库 schema
 pub fn init(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -103,6 +103,24 @@ pub fn init(conn: &Connection) -> Result<(), rusqlite::Error> {
                 "#,
             )?;
             record_migration(conn, 4)?;
+        }
+
+        if version < 5 {
+            conn.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS photo_metadata_cache (
+                    path TEXT PRIMARY KEY NOT NULL,
+                    modified INTEGER NOT NULL,
+                    file_size INTEGER NOT NULL,
+                    metadata_version INTEGER NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_photo_metadata_cache_updated
+                    ON photo_metadata_cache(updated_at);
+                "#,
+            )?;
+            record_migration(conn, 5)?;
         }
     }
 

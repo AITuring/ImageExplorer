@@ -8,6 +8,7 @@ mod db;
 mod index;
 mod menu;
 mod operations;
+mod thumb_disk_cache;
 mod thumb_protocol;
 mod trash_commands;
 
@@ -33,8 +34,8 @@ use commands::search::{
 };
 use commands::watcher::{stop_watching, unwatch_directory, watch_directory, WatcherState};
 use db::{
-    CachedPhotoFeatureRecord, CachedPhotoSharpnessRecord, Database, IndexBuilder, IndexUpdater,
-    PhotoCacheLookup, PhotoCacheStore, SearchEngine,
+    CachedPhotoFeatureRecord, CachedPhotoMetadataRecord, CachedPhotoSharpnessRecord, Database,
+    IndexBuilder, IndexUpdater, PhotoCacheLookup, PhotoCacheStore, SearchEngine,
 };
 use index::{create_shared_index, IndexedFile, SharedIndex};
 use operations::{
@@ -188,6 +189,36 @@ async fn save_cached_photo_features(
     };
     let store = PhotoCacheStore::new(db.read_connection(), db.connection());
     tauri::async_runtime::spawn_blocking(move || store.save_features(&records, analysis_version))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn get_cached_photo_metadata(
+    database: tauri::State<'_, Option<SharedDatabase>>,
+    items: Vec<PhotoCacheLookup>,
+    metadata_version: i64,
+) -> Result<Vec<CachedPhotoMetadataRecord>, String> {
+    let Some(ref db) = *database.inner() else {
+        return Ok(Vec::new());
+    };
+    let store = PhotoCacheStore::new(db.read_connection(), db.connection());
+    tauri::async_runtime::spawn_blocking(move || store.get_metadata(&items, metadata_version))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn save_cached_photo_metadata(
+    database: tauri::State<'_, Option<SharedDatabase>>,
+    records: Vec<CachedPhotoMetadataRecord>,
+    metadata_version: i64,
+) -> Result<(), String> {
+    let Some(ref db) = *database.inner() else {
+        return Ok(());
+    };
+    let store = PhotoCacheStore::new(db.read_connection(), db.connection());
+    tauri::async_runtime::spawn_blocking(move || store.save_metadata(&records, metadata_version))
         .await
         .map_err(|error| error.to_string())?
 }
@@ -392,13 +423,31 @@ fn build_index_background(
                 ));
 
                 let builder = IndexBuilder::new(db.connection());
-                // A healthy persisted index can still be stale after the app
-                // was closed. Always reconcile it with the filesystem.
-                println!("Starting SQLite index reconciliation...");
+                // When a healthy, recent persisted index exists, run a fast
+                // incremental directory-mtime reconciliation instead of rewriting
+                // the entire index on every launch. Fall back to a full rebuild
+                // if the index is empty, expired, interrupted, or incremental
+                // reconciliation reports an error.
+                let use_incremental = !db.needs_rebuild();
                 let _ = app.emit("index-status", "building");
-                let build_succeeded = match builder.build(&home_str, Some(&app)) {
+                let build_result = if use_incremental {
+                    println!("Starting incremental SQLite index reconciliation...");
+                    match builder.reconcile_incremental(&home_str) {
+                        Ok(count) => Ok(count),
+                        Err(error) => {
+                            eprintln!(
+                                "Incremental reconciliation failed ({error}); falling back to full rebuild"
+                            );
+                            builder.build(&home_str, Some(&app))
+                        }
+                    }
+                } else {
+                    println!("Starting full SQLite index rebuild...");
+                    builder.build(&home_str, Some(&app))
+                };
+                let build_succeeded = match build_result {
                     Ok(count) => {
-                        println!("SQLite index built: {} files", count);
+                        println!("SQLite index ready: {} files", count);
                         if let Ok(mut idx) = index.write() {
                             idx.is_building = false;
                             idx.file_count = count;
@@ -1065,6 +1114,8 @@ pub fn run() {
             search_indexed,
             get_cached_photo_features,
             save_cached_photo_features,
+            get_cached_photo_metadata,
+            save_cached_photo_metadata,
             get_cached_photo_sharpness,
             save_cached_photo_sharpness,
             get_smart_files,
