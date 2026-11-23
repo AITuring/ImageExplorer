@@ -233,39 +233,50 @@ static CGImageRef imageexplorer_create_coreimage_raw_preview(NSURL *fileURL, uin
         return NULL;
     }
 
-    if (@available(macOS 12.0, *)) {
-        CIRAWFilter *rawFilter = [CIRAWFilter filterWithImageURL:fileURL];
-        if (rawFilter == nil || rawFilter.nativeSize.width <= 0 || rawFilter.nativeSize.height <= 0) {
-            return NULL;
-        }
-
-        NSNumber *orientationValue = rawFilter.properties[(NSString *)kCGImagePropertyOrientation];
-        if (orientationValue != nil) {
-            NSInteger orientation = orientationValue.integerValue;
-            if (orientation >= 1 && orientation <= 8) {
-                rawFilter.orientation = (CGImagePropertyOrientation)orientation;
-            }
-        }
-
-        CGFloat nativeMax = MAX(rawFilter.nativeSize.width, rawFilter.nativeSize.height);
-        CGFloat scale = MIN(1.0, (CGFloat)size / nativeMax);
-        rawFilter.scaleFactor = MAX(0.01, scale);
-        rawFilter.draftModeEnabled = NO;
-
-        CIImage *outputImage = rawFilter.outputImage;
-        if (outputImage == nil) {
-            return NULL;
-        }
-
-        CIContext *context = imageexplorer_shared_ci_context();
-        if (context == nil) {
-            return NULL;
-        }
-
-        return [context createCGImage:outputImage fromRect:outputImage.extent];
+    // Avoid Objective-C `@available(...)` here: Clang emits a reference to
+    // `___isPlatformVersionAtLeast` from `libclang_rt.osx.a`, which is not
+    // linked when Rust invokes `cc -nodefaultlibs` for release bundles.
+    NSOperatingSystemVersion minVersion = { 12, 0, 0 };
+    if (![[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:minVersion]) {
+        return NULL;
+    }
+    Class rawFilterClass = NSClassFromString(@"CIRAWFilter");
+    if (rawFilterClass == Nil) {
+        return NULL;
     }
 
-    return NULL;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunguarded-availability-new"
+    CIRAWFilter *rawFilter = [rawFilterClass filterWithImageURL:fileURL];
+    if (rawFilter == nil || rawFilter.nativeSize.width <= 0 || rawFilter.nativeSize.height <= 0) {
+        return NULL;
+    }
+
+    NSNumber *orientationValue = rawFilter.properties[(NSString *)kCGImagePropertyOrientation];
+    if (orientationValue != nil) {
+        NSInteger orientation = orientationValue.integerValue;
+        if (orientation >= 1 && orientation <= 8) {
+            rawFilter.orientation = (CGImagePropertyOrientation)orientation;
+        }
+    }
+
+    CGFloat nativeMax = MAX(rawFilter.nativeSize.width, rawFilter.nativeSize.height);
+    CGFloat scale = MIN(1.0, (CGFloat)size / nativeMax);
+    rawFilter.scaleFactor = MAX(0.01, scale);
+    rawFilter.draftModeEnabled = NO;
+
+    CIImage *outputImage = rawFilter.outputImage;
+    if (outputImage == nil) {
+        return NULL;
+    }
+
+    CIContext *context = imageexplorer_shared_ci_context();
+    if (context == nil) {
+        return NULL;
+    }
+
+    return [context createCGImage:outputImage fromRect:outputImage.extent];
+#pragma clang diagnostic pop
 }
 
 static CGImageRef imageexplorer_create_embedded_preview(NSURL *fileURL, uint32_t size) {
