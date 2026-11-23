@@ -19,7 +19,7 @@ export function ColumnFilePreview({ entry }: { entry: FileEntry }) {
       className="finder-column-preview flex h-full min-w-72 flex-1 flex-col items-center gap-4 overflow-y-auto p-6"
       aria-label={t("file_list.preview")}
     >
-      <div className="flex min-h-48 w-full flex-1 items-center justify-center">
+      <div className="relative flex min-h-48 w-full flex-1 items-center justify-center">
         <FileThumbnail
           key={entry.path}
           entry={entry}

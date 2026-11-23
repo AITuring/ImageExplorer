@@ -21,7 +21,7 @@ export function CompactFileThumbnail({
     return () => observer.disconnect();
   }, [isInViewport]);
   return (
-    <span ref={ref} className="flex h-6 w-6 shrink-0 items-center justify-center">
+    <span ref={ref} className="relative flex h-6 w-6 shrink-0 items-center justify-center">
       <FileThumbnail
         entry={entry}
         size={24}

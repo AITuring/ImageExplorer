@@ -135,10 +135,9 @@ mod icon_utils {
     use base64::{engine::general_purpose, Engine as _};
     use objc2_app_kit::{NSBitmapImageRep, NSImage, NSPNGFileType};
     use objc2_foundation::{NSDictionary, NSSize};
-    use std::path::Path;
 
-    /// 将 NSImage 转换为 Base64 PNG
-    pub unsafe fn ns_image_to_base64(image: &NSImage, size: f64) -> Option<String> {
+    /// 将 NSImage 转换为 PNG 字节
+    pub unsafe fn ns_image_to_png_bytes(image: &NSImage, size: f64) -> Option<Vec<u8>> {
         image.setSize(NSSize::new(size, size));
 
         let tiff_data = image.TIFFRepresentation()?;
@@ -146,12 +145,12 @@ mod icon_utils {
         let props = NSDictionary::new();
         let png_data = bitmap_rep.representationUsingType_properties(NSPNGFileType, &props)?;
 
-        Some(general_purpose::STANDARD.encode(png_data.bytes()))
+        Some(png_data.bytes().to_vec())
     }
 
-    /// 将 PNG 文件编码为 Base64
-    pub fn png_file_to_base64(path: &Path) -> Option<String> {
-        let bytes = std::fs::read(path).ok()?;
+    /// 将 NSImage 转换为 Base64 PNG
+    pub unsafe fn ns_image_to_base64(image: &NSImage, size: f64) -> Option<String> {
+        let bytes = ns_image_to_png_bytes(image, size)?;
         Some(general_purpose::STANDARD.encode(bytes))
     }
 }
@@ -172,7 +171,7 @@ fn quicklook_thumbnail_path(output_dir: &Path, source_path: &Path) -> Option<Pat
 }
 
 #[cfg(target_os = "macos")]
-fn generate_quicklook_thumbnail(path: &Path, size: f64) -> Option<String> {
+fn generate_quicklook_thumbnail_bytes(path: &Path, size: f64) -> Option<Vec<u8>> {
     if path.is_dir() {
         return None;
     }
@@ -205,17 +204,17 @@ fn generate_quicklook_thumbnail(path: &Path, size: f64) -> Option<String> {
     }
 
     let thumbnail_path = quicklook_thumbnail_path(&output_dir, path)?;
-    let base64 = icon_utils::png_file_to_base64(&thumbnail_path);
+    let bytes = std::fs::read(&thumbnail_path).ok();
     let _ = fs::remove_dir_all(&output_dir);
-    base64
+    bytes
 }
 
 #[cfg(target_os = "macos")]
-fn generate_quicklook_thumbnail_in_process(
+fn generate_quicklook_thumbnail_bytes_in_process(
     path: &Path,
     size: f64,
     prefer_embedded: bool,
-) -> Option<String> {
+) -> Option<Vec<u8>> {
     extern "C" {
         fn imageexplorer_quicklook_thumbnail(
             path: *const std::ffi::c_char,
@@ -240,10 +239,53 @@ fn generate_quicklook_thumbnail_in_process(
         return None;
     }
 
-    let bytes = unsafe { std::slice::from_raw_parts(buffer, length) };
-    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let bytes = unsafe { std::slice::from_raw_parts(buffer, length).to_vec() };
     unsafe { imageexplorer_free_thumbnail(buffer) };
-    Some(encoded)
+    Some(bytes)
+}
+
+#[cfg(target_os = "macos")]
+pub fn get_arw_embedded_jpeg_bytes_blocking(
+    path: &str,
+    max_pixel_size: u32,
+) -> Option<crate::cache::CachedImageBytes> {
+    let path_obj = Path::new(path);
+    let metadata = fs::metadata(path_obj).ok()?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let cache_key = format!(
+        "arw:{}:{}:{}:{}",
+        path,
+        metadata.len(),
+        modified,
+        max_pixel_size
+    );
+    if let Some(cached) = crate::cache::get_thumb_bytes_cache(&cache_key) {
+        return Some(cached);
+    }
+
+    extern "C" {
+        fn imageexplorer_arw_embedded_jpeg(
+            path: *const std::ffi::c_char,
+            max_pixel_size: u32,
+            length: *mut usize,
+        ) -> *mut u8;
+        fn imageexplorer_free_thumbnail(buffer: *mut u8);
+    }
+    let c_path = CString::new(path).ok()?;
+    let mut length = 0usize;
+    let buffer =
+        unsafe { imageexplorer_arw_embedded_jpeg(c_path.as_ptr(), max_pixel_size, &mut length) };
+    if buffer.is_null() || length == 0 {
+        return None;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(buffer, length).to_vec() };
+    unsafe { imageexplorer_free_thumbnail(buffer) };
+    Some(crate::cache::set_thumb_bytes_cache(cache_key, bytes))
 }
 
 #[cfg(target_os = "macos")]
@@ -253,25 +295,12 @@ pub async fn get_arw_embedded_jpeg(
     max_pixel_size: u32,
 ) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        extern "C" {
-            fn imageexplorer_arw_embedded_jpeg(
-                path: *const std::ffi::c_char,
-                max_pixel_size: u32,
-                length: *mut usize,
-            ) -> *mut u8;
-            fn imageexplorer_free_thumbnail(buffer: *mut u8);
-        }
-        let path = CString::new(path).map_err(|error| error.to_string())?;
-        let mut length = 0usize;
-        let buffer =
-            unsafe { imageexplorer_arw_embedded_jpeg(path.as_ptr(), max_pixel_size, &mut length) };
-        if buffer.is_null() || length == 0 {
+        let Some(cached) = get_arw_embedded_jpeg_bytes_blocking(&path, max_pixel_size) else {
             return Ok(None);
-        }
-        let bytes = unsafe { std::slice::from_raw_parts(buffer, length) };
-        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-        unsafe { imageexplorer_free_thumbnail(buffer) };
-        Ok(Some(encoded))
+        };
+        Ok(Some(
+            base64::engine::general_purpose::STANDARD.encode(cached.bytes.as_slice()),
+        ))
     })
     .await
     .map_err(|error| error.to_string())?
@@ -525,33 +554,14 @@ pub async fn get_app_icon(app: tauri::AppHandle, app_path: String) -> Option<Str
     None
 }
 
-/// 获取指定文件/文件夹的原生缩略图或图标 (Base64)
-#[tauri::command]
-pub async fn get_file_thumbnail(
-    app: tauri::AppHandle,
+/// 获取指定文件/文件夹的原生缩略图或图标（原始二进制字节，供 thumb:// 协议零 Base64 使用）
+pub fn get_file_thumbnail_bytes_blocking_generic<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     path: String,
     size: Option<f64>,
     allow_icon_fallback: Option<bool>,
     prefer_embedded: Option<bool>,
-) -> Option<String> {
-    // sips, Quick Look, ImageIO and Core Image are synchronous native APIs.
-    // Keep them off Tauri's async runtime so a burst of RAW cards cannot stall
-    // unrelated UI commands or directory events.
-    tauri::async_runtime::spawn_blocking(move || {
-        get_file_thumbnail_blocking(app, path, size, allow_icon_fallback, prefer_embedded)
-    })
-    .await
-    .ok()
-    .flatten()
-}
-
-fn get_file_thumbnail_blocking(
-    app: tauri::AppHandle,
-    path: String,
-    size: Option<f64>,
-    allow_icon_fallback: Option<bool>,
-    prefer_embedded: Option<bool>,
-) -> Option<String> {
+) -> Option<crate::cache::CachedImageBytes> {
     let path_obj = Path::new(&path);
     let metadata = fs::metadata(path_obj).ok()?;
     let modified = metadata
@@ -573,27 +583,25 @@ fn get_file_thumbnail_blocking(
         if prefer_embedded { "embedded" } else { "full" }
     );
     let icon_cache_key = format!("{}:icon", image_cache_key);
-    if let Some(cached) = crate::cache::get_icon_cache(&image_cache_key) {
+    if let Some(cached) = crate::cache::get_thumb_bytes_cache(&image_cache_key) {
         return Some(cached);
     }
     if allow_icon_fallback {
-        if let Some(cached) = crate::cache::get_icon_cache(&icon_cache_key) {
+        if let Some(cached) = crate::cache::get_thumb_bytes_cache(&icon_cache_key) {
             return Some(cached);
         }
     }
 
     #[cfg(target_os = "macos")]
     {
-        if let Some(base64) =
-            generate_quicklook_thumbnail_in_process(path_obj, size_val, prefer_embedded)
+        if let Some(bytes) =
+            generate_quicklook_thumbnail_bytes_in_process(path_obj, size_val, prefer_embedded)
         {
-            crate::cache::set_icon_cache(image_cache_key.clone(), base64.clone());
-            return Some(base64);
+            return Some(crate::cache::set_thumb_bytes_cache(image_cache_key, bytes));
         }
 
-        if let Some(base64) = generate_quicklook_thumbnail(path_obj, size_val) {
-            crate::cache::set_icon_cache(image_cache_key.clone(), base64.clone());
-            return Some(base64);
+        if let Some(bytes) = generate_quicklook_thumbnail_bytes(path_obj, size_val) {
+            return Some(crate::cache::set_thumb_bytes_cache(image_cache_key, bytes));
         }
 
         if !allow_icon_fallback {
@@ -611,20 +619,44 @@ fn get_file_thumbnail_blocking(
                 let workspace = NSWorkspace::sharedWorkspace();
                 let path_ns = NSString::from_str(&path_clone);
                 let icon = workspace.iconForFile(&path_ns);
-                icon_utils::ns_image_to_base64(&icon, size_val)
+                icon_utils::ns_image_to_png_bytes(&icon, size_val)
             };
             let _ = tx.send(result);
         });
 
-        let result = rx.recv().unwrap_or(None);
-        if let Some(ref base64) = result {
-            crate::cache::set_icon_cache(icon_cache_key, base64.clone());
-        }
-        result
+        let result = rx.recv().unwrap_or(None)?;
+        Some(crate::cache::set_thumb_bytes_cache(icon_cache_key, result))
     }
 
     #[cfg(not(target_os = "macos"))]
-    None
+    {
+        let _ = app;
+        None
+    }
+}
+
+/// 获取指定文件/文件夹的原生缩略图或图标 (Base64，保留兼容接口)
+#[tauri::command]
+pub async fn get_file_thumbnail(
+    app: tauri::AppHandle,
+    path: String,
+    size: Option<f64>,
+    allow_icon_fallback: Option<bool>,
+    prefer_embedded: Option<bool>,
+) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let cached = get_file_thumbnail_bytes_blocking_generic(
+            &app,
+            path,
+            size,
+            allow_icon_fallback,
+            prefer_embedded,
+        )?;
+        Some(base64::engine::general_purpose::STANDARD.encode(cached.bytes.as_slice()))
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// 获取 SF Symbol 图标 (Base64)

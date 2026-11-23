@@ -7,7 +7,7 @@ import {
   type SharpnessMaskResult,
 } from "@/lib/sharpnessAnalysis";
 import { computeSharpnessMaskOffThread } from "@/lib/sharpnessWorker";
-import { getFileThumbnailCacheKey, loadFileThumbnail, toImageDataUrl } from "@/lib/iconCache";
+import { buildFileThumbnailUrl, loadHtmlImage } from "@/lib/iconCache";
 import type { FileEntry } from "@/types";
 
 export type SharpnessInspectorStatus =
@@ -71,38 +71,6 @@ function isFullImageSelection(selection: NormalizedRect) {
 
 function abortError() {
   return new DOMException("Sharpness analysis was cancelled", "AbortError");
-}
-
-function decodeThumbnail(base64: string, signal: AbortSignal): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(abortError());
-      return;
-    }
-
-    const image = new Image();
-    const cleanup = () => {
-      image.onload = null;
-      image.onerror = null;
-      signal.removeEventListener("abort", handleAbort);
-    };
-    const handleAbort = () => {
-      cleanup();
-      image.src = "";
-      reject(abortError());
-    };
-
-    image.onload = () => {
-      cleanup();
-      resolve(image);
-    };
-    image.onerror = () => {
-      cleanup();
-      reject(new Error("Unable to decode the sharpness preview"));
-    };
-    signal.addEventListener("abort", handleAbort, { once: true });
-    image.src = toImageDataUrl(base64);
-  });
 }
 
 function waitForNextFrame(signal: AbortSignal): Promise<void> {
@@ -185,25 +153,15 @@ export function useSharpnessInspector({
         return cached.image;
       }
 
-      const cacheKey =
-        getFileThumbnailCacheKey(entry.path, entry.modified, entry.size, requestedSize) +
-        ":embedded-sharpness";
-      const base64 = await loadFileThumbnail(
-        cacheKey,
+      const url = buildFileThumbnailUrl(
         entry.path,
+        entry.modified,
+        entry.size,
         requestedSize,
-        false,
-        signal,
-        "interactive",
         true,
         false
       );
-      if (!base64) {
-        if (signal.aborted) throw abortError();
-        throw new Error("Unable to load a sharpness preview");
-      }
-
-      const image = await decodeThumbnail(base64, signal);
+      const image = await loadHtmlImage(url, signal);
       sourceImageRef.current = { requestSize: requestedSize, image };
       return image;
     },

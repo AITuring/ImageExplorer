@@ -8,6 +8,7 @@ mod db;
 mod index;
 mod menu;
 mod operations;
+mod thumb_protocol;
 mod trash_commands;
 
 #[cfg(target_os = "macos")]
@@ -30,7 +31,10 @@ use commands::search::{
     cancel_directory_search, get_smart_files, search_directory, search_files, DirectorySearchState,
 };
 use commands::watcher::{stop_watching, unwatch_directory, watch_directory, WatcherState};
-use db::{Database, IndexBuilder, IndexUpdater, SearchEngine};
+use db::{
+    CachedPhotoFeatureRecord, CachedPhotoSharpnessRecord, Database, IndexBuilder, IndexUpdater,
+    PhotoCacheLookup, PhotoCacheStore, SearchEngine,
+};
 use index::{create_shared_index, IndexedFile, SharedIndex};
 use operations::{
     cancel_file_operation, clear_file_operation, create_directory_with_history,
@@ -155,6 +159,66 @@ fn set_native_menu_commands_enabled(
         })?;
     }
     Ok(())
+}
+
+#[tauri::command]
+async fn get_cached_photo_features(
+    database: tauri::State<'_, Option<SharedDatabase>>,
+    items: Vec<PhotoCacheLookup>,
+    analysis_version: i64,
+) -> Result<Vec<CachedPhotoFeatureRecord>, String> {
+    let Some(ref db) = *database.inner() else {
+        return Ok(Vec::new());
+    };
+    let store = PhotoCacheStore::new(db.read_connection(), db.connection());
+    tauri::async_runtime::spawn_blocking(move || store.get_features(&items, analysis_version))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn save_cached_photo_features(
+    database: tauri::State<'_, Option<SharedDatabase>>,
+    records: Vec<CachedPhotoFeatureRecord>,
+    analysis_version: i64,
+) -> Result<(), String> {
+    let Some(ref db) = *database.inner() else {
+        return Ok(());
+    };
+    let store = PhotoCacheStore::new(db.read_connection(), db.connection());
+    tauri::async_runtime::spawn_blocking(move || store.save_features(&records, analysis_version))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn get_cached_photo_sharpness(
+    database: tauri::State<'_, Option<SharedDatabase>>,
+    items: Vec<PhotoCacheLookup>,
+    sharpness_version: i64,
+) -> Result<Vec<CachedPhotoSharpnessRecord>, String> {
+    let Some(ref db) = *database.inner() else {
+        return Ok(Vec::new());
+    };
+    let store = PhotoCacheStore::new(db.read_connection(), db.connection());
+    tauri::async_runtime::spawn_blocking(move || store.get_sharpness(&items, sharpness_version))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn save_cached_photo_sharpness(
+    database: tauri::State<'_, Option<SharedDatabase>>,
+    records: Vec<CachedPhotoSharpnessRecord>,
+    sharpness_version: i64,
+) -> Result<(), String> {
+    let Some(ref db) = *database.inner() else {
+        return Ok(());
+    };
+    let store = PhotoCacheStore::new(db.read_connection(), db.connection());
+    tauri::async_runtime::spawn_blocking(move || store.save_sharpness(&records, sharpness_version))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 /// 搜索已索引的文件
@@ -826,6 +890,7 @@ pub fn run() {
     let operation_manager = OperationManager::default();
 
     let app = tauri::Builder::default()
+        .register_asynchronous_uri_scheme_protocol("thumb", thumb_protocol::handle_thumb_protocol)
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -940,6 +1005,10 @@ pub fn run() {
             search_directory,
             cancel_directory_search,
             search_indexed,
+            get_cached_photo_features,
+            save_cached_photo_features,
+            get_cached_photo_sharpness,
+            save_cached_photo_sharpness,
             get_smart_files,
             get_index_status,
             open_url,

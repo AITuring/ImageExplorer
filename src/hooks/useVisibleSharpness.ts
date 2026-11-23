@@ -1,5 +1,6 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
-import { getFileThumbnailCacheKey, loadFileThumbnail, toImageDataUrl } from "@/lib/iconCache";
+import { invoke } from "@tauri-apps/api/core";
+import { buildFileThumbnailUrl, loadHtmlImage } from "@/lib/iconCache";
 import { extractSharpnessRegionPixels } from "@/lib/sharpnessAnalysis";
 import { computeSharpnessVerdictOffThread } from "@/lib/sharpnessWorker";
 import { IMAGE_EXTENSIONS } from "@/constants/fileTypes";
@@ -9,12 +10,33 @@ export type VisibleSharpness = "sharp" | "soft" | "unavailable";
 
 const IMAGE_TYPES = new Set(IMAGE_EXTENSIONS.filter((type) => type !== "svg" && type !== "psd"));
 const SOURCE_SIZE = 1024;
+const SHARPNESS_CACHE_VERSION = 1;
 const PUBLISH_INTERVAL_MS = 160;
 const PUBLISH_BATCH_SIZE = 12;
+const SQLITE_PERSIST_BATCH_SIZE = 16;
 // Verdicts are tiny scalars; keep a whole large folder so scrolling back does
 // not trigger another camera JPEG read for the same file.
 const MAX_RESULTS = 5_000;
 const results = new Map<string, VisibleSharpness>();
+
+interface PersistedSharpnessRecord {
+  path: string;
+  modified: number;
+  fileSize: number;
+  verdict: string;
+}
+
+function isPersistedVerdict(value: string): value is VisibleSharpness {
+  return value === "sharp" || value === "soft" || value === "unavailable";
+}
+
+function persistSharpnessBatch(records: PersistedSharpnessRecord[]) {
+  if (records.length === 0) return;
+  void invoke("save_cached_photo_sharpness", {
+    records,
+    sharpnessVersion: SHARPNESS_CACHE_VERSION,
+  }).catch(() => undefined);
+}
 
 function keyFor(entry: FileEntry) {
   return `${entry.path}\u0000${entry.modified ?? 0}\u0000${entry.size}`;
@@ -25,23 +47,20 @@ export function isSharpnessAnalyzable(entry: FileEntry) {
 }
 
 async function measure(entry: FileEntry, signal: AbortSignal): Promise<VisibleSharpness> {
-  const thumbnailKey =
-    getFileThumbnailCacheKey(entry.path, entry.modified, entry.size, SOURCE_SIZE) +
-    ":embedded-sharpness";
-  const base64 = await loadFileThumbnail(
-    thumbnailKey,
+  const url = buildFileThumbnailUrl(
     entry.path,
+    entry.modified,
+    entry.size,
     SOURCE_SIZE,
-    false,
-    signal,
-    "background",
     true,
     false
   );
-  if (!base64) return "unavailable";
-  const image = new Image();
-  image.src = toImageDataUrl(base64);
-  await image.decode();
+  let image: HTMLImageElement;
+  try {
+    image = await loadHtmlImage(url, signal);
+  } catch {
+    return "unavailable";
+  }
   if (signal.aborted) return "unavailable";
   const region = extractSharpnessRegionPixels(image, { x: 0, y: 0, width: 1, height: 1 }, 1024);
   const isSharp = await computeSharpnessVerdictOffThread(
@@ -80,17 +99,17 @@ export function useVisibleSharpness(
     const controller = new AbortController();
     const currentEntries = entriesRef.current;
     const verdicts = new Map<string, VisibleSharpness>();
+    const missingFromMemory: FileEntry[] = [];
     for (const entry of currentEntries) {
+      if (!isSharpnessAnalyzable(entry)) continue;
       const cached = results.get(keyFor(entry));
-      if (cached) verdicts.set(entry.path, cached);
+      if (cached) {
+        verdicts.set(entry.path, cached);
+      } else {
+        missingFromMemory.push(entry);
+      }
     }
-    setSnapshot({ signature, verdicts: new Map(verdicts) });
-
-    const pending = currentEntries.filter(
-      (entry) => isSharpnessAnalyzable(entry) && !results.has(keyFor(entry))
-    );
-    const pendingByPath = new Map(pending.map((entry) => [entry.path, entry]));
-    let next = 0;
+    const pendingPersist: PersistedSharpnessRecord[] = [];
     let unpublishedCount = 0;
     let lastPublishedAt = performance.now();
 
@@ -104,7 +123,48 @@ export function useVisibleSharpness(
       });
     };
 
-    const worker = async () => {
+    const run = async () => {
+      // Hydrate persisted sharpness verdicts from SQLite before decoding any
+      // 1024px previews so revisits to large photo folders finish instantly.
+      let pending = missingFromMemory;
+      if (missingFromMemory.length > 0) {
+        try {
+          const rows = await invoke<PersistedSharpnessRecord[]>("get_cached_photo_sharpness", {
+            items: missingFromMemory.map((entry) => ({
+              path: entry.path,
+              modified: entry.modified ?? 0,
+              fileSize: entry.size,
+            })),
+            sharpnessVersion: SHARPNESS_CACHE_VERSION,
+          });
+          if (controller.signal.aborted) return;
+
+          if (rows.length > 0) {
+            const entryByPath = new Map(missingFromMemory.map((entry) => [entry.path, entry]));
+            for (const row of rows) {
+              if (!isPersistedVerdict(row.verdict)) continue;
+              const entry = entryByPath.get(row.path);
+              if (!entry) continue;
+              const key = keyFor(entry);
+              results.delete(key);
+              results.set(key, row.verdict);
+              while (results.size > MAX_RESULTS) results.delete(results.keys().next().value!);
+              verdicts.set(entry.path, row.verdict);
+              unpublishedCount += 1;
+            }
+            flush();
+            pending = missingFromMemory.filter((entry) => !verdicts.has(entry.path));
+          }
+        } catch {
+          // SQLite cache is best-effort; continue computing uncached items.
+        }
+      }
+
+      if (controller.signal.aborted || pending.length === 0) return;
+
+      const pendingByPath = new Map(pending.map((entry) => [entry.path, entry]));
+      let next = 0;
+
       while (!controller.signal.aborted) {
         let entry: FileEntry | undefined;
         for (const path of priorityPathsRef.current) {
@@ -131,6 +191,17 @@ export function useVisibleSharpness(
         results.set(key, verdict);
         while (results.size > MAX_RESULTS) results.delete(results.keys().next().value!);
         verdicts.set(entry.path, verdict);
+        if (verdict === "sharp" || verdict === "soft") {
+          pendingPersist.push({
+            path: entry.path,
+            modified: entry.modified ?? 0,
+            fileSize: entry.size,
+            verdict,
+          });
+          if (pendingPersist.length >= SQLITE_PERSIST_BATCH_SIZE) {
+            persistSharpnessBatch(pendingPersist.splice(0, pendingPersist.length));
+          }
+        }
         unpublishedCount += 1;
         if (unpublishedCount === 1 && verdicts.size === 1) {
           flush();
@@ -141,17 +212,29 @@ export function useVisibleSharpness(
           flush();
         }
       }
+
+      if (pendingPersist.length > 0) {
+        persistSharpnessBatch(pendingPersist.splice(0, pendingPersist.length));
+      }
       flush();
     };
-    void worker();
-    return () => controller.abort();
+    void run();
+    return () => {
+      controller.abort();
+      if (pendingPersist.length > 0) {
+        persistSharpnessBatch(pendingPersist.splice(0, pendingPersist.length));
+      }
+    };
   }, [enabled, signature]);
 
-  return useMemo(
-    () =>
-      enabled && snapshot.signature === signature
-        ? snapshot.verdicts
-        : new Map<string, VisibleSharpness>(),
-    [enabled, signature, snapshot]
-  );
+  return useMemo(() => {
+    if (!enabled) return new Map<string, VisibleSharpness>();
+    if (snapshot.signature === signature) return snapshot.verdicts;
+    const initial = new Map<string, VisibleSharpness>();
+    for (const entry of entries) {
+      const cached = results.get(keyFor(entry));
+      if (cached) initial.set(entry.path, cached);
+    }
+    return initial;
+  }, [enabled, entries, signature, snapshot]);
 }

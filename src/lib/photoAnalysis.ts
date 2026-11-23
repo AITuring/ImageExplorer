@@ -1,11 +1,11 @@
+import { invoke } from "@tauri-apps/api/core";
 import { IMAGE_EXTENSIONS } from "@/constants/fileTypes";
 import type { FileEntry } from "@/types";
 import {
-  getFileThumbnailCacheKey,
-  getLargestCachedFileThumbnail,
+  buildFileThumbnailUrl,
+  getLargestLoadedFileThumbnailUrl,
   getThumbnailRequestSize,
-  loadFileThumbnail,
-  toImageDataUrl,
+  loadHtmlImage,
 } from "@/lib/iconCache";
 import { groupPhotoFeatures } from "@/lib/photoGrouping";
 
@@ -171,15 +171,6 @@ function yieldToBrowser(): Promise<void> {
 
 function getProgressBatchSize(total: number, minimum: number) {
   return Math.max(minimum, Math.ceil(total / 40));
-}
-
-function decodeThumbnail(base64: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("Unable to decode analysis thumbnail"));
-    image.src = toImageDataUrl(base64);
-  });
 }
 
 function normalizeFingerprint(values: ArrayLike<number>) {
@@ -592,38 +583,158 @@ async function analyzeEntry(entry: FileEntry, key: string, signal: AbortSignal) 
   if (cached) return cached;
 
   if (signal.aborted) return null;
-  const availableThumbnail = getLargestCachedFileThumbnail(entry.path, entry.modified, entry.size);
-  // Share the visible 80px grid thumbnail whenever possible. The image is
-  // still sampled into the smaller analysis canvas, but RAW decoding happens
-  // only once per file/request size.
-  const thumbnailRequestSize = getThumbnailRequestSize(80);
-  const thumbnailKey = getFileThumbnailCacheKey(
+  const availableThumbnail = getLargestLoadedFileThumbnailUrl(
     entry.path,
     entry.modified,
-    entry.size,
-    thumbnailRequestSize,
-    true
+    entry.size
   );
-  // Do not accept the generic ARW document icon as an analysis image. It has
-  // the same pixels for every failed RAW decode and would create false groups.
-  const base64 =
-    availableThumbnail?.base64 ??
-    (await loadFileThumbnail(
-      thumbnailKey,
+  // Share the visible grid thumbnail URL whenever possible so WKWebView's
+  // native cache and Rust's binary LRU serve the same bytes with zero Base64.
+  const thumbnailRequestSize = getThumbnailRequestSize(80);
+  const url =
+    availableThumbnail?.url ??
+    buildFileThumbnailUrl(
       entry.path,
+      entry.modified,
+      entry.size,
       thumbnailRequestSize,
-      false,
-      signal,
-      "background",
-      true
-    ));
-  if (!base64 || signal.aborted) return null;
+      true,
+      false
+    );
 
-  const image = await decodeThumbnail(base64);
+  let image: HTMLImageElement;
+  try {
+    image = await loadHtmlImage(url, signal);
+  } catch {
+    return null;
+  }
   if (signal.aborted) return null;
   const features = extractPhotoFeatures(image, entry.path);
   cacheFeatures(key, features);
   return features;
+}
+
+const FINGERPRINT_LENGTH = FINGERPRINT_SIZE * FINGERPRINT_SIZE;
+const HASH_BITS_LENGTH = HASH_SIZE * HASH_SIZE;
+const TILE_SCORES_LENGTH = FOCUS_GRID_SIZE * FOCUS_GRID_SIZE;
+const FINGERPRINT_BYTES = FINGERPRINT_LENGTH * Float32Array.BYTES_PER_ELEMENT;
+const TILE_SCORES_BYTES = TILE_SCORES_LENGTH * Float32Array.BYTES_PER_ELEMENT;
+const EXPECTED_FEATURE_BLOB_BYTES = FINGERPRINT_BYTES + HASH_BITS_LENGTH + TILE_SCORES_BYTES;
+const SQLITE_PERSIST_BATCH_SIZE = 24;
+
+interface PersistedPhotoFeatureRecord {
+  path: string;
+  modified: number;
+  fileSize: number;
+  imageWidth: number;
+  imageHeight: number;
+  featuresBase64: string;
+}
+
+export function encodePhotoFeaturesToBase64(features: {
+  fingerprint: Float32Array;
+  hashBits: Uint8Array;
+  tileScores: Float32Array;
+}): string {
+  const bytes = new Uint8Array(EXPECTED_FEATURE_BLOB_BYTES);
+  bytes.set(
+    new Uint8Array(features.fingerprint.buffer, features.fingerprint.byteOffset, FINGERPRINT_BYTES),
+    0
+  );
+  bytes.set(features.hashBits.subarray(0, HASH_BITS_LENGTH), FINGERPRINT_BYTES);
+  bytes.set(
+    new Uint8Array(features.tileScores.buffer, features.tileScores.byteOffset, TILE_SCORES_BYTES),
+    FINGERPRINT_BYTES + HASH_BITS_LENGTH
+  );
+
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+export function decodePhotoFeaturesFromBase64(
+  path: string,
+  imageWidth: number,
+  imageHeight: number,
+  featuresBase64: string
+): ExtractedPhotoFeatures | null {
+  try {
+    const binary = atob(featuresBase64);
+    if (binary.length !== EXPECTED_FEATURE_BLOB_BYTES) return null;
+    const buffer = new ArrayBuffer(EXPECTED_FEATURE_BLOB_BYTES);
+    const bytes = new Uint8Array(buffer);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const fingerprint = new Float32Array(buffer.slice(0, FINGERPRINT_BYTES));
+    const hashBits = new Uint8Array(
+      buffer.slice(FINGERPRINT_BYTES, FINGERPRINT_BYTES + HASH_BITS_LENGTH)
+    );
+    const tileScores = new Float32Array(
+      buffer.slice(FINGERPRINT_BYTES + HASH_BITS_LENGTH, EXPECTED_FEATURE_BLOB_BYTES)
+    );
+    return { path, imageWidth, imageHeight, fingerprint, hashBits, tileScores };
+  } catch {
+    return null;
+  }
+}
+
+async function hydrateFeaturesFromSqlite(
+  entries: PhotoAnalysisEntry[],
+  signal: AbortSignal
+): Promise<Map<string, ExtractedPhotoFeatures>> {
+  const hydrated = new Map<string, ExtractedPhotoFeatures>();
+  const missingEntries: PhotoAnalysisEntry[] = [];
+  for (const item of entries) {
+    const inMemory = getCachedFeatures(item.key);
+    if (inMemory) {
+      hydrated.set(item.entry.path, inMemory);
+    } else {
+      missingEntries.push(item);
+    }
+  }
+  if (missingEntries.length === 0 || signal.aborted) return hydrated;
+
+  try {
+    const rows = await invoke<PersistedPhotoFeatureRecord[]>("get_cached_photo_features", {
+      items: missingEntries.map(({ entry }) => ({
+        path: entry.path,
+        modified: entry.modified ?? 0,
+        fileSize: entry.size,
+      })),
+      analysisVersion: ANALYSIS_VERSION,
+    });
+    if (signal.aborted) return hydrated;
+
+    const keyByPath = new Map(missingEntries.map((item) => [item.entry.path, item.key]));
+    for (const row of rows) {
+      const key = keyByPath.get(row.path);
+      if (!key) continue;
+      const decoded = decodePhotoFeaturesFromBase64(
+        row.path,
+        row.imageWidth,
+        row.imageHeight,
+        row.featuresBase64
+      );
+      if (!decoded) continue;
+      cacheFeatures(key, decoded);
+      hydrated.set(row.path, decoded);
+    }
+  } catch {
+    // SQLite cache is best-effort; fall back to normal decoding if unavailable.
+  }
+
+  return hydrated;
+}
+
+function persistFeaturesToSqlite(records: PersistedPhotoFeatureRecord[]) {
+  if (records.length === 0) return;
+  void invoke("save_cached_photo_features", {
+    records,
+    analysisVersion: ANALYSIS_VERSION,
+  }).catch(() => undefined);
 }
 
 export async function analyzePhotoEntries(
@@ -634,9 +745,48 @@ export async function analyzePhotoEntries(
 ): Promise<Map<string, PhotoAnalysisRecord>> {
   const finalizedByPath = new Map<string, RawPhotoFeatures>();
   const unpublishedFeatures = new Map<string, RawPhotoFeatures>();
-  const pendingByPath = new Map(entries.map((item) => [item.entry.path, item]));
-  let nextIndex = 0;
+  const pendingPersist: PersistedPhotoFeatureRecord[] = [];
   let extractedCompleted = 0;
+
+  // Hydrate previously computed features from memory + SQLite in one batch
+  // before decoding any thumbnails so revisits to large folders finish in ms.
+  const hydrated = await hydrateFeaturesFromSqlite(entries, signal);
+  if (signal.aborted) return new Map();
+
+  const remainingEntries: PhotoAnalysisEntry[] = [];
+  for (const item of entries) {
+    const cached = hydrated.get(item.entry.path);
+    if (cached) {
+      const finalized = finalizePhotoFeatures(cached);
+      finalizedByPath.set(item.entry.path, finalized);
+      unpublishedFeatures.set(item.entry.path, finalized);
+      extractedCompleted += 1;
+    } else {
+      remainingEntries.push(item);
+    }
+  }
+
+  if (unpublishedFeatures.size > 0 && remainingEntries.length > 0) {
+    const partialRecords = new Map<string, PhotoAnalysisRecord>();
+    for (const features of unpublishedFeatures.values()) {
+      partialRecords.set(features.path, { ...features, groupId: null });
+    }
+    unpublishedFeatures.clear();
+    onUpdate(
+      {
+        completed: extractedCompleted,
+        total: entries.length,
+        isAnalyzing: true,
+        stage: "extracting-features",
+        stageCompleted: extractedCompleted,
+        stageTotal: entries.length,
+      },
+      partialRecords
+    );
+  }
+
+  const pendingByPath = new Map(remainingEntries.map((item) => [item.entry.path, item]));
+  let nextIndex = 0;
   const extractionProgressBatch = getProgressBatchSize(entries.length, 12);
 
   const worker = async () => {
@@ -647,8 +797,8 @@ export async function analyzePhotoEntries(
         item = pendingByPath.get(path);
         if (item) break;
       }
-      while (!item && nextIndex < entries.length) {
-        const candidate = entries[nextIndex++];
+      while (!item && nextIndex < remainingEntries.length) {
+        const candidate = remainingEntries[nextIndex++];
         item = pendingByPath.get(candidate.entry.path);
       }
       if (!item) return;
@@ -659,6 +809,17 @@ export async function analyzePhotoEntries(
           const finalized = finalizePhotoFeatures(features);
           finalizedByPath.set(item.entry.path, finalized);
           unpublishedFeatures.set(item.entry.path, finalized);
+          pendingPersist.push({
+            path: item.entry.path,
+            modified: item.entry.modified ?? 0,
+            fileSize: item.entry.size,
+            imageWidth: features.imageWidth,
+            imageHeight: features.imageHeight,
+            featuresBase64: encodePhotoFeaturesToBase64(features),
+          });
+          if (pendingPersist.length >= SQLITE_PERSIST_BATCH_SIZE) {
+            persistFeaturesToSqlite(pendingPersist.splice(0, pendingPersist.length));
+          }
         }
       } catch (error) {
         console.warn(`Failed to analyze photo: ${item.entry.path}`, error);
@@ -694,9 +855,14 @@ export async function analyzePhotoEntries(
     }
   };
 
-  const workerCount = Math.min(MAX_CONCURRENT_ANALYSIS, entries.length);
+  if (remainingEntries.length > 0) {
+    const workerCount = Math.min(MAX_CONCURRENT_ANALYSIS, remainingEntries.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  }
 
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  if (pendingPersist.length > 0) {
+    persistFeaturesToSqlite(pendingPersist.splice(0, pendingPersist.length));
+  }
 
   if (signal.aborted) return new Map();
 

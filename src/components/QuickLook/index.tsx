@@ -21,10 +21,10 @@ import { FocusRegionOverlay } from "@/components/FocusRegionOverlay";
 import { SharpnessInspectorToolbar } from "@/components/SharpnessInspectorToolbar";
 import { SharpnessSelectionOverlay } from "@/components/SharpnessSelectionOverlay";
 import {
-  getFileThumbnailCacheKey,
-  getLargestCachedFileThumbnail,
-  loadFileThumbnail,
-  toImageDataUrl,
+  buildArwEmbeddedJpegUrl,
+  buildFileThumbnailUrl,
+  getLargestLoadedFileThumbnailUrl,
+  loadHtmlImage,
 } from "@/lib/iconCache";
 import { useCameraAfMetadata } from "@/hooks/useCameraAfMetadata";
 import { useSharpnessInspector } from "@/hooks/useSharpnessInspector";
@@ -364,6 +364,7 @@ const ZoomableImageElement = memo(function ZoomableImageElement({
       <img
         key={entry.path}
         src={src}
+        crossOrigin={src.startsWith("thumb:") ? "anonymous" : undefined}
         alt={entry.name}
         width={renderedImageSize?.width}
         height={renderedImageSize?.height}
@@ -1108,17 +1109,15 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
           continue;
         }
 
-        const cacheKey = `quicklook-prefetch:${candidate.path}:${candidate.modified ?? 0}:${candidate.size}:768`;
-        void loadFileThumbnail(
-          cacheKey,
+        const url = buildFileThumbnailUrl(
           candidate.path,
+          candidate.modified,
+          candidate.size,
           768,
-          true,
-          controller.signal,
-          "background",
           false,
-          false
+          true
         );
+        void loadHtmlImage(url, controller.signal).catch(() => undefined);
       }
     }, 90);
 
@@ -1212,8 +1211,8 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
       return null;
     }
 
-    const cached = getLargestCachedFileThumbnail(entryPath, entryModified, entrySize);
-    return cached ? { size: cached.requestSize, src: toImageDataUrl(cached.base64) } : null;
+    const cached = getLargestLoadedFileThumbnailUrl(entryPath, entryModified, entrySize);
+    return cached ? { size: cached.requestSize, src: cached.url } : null;
   }, [entryModified, entryPath, entrySize]);
 
   const dialogStyle = useMemo<CSSProperties | undefined>(() => {
@@ -1437,20 +1436,6 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
     // Sony ARW contains a full-resolution camera JPEG. Reuse it for the
     // fitted preview instead of demosaicing the RAW twice on open.
     const preferEmbeddedPreview = entryExtension.toLowerCase() === "arw";
-    const progressiveCacheKey = getFileThumbnailCacheKey(
-      entryPath,
-      entryModified,
-      entrySize,
-      progressivePreviewRequestSize,
-      preferEmbeddedPreview
-    );
-    const fullCacheKey = getFileThumbnailCacheKey(
-      entryPath,
-      entryModified,
-      entrySize,
-      nativePreviewRequestSize,
-      preferEmbeddedPreview
-    );
 
     const applyPreviewSource = (src: string, requestSize: number) => {
       if (cancelled || requestSize < nativePreviewSizeRef.current) return;
@@ -1462,7 +1447,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
       applyPreviewSource(cachedNativePreview.src, cachedNativePreview.size);
     }
 
-    const loadPreview = (cacheKey: string, requestSize: number) => {
+    const loadPreview = (requestSize: number) => {
       const availableSize = Math.max(
         nativePreviewSizeRef.current,
         nativePreviewTargetSizeRef.current
@@ -1472,21 +1457,19 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
       }
 
       nativePreviewTargetSizeRef.current = requestSize;
-      return loadFileThumbnail(
-        cacheKey,
+      const url = buildFileThumbnailUrl(
         entryPath,
+        entryModified,
+        entrySize,
         requestSize,
-        !preferEmbeddedPreview,
-        controller.signal,
-        "interactive",
         preferEmbeddedPreview,
-        false
-      )
-        .then((base64) => {
-          if (base64) {
-            applyPreviewSource(toImageDataUrl(base64), requestSize);
-          }
+        !preferEmbeddedPreview
+      );
+      return loadHtmlImage(url, controller.signal)
+        .then(() => {
+          applyPreviewSource(url, requestSize);
         })
+        .catch(() => undefined)
         .finally(() => {
           if (nativePreviewTargetSizeRef.current === requestSize) {
             nativePreviewTargetSizeRef.current = nativePreviewSizeRef.current;
@@ -1494,7 +1477,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
         });
     };
 
-    const loadFullPreview = () => loadPreview(fullCacheKey, nativePreviewRequestSize);
+    const loadFullPreview = () => loadPreview(nativePreviewRequestSize);
     if (preferEmbeddedPreview) {
       if (embeddedArwJpegLoadedRef.current) return () => controller.abort();
       if (embeddedArwJpegLoadingRef.current) return () => controller.abort();
@@ -1502,29 +1485,31 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
         embeddedArwJpegAttemptedRef.current = true;
         embeddedArwJpegLoadingRef.current = true;
         const requestedEntryIdentity = entryIdentity;
-        void invoke<string | null>("get_arw_embedded_jpeg", {
-          path: entryPath,
-          maxPixelSize: ARW_INTERACTIVE_PREVIEW_SIZE,
-        })
-          .then((base64) => {
+        const interactiveUrl = buildArwEmbeddedJpegUrl(
+          entryPath,
+          entryModified,
+          entrySize,
+          ARW_INTERACTIVE_PREVIEW_SIZE
+        );
+        const gestureUrl = buildArwEmbeddedJpegUrl(
+          entryPath,
+          entryModified,
+          entrySize,
+          ARW_GESTURE_PREVIEW_SIZE
+        );
+        void loadHtmlImage(interactiveUrl)
+          .then(() => {
             if (activeEntryIdentityRef.current !== requestedEntryIdentity) return;
             embeddedArwJpegLoadingRef.current = false;
-            if (base64) {
-              embeddedArwJpegLoadedRef.current = true;
-              applyPreviewSource(`data:image/jpeg;base64,${base64}`, ARW_INTERACTIVE_PREVIEW_SIZE);
-              void invoke<string | null>("get_arw_embedded_jpeg", {
-                path: entryPath,
-                maxPixelSize: ARW_GESTURE_PREVIEW_SIZE,
+            embeddedArwJpegLoadedRef.current = true;
+            applyPreviewSource(interactiveUrl, ARW_INTERACTIVE_PREVIEW_SIZE);
+            void loadHtmlImage(gestureUrl)
+              .then(() => {
+                if (activeEntryIdentityRef.current === requestedEntryIdentity) {
+                  setInteractionPreviewSrc(gestureUrl);
+                }
               })
-                .then((gestureBase64) => {
-                  if (gestureBase64 && activeEntryIdentityRef.current === requestedEntryIdentity) {
-                    setInteractionPreviewSrc(`data:image/jpeg;base64,${gestureBase64}`);
-                  }
-                })
-                .catch(() => {});
-            } else {
-              void loadFullPreview();
-            }
+              .catch(() => {});
           })
           .catch(() => {
             if (activeEntryIdentityRef.current !== requestedEntryIdentity) return;
@@ -1546,7 +1531,7 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
       !preferEmbeddedPreview &&
       shouldUpgradeNativePreview(availableSize, progressivePreviewRequestSize)
     ) {
-      void loadPreview(progressiveCacheKey, progressivePreviewRequestSize).finally(() => {
+      void loadPreview(progressivePreviewRequestSize).finally(() => {
         if (!cancelled) void loadFullPreview();
       });
     } else {
@@ -1642,22 +1627,11 @@ export function QuickLook({ entry, entries, photoAnalysis, onClose, onNavigate }
       return;
     }
 
-    if (fallbackSrc) {
-      setUseNativeImagePreview(true);
-      setError(null);
-      return;
-    }
-
-    invoke<string>("read_image_base64", { path: entryPath })
-      .then((base64) => {
-        setFallbackSrc(base64);
-        setError(null);
-      })
-      .catch(() => {
-        setUseNativeImagePreview(true);
-        setError(null);
-      });
-  }, [entryPath, fallbackSrc]);
+    // Fall back directly to the binary `thumb://` protocol (works for external
+    // volumes outside asset scope without encoding the image as Base64).
+    setUseNativeImagePreview(true);
+    setError(null);
+  }, [entryPath]);
 
   if (!entry) return null;
 

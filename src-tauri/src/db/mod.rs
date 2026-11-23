@@ -3,10 +3,14 @@
 //! 提供持久化文件索引，支持 FTS5 全文搜索
 
 mod indexer;
+mod photo_cache;
 mod schema;
 mod search;
 
 pub use indexer::{IndexBuilder, IndexUpdater};
+pub use photo_cache::{
+    CachedPhotoFeatureRecord, CachedPhotoSharpnessRecord, PhotoCacheLookup, PhotoCacheStore,
+};
 pub use search::SearchEngine;
 
 use rusqlite::Connection;
@@ -251,6 +255,6 @@ mod tests {
                 row.get(0)
             })
             .expect("schema version");
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
     }
 }

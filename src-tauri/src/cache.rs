@@ -139,6 +139,146 @@ impl IconLruCache {
 /// 图标缓存（O(1) 均摊 LRU + 字节预算）
 static ICON_CACHE: Lazy<Mutex<IconLruCache>> = Lazy::new(|| Mutex::new(IconLruCache::default()));
 
+/// 原始二进制缩略图缓存（供自定义 thumb:// 协议零 Base64 返回）
+#[derive(Clone)]
+pub struct CachedImageBytes {
+    pub bytes: Arc<Vec<u8>>,
+    pub mime: &'static str,
+}
+
+pub fn detect_image_mime(bytes: &[u8]) -> &'static str {
+    if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xD8 {
+        "image/jpeg"
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else {
+        "image/png"
+    }
+}
+
+struct BytesLruEntry {
+    image: CachedImageBytes,
+    timestamp: Instant,
+    sequence: u64,
+}
+
+#[derive(Default)]
+struct BytesLruCache {
+    entries: HashMap<String, BytesLruEntry>,
+    order: VecDeque<(String, u64)>,
+    total_bytes: usize,
+    next_sequence: u64,
+}
+
+impl BytesLruCache {
+    fn get(&mut self, key: &str) -> Option<CachedImageBytes> {
+        let expired = self
+            .entries
+            .get(key)
+            .is_some_and(|entry| entry.timestamp.elapsed() > ICON_CACHE_TTL);
+        if expired {
+            if let Some(removed) = self.entries.remove(key) {
+                self.total_bytes = self.total_bytes.saturating_sub(removed.image.bytes.len());
+            }
+            return None;
+        }
+
+        let seq = self.next_sequence.wrapping_add(1);
+        self.next_sequence = seq;
+        let image = {
+            let entry = self.entries.get_mut(key)?;
+            entry.sequence = seq;
+            entry.image.clone()
+        };
+        self.order.push_back((key.to_string(), seq));
+        self.compact_order_if_needed();
+        Some(image)
+    }
+
+    fn insert(&mut self, key: String, bytes: Vec<u8>) -> CachedImageBytes {
+        let mime = detect_image_mime(&bytes);
+        let new_bytes = bytes.len();
+        let image = CachedImageBytes {
+            bytes: Arc::new(bytes),
+            mime,
+        };
+        // Skip caching oversized single preview frames (>8MB) so a 4K RAW preview
+        // does not flush hundreds of grid thumbnails from the LRU cache.
+        if new_bytes > 8 * 1024 * 1024 {
+            return image;
+        }
+        let seq = self.next_sequence.wrapping_add(1);
+        self.next_sequence = seq;
+        if let Some(previous) = self.entries.insert(
+            key.clone(),
+            BytesLruEntry {
+                image: image.clone(),
+                timestamp: Instant::now(),
+                sequence: seq,
+            },
+        ) {
+            self.total_bytes = self.total_bytes.saturating_sub(previous.image.bytes.len());
+        }
+        self.total_bytes = self.total_bytes.saturating_add(new_bytes);
+        self.order.push_back((key, seq));
+        self.evict_if_needed();
+        image
+    }
+
+    fn evict_if_needed(&mut self) {
+        while let Some((oldest_key, oldest_seq)) = self.order.front() {
+            let Some(entry) = self.entries.get(oldest_key) else {
+                self.order.pop_front();
+                continue;
+            };
+            if entry.sequence != *oldest_seq {
+                self.order.pop_front();
+                continue;
+            }
+            let over_limit = self.entries.len() > MAX_ICON_CACHE_ENTRIES
+                || self.total_bytes > MAX_ICON_CACHE_BYTES;
+            let expired = entry.timestamp.elapsed() > ICON_CACHE_TTL;
+            if !over_limit && !expired {
+                break;
+            }
+            let (evict_key, _) = self.order.pop_front().expect("front exists");
+            if let Some(removed) = self.entries.remove(&evict_key) {
+                self.total_bytes = self.total_bytes.saturating_sub(removed.image.bytes.len());
+            }
+        }
+        self.compact_order_if_needed();
+    }
+
+    fn compact_order_if_needed(&mut self) {
+        if self.order.len() > self.entries.len().saturating_mul(4).max(256) {
+            self.order.retain(|(key, seq)| {
+                self.entries
+                    .get(key)
+                    .is_some_and(|entry| entry.sequence == *seq)
+            });
+        }
+    }
+}
+
+static THUMB_BYTES_CACHE: Lazy<Mutex<BytesLruCache>> =
+    Lazy::new(|| Mutex::new(BytesLruCache::default()));
+
+/// 获取原始二进制缩略图缓存
+pub fn get_thumb_bytes_cache(key: &str) -> Option<CachedImageBytes> {
+    let mut cache = THUMB_BYTES_CACHE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    cache.get(key)
+}
+
+/// 设置原始二进制缩略图缓存
+pub fn set_thumb_bytes_cache(key: String, bytes: Vec<u8>) -> CachedImageBytes {
+    let mut cache = THUMB_BYTES_CACHE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    cache.insert(key, bytes)
+}
+
 /// 淘汰过期条目，如果仍超限则移除最旧的条目
 fn evict_cache<T>(cache: &DashMap<String, CacheEntry<T>>, ttl: Duration, max_size: usize) {
     // 先移除过期条目

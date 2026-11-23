@@ -176,10 +176,142 @@ const keyedRefreshCallbacks = new Map<string, Set<() => void>>();
 // Keep the request size in one place so visible thumbnails and background
 // analysis can share the native thumbnail/cache entry.
 export function toImageDataUrl(base64: string): string {
-  if (base64.startsWith("data:")) return base64;
+  if (base64.startsWith("data:") || base64.startsWith("thumb:") || base64.startsWith("asset:")) {
+    return base64;
+  }
   if (base64.startsWith("/9j/")) return `data:image/jpeg;base64,${base64}`;
   if (base64.startsWith("UklGR")) return `data:image/webp;base64,${base64}`;
   return `data:image/png;base64,${base64}`;
+}
+
+/**
+ * 构建自定义 `thumb://` 二进制缩略图 URL。
+ * 由 Rust 异步协议处理器直接返回原始 JPEG/PNG 字节，彻底消除 Base64 传输与 JS 堆驻留。
+ */
+export function buildFileThumbnailUrl(
+  path: string,
+  modified: number | null | undefined,
+  fileSize: number,
+  size: number,
+  preferEmbedded = false,
+  allowIconFallback = false
+): string {
+  const params = new URLSearchParams({
+    path,
+    size: String(Math.round(size)),
+    embedded: preferEmbedded ? "1" : "0",
+    fallback: allowIconFallback ? "1" : "0",
+    v: `${modified ?? 0}-${fileSize}`,
+  });
+  return `thumb://localhost/file?${params.toString()}`;
+}
+
+export function buildArwEmbeddedJpegUrl(
+  path: string,
+  modified: number | null | undefined,
+  fileSize: number,
+  maxPixelSize: number
+): string {
+  const params = new URLSearchParams({
+    path,
+    max: String(Math.round(maxPixelSize)),
+    v: `${modified ?? 0}-${fileSize}`,
+  });
+  return `thumb://localhost/arw?${params.toString()}`;
+}
+
+// 轻量元数据索引：仅记录已成功加载/失败的 `thumb://` URL（不存任何 Base64 字节）
+const MAX_LOADED_URL_RECORDS = 4_000;
+const loadedThumbnailUrlsByFile = new Map<string, { requestSize: number; url: string }>();
+const failedThumbnailUrls = new Set<string>();
+
+function fileUrlIdentity(path: string, modified: number | null | undefined, fileSize: number) {
+  return `${path}\u0000${modified ?? 0}\u0000${fileSize}`;
+}
+
+export function markFileThumbnailLoaded(
+  path: string,
+  modified: number | null | undefined,
+  fileSize: number,
+  requestSize: number,
+  url: string
+) {
+  failedThumbnailUrls.delete(url);
+  const id = fileUrlIdentity(path, modified, fileSize);
+  const existing = loadedThumbnailUrlsByFile.get(id);
+  if (!existing || requestSize >= existing.requestSize) {
+    loadedThumbnailUrlsByFile.delete(id);
+    loadedThumbnailUrlsByFile.set(id, { requestSize, url });
+    while (loadedThumbnailUrlsByFile.size > MAX_LOADED_URL_RECORDS) {
+      const oldest = loadedThumbnailUrlsByFile.keys().next().value as string | undefined;
+      if (!oldest) break;
+      loadedThumbnailUrlsByFile.delete(oldest);
+    }
+  }
+}
+
+export function markFileThumbnailFailed(url: string) {
+  failedThumbnailUrls.add(url);
+  if (failedThumbnailUrls.size > MAX_LOADED_URL_RECORDS) {
+    const oldest = failedThumbnailUrls.values().next().value as string | undefined;
+    if (oldest) failedThumbnailUrls.delete(oldest);
+  }
+}
+
+export function isFileThumbnailFailed(url: string) {
+  return failedThumbnailUrls.has(url);
+}
+
+export function getLargestLoadedFileThumbnailUrl(
+  path: string,
+  modified: number | null | undefined,
+  fileSize: number
+): { requestSize: number; url: string } | null {
+  const entry = loadedThumbnailUrlsByFile.get(fileUrlIdentity(path, modified, fileSize));
+  if (entry) return entry;
+  const legacy = getLargestCachedFileThumbnail(path, modified, fileSize);
+  if (legacy) {
+    return { requestSize: legacy.requestSize, url: toImageDataUrl(legacy.base64) };
+  }
+  return null;
+}
+
+/**
+ * 通过 `thumb://` 等 URL 加载可安全读取像素的 HTMLImageElement（设置 crossOrigin="anonymous" 防止 canvas 污染）。
+ */
+export function loadHtmlImage(url: string, signal?: AbortSignal): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("Image load was cancelled", "AbortError"));
+      return;
+    }
+
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.decoding = "async";
+
+    const cleanup = () => {
+      image.onload = null;
+      image.onerror = null;
+      signal?.removeEventListener("abort", handleAbort);
+    };
+    const handleAbort = () => {
+      cleanup();
+      image.src = "";
+      reject(new DOMException("Image load was cancelled", "AbortError"));
+    };
+
+    image.onload = () => {
+      cleanup();
+      resolve(image);
+    };
+    image.onerror = () => {
+      cleanup();
+      reject(new Error(`Unable to load image: ${url}`));
+    };
+    signal?.addEventListener("abort", handleAbort, { once: true });
+    image.src = url;
+  });
 }
 
 export function getThumbnailRequestSize(size: number, requestSizeOverride?: number) {

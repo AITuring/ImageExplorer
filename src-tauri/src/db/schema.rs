@@ -2,7 +2,7 @@
 
 use rusqlite::Connection;
 
-const CURRENT_SCHEMA_VERSION: i64 = 3;
+const CURRENT_SCHEMA_VERSION: i64 = 4;
 
 /// 初始化数据库 schema
 pub fn init(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -72,6 +72,37 @@ pub fn init(conn: &Connection) -> Result<(), rusqlite::Error> {
                 "CREATE INDEX IF NOT EXISTS idx_files_extension_lower ON files(LOWER(extension)) WHERE is_dir = 0;",
             )?;
             record_migration(conn, 3)?;
+        }
+
+        if version < 4 {
+            conn.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS photo_analysis_cache (
+                    path TEXT PRIMARY KEY NOT NULL,
+                    modified INTEGER NOT NULL,
+                    file_size INTEGER NOT NULL,
+                    analysis_version INTEGER NOT NULL,
+                    image_width INTEGER NOT NULL,
+                    image_height INTEGER NOT NULL,
+                    features_blob BLOB NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_photo_analysis_cache_updated
+                    ON photo_analysis_cache(updated_at);
+
+                CREATE TABLE IF NOT EXISTS photo_sharpness_cache (
+                    path TEXT PRIMARY KEY NOT NULL,
+                    modified INTEGER NOT NULL,
+                    file_size INTEGER NOT NULL,
+                    sharpness_version INTEGER NOT NULL,
+                    verdict TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_photo_sharpness_cache_updated
+                    ON photo_sharpness_cache(updated_at);
+                "#,
+            )?;
+            record_migration(conn, 4)?;
         }
     }
 
