@@ -71,7 +71,7 @@ impl FileIndex {
                 let path = entry.path();
                 let path_str = path.to_string_lossy();
 
-                if path_str.contains("/Library/Caches/")
+                !(path_str.contains("/Library/Caches/")
                     || path_str.contains("/Library/Logs/")
                     || path_str.contains("/.Trash/")
                     || path_str.contains("/node_modules/")
@@ -80,11 +80,7 @@ impl FileIndex {
                     || path_str.contains("/.npm/")
                     || path_str.contains("/.pnpm-store/")
                     || path_str.contains("/target/debug/")
-                    || path_str.contains("/target/release/")
-                {
-                    return false;
-                }
-                true
+                    || path_str.contains("/target/release/"))
             })
             .build();
 
@@ -531,13 +527,9 @@ fn handle_event(index: &SharedIndex, event: Event) {
     // 简单的过滤逻辑
     let should_ignore = |path: &std::path::Path| -> bool {
         let path_str = path.to_string_lossy();
-        if path_str.contains("/.")
+        path_str.contains("/.")
             || path_str.contains("/Library/")
             || path_str.contains("/node_modules/")
-        {
-            return true;
-        }
-        false
     };
 
     match event.kind {
