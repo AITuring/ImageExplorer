@@ -35,6 +35,7 @@ interface FileGridItemProps {
   visibleSharpness?: VisibleSharpness;
   photoGroupColor?: string;
   photoAnalysisEnabled?: boolean;
+  iconSize?: number;
   isScrolling?: boolean;
   isInViewport?: boolean;
 }
@@ -59,6 +60,7 @@ export const FileGridItem = memo(function FileGridItem({
   visibleSharpness,
   photoGroupColor,
   photoAnalysisEnabled = false,
+  iconSize = 160,
   isScrolling = false,
   isInViewport = true,
 }: FileGridItemProps) {
@@ -74,7 +76,9 @@ export const FileGridItem = memo(function FileGridItem({
     entry,
     photoAnalysisEnabled && isSelected && canLoadViewportData
   );
-  const thumbnailSize = photoAnalysisEnabled && !entry.is_dir ? 144 : 64;
+  const thumbnailSize = entry.is_dir
+    ? Math.max(48, Math.min(96, Math.round(iconSize * 0.44)))
+    : Math.max(80, Math.round(iconSize - 24));
   const cameraAfRegions = getCameraAfRegions(cameraAfMetadata);
   const focusRegions =
     cameraAfRegions ??

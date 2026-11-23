@@ -4,7 +4,9 @@ import { getPhotoMetadataSummary } from "@/lib/photoMetadata";
 import { isAnalyzablePhoto } from "@/lib/photoAnalysis";
 import type { VisibleSharpness } from "@/hooks/useVisibleSharpness";
 import { memo, useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import type { FileEntry } from "@/types/index";
+import type { ListColumnVisibility, ListColumnWidths } from "@/stores/viewMode";
 import { CompactFileThumbnail } from "./CompactFileThumbnail";
 import { FinderTagDots } from "@/components/FinderTagDots";
 import { Input } from "@/components/ui/input";
@@ -30,6 +32,8 @@ interface FileListItemProps {
   onItemNameClick?: (entry: FileEntry, index: number, e: React.MouseEvent) => void;
   onItemDoubleClick?: (entry: FileEntry) => void;
   onMove?: (source: string, target: string) => void;
+  columnWidths?: ListColumnWidths;
+  columnVisibility?: ListColumnVisibility;
 }
 
 export const FileListItem = memo(function FileListItem({
@@ -51,7 +55,10 @@ export const FileListItem = memo(function FileListItem({
   onItemClick,
   onItemNameClick,
   onItemDoubleClick,
+  columnWidths,
+  columnVisibility,
 }: FileListItemProps) {
+  const { t } = useTranslation();
   const metadata = usePhotoMetadata(entry, isInViewport && !isScrolling);
   const summary = getPhotoMetadataSummary(metadata);
   const isPhoto = isAnalyzablePhoto(entry);
@@ -131,12 +138,39 @@ export const FileListItem = memo(function FileListItem({
       <div className="finder-list-exposure shrink-0 px-2">
         {isPhoto && <PhotoParameters summary={summary} compact />}
       </div>
-      <div className="text-muted-foreground w-24 shrink-0 px-2 text-right">
+      {columnVisibility?.kind && (
+        <div
+          style={{ width: `${columnWidths?.kind ?? 88}px` }}
+          className="text-muted-foreground shrink-0 truncate px-2 text-right text-xs"
+        >
+          {entry.is_dir
+            ? t("common.folder")
+            : entry.package_type?.toUpperCase() ||
+              entry.extension?.toUpperCase() ||
+              t("common.file")}
+        </div>
+      )}
+      <div
+        style={{ width: `${columnWidths?.size ?? 96}px` }}
+        className="text-muted-foreground shrink-0 px-2 text-right tabular-nums"
+      >
         {entry.is_dir ? "--" : formatFileSize(entry.size)}
       </div>
-      <div className="text-muted-foreground w-28 shrink-0 px-2 text-right">
+      <div
+        style={{ width: `${columnWidths?.date ?? 112}px` }}
+        className="text-muted-foreground shrink-0 px-2 text-right tabular-nums"
+      >
         {formatDate(entry.modified)}
       </div>
+      {columnVisibility?.created && (
+        <div
+          style={{ width: `${columnWidths?.created ?? 112}px` }}
+          className="text-muted-foreground shrink-0 px-2 text-right tabular-nums"
+        >
+          {formatDate(entry.created ?? null)}
+        </div>
+      )}
+      <div className="w-5 shrink-0" />
     </div>
   );
 });

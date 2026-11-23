@@ -11,6 +11,7 @@ import {
   LayoutGrid,
   List as ListIcon,
   Columns,
+  GalleryHorizontalEnd,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AppContextMenu } from "@/components/AppContextMenu";
@@ -30,6 +31,7 @@ import { registerKeyboardCommands } from "@/lib/keyboardShortcuts";
 import { viewModeCommands } from "@/lib/viewModeCommands";
 import { PhotoAnalysisProgressIndicator } from "@/components/PhotoAnalysisProgressIndicator";
 import { matchFinderTagPreset } from "@/lib/finderTags";
+import { filterSearchResultsByKind, type SearchKindFilter } from "@/lib/searchFilter";
 import {
   enqueueCompressOperation,
   enqueueExtractOperation,
@@ -95,11 +97,16 @@ export function TopBar({ onNavigate }: TopBarProps) {
   const [indexReconciling, setIndexReconciling] = useState(false);
   const [indexFailed, setIndexFailed] = useState(false);
   const [searchScope, setSearchScope] = useState<SearchScope>("indexed");
+  const [searchKindFilter, setSearchKindFilter] = useState<SearchKindFilter>("all");
   const [searchHasMore, setSearchHasMore] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const visibleSearchResults = useMemo(
-    () => filterHiddenEntries(searchResults, showHiddenFiles),
-    [searchResults, showHiddenFiles]
+    () =>
+      filterSearchResultsByKind(
+        filterHiddenEntries(searchResults, showHiddenFiles),
+        searchKindFilter
+      ),
+    [searchKindFilter, searchResults, showHiddenFiles]
   );
 
   const inputRef = useRef<HTMLInputElement>(null);
@@ -813,6 +820,19 @@ export function TopBar({ onNavigate }: TopBarProps) {
           >
             <Columns className="h-4 w-4" />
           </button>
+          <button
+            className={`rounded-sm p-1 transition-colors ${
+              viewMode === "gallery"
+                ? "bg-accent text-accent-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => runCommand(viewModeCommands.gallery)}
+            disabled={!isCommandEnabled(viewModeCommands.gallery)}
+            aria-pressed={viewMode === "gallery"}
+            title={t("common.view_gallery")}
+          >
+            <GalleryHorizontalEnd className="h-4 w-4" />
+          </button>
         </div>
 
         {/* 搜索框 */}
@@ -892,6 +912,36 @@ export function TopBar({ onNavigate }: TopBarProps) {
                 >
                   {t("search.scope_current")}
                 </button>
+              </div>
+              <div
+                className="border-border/60 flex flex-wrap gap-1 border-b px-2 py-1.5"
+                role="group"
+                aria-label={t("search.filter_label")}
+              >
+                {(
+                  [
+                    ["all", "search.filter_all"],
+                    ["image", "search.filter_image"],
+                    ["raw", "search.filter_raw"],
+                    ["video", "search.filter_video"],
+                    ["document", "search.filter_document"],
+                    ["folder", "search.filter_folder"],
+                  ] as const
+                ).map(([kind, labelKey]) => (
+                  <button
+                    key={kind}
+                    type="button"
+                    className={`rounded-full px-2 py-0.5 text-[11px] transition-colors ${
+                      searchKindFilter === kind
+                        ? "bg-primary/15 text-primary font-medium"
+                        : "text-muted-foreground hover:bg-accent"
+                    }`}
+                    onClick={() => setSearchKindFilter(kind)}
+                    aria-pressed={searchKindFilter === kind}
+                  >
+                    {t(labelKey)}
+                  </button>
+                ))}
               </div>
               {isSearching ? (
                 <div className="text-muted-foreground flex items-center justify-center p-4 text-sm">

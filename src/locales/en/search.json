@@ -9,5 +9,12 @@
   "index_reconciling": "Checking Home files; results may not be up to date yet",
   "index_failed": "Index refresh failed; results may be out of date",
   "no_results": "No results found",
-  "results_label": "Results"
+  "results_label": "Results",
+  "filter_label": "Filter by kind",
+  "filter_all": "All",
+  "filter_image": "Images",
+  "filter_raw": "RAW",
+  "filter_video": "Videos",
+  "filter_document": "Documents",
+  "filter_folder": "Folders"
 }

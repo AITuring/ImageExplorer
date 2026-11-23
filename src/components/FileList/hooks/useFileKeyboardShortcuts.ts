@@ -376,13 +376,14 @@ export function useFileKeyboardShortcuts(
             isModifierPressed(event) &&
             !event.shiftKey &&
             !event.altKey &&
-            ["1", "2", "3"].includes(event.key),
+            ["1", "2", "3", "4"].includes(event.key),
           enabled: () => !optionsRef.current.legacyTabNumberShortcuts,
           run: (event) => {
             const modes: Record<string, ViewMode> = {
               "1": "icon",
               "2": "list",
               "3": "column",
+              "4": "gallery",
             };
             const mode = modes[event.key];
             if (mode) runCommand(viewModeCommands[mode]);
@@ -417,7 +418,8 @@ export function useFileKeyboardShortcuts(
             !event.altKey &&
             (event.key === "ArrowDown" ||
               event.key === "ArrowUp" ||
-              (optionsRef.current.viewMode === "icon" &&
+              ((optionsRef.current.viewMode === "icon" ||
+                optionsRef.current.viewMode === "gallery") &&
                 (event.key === "ArrowLeft" || event.key === "ArrowRight"))),
           enabled: () => optionsRef.current.sortedEntries.length > 0,
           run: (event) => {
@@ -431,6 +433,9 @@ export function useFileKeyboardShortcuts(
               if (event.key === "ArrowUp") step = -current.gridColumns;
               if (event.key === "ArrowRight") step = 1;
               if (event.key === "ArrowLeft") step = -1;
+            } else if (current.viewMode === "gallery") {
+              if (event.key === "ArrowDown" || event.key === "ArrowRight") step = 1;
+              if (event.key === "ArrowUp" || event.key === "ArrowLeft") step = -1;
             } else {
               if (event.key === "ArrowDown") step = 1;
               if (event.key === "ArrowUp") step = -1;

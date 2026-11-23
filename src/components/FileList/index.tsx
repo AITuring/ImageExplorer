@@ -19,6 +19,7 @@ import { useFileOperations } from "./hooks/useFileOperations";
 import { useFileKeyboardShortcuts } from "./hooks/useFileKeyboardShortcuts";
 import { useFileEntries } from "./hooks/useFileEntries";
 import { useFileRename } from "./hooks/useFileRename";
+import { useMarqueeSelection } from "./hooks/useMarqueeSelection";
 import { useQuickLook } from "./hooks/useQuickLook";
 import { usePhotoAnalysis } from "@/hooks/usePhotoAnalysis";
 import { FolderSharpnessPanel } from "@/components/FolderSharpnessPanel";
@@ -27,6 +28,7 @@ import { getPhotoGroupColor } from "@/lib/photoAnalysis";
 import { FileListHeader } from "./components/FileListHeader";
 import { FileListItem } from "./components/FileListItem";
 import { FileGridItem } from "./components/FileGridItem";
+import { FileGalleryView } from "./components/FileGalleryView";
 import {
   FileColumnView,
   type ColumnNavigationHandle,
@@ -41,9 +43,8 @@ import { useStatusBar } from "@/stores/statusBar";
 
 /** 列表视图固定行高 */
 const LIST_ITEM_HEIGHT = 32;
-/** 文件夹行保持 Finder 式紧凑间距；照片行仍给分析信息留空间。 */
+/** 文件夹行保持 Finder 式紧凑间距 */
 const GRID_ROW_HEIGHT = 116;
-const PHOTO_GRID_ROW_HEIGHT = 264;
 /** 网格项最小宽度 */
 const GRID_ITEM_MIN_WIDTH = 132;
 /** 网格间距 */
@@ -110,7 +111,7 @@ function makeDragHandlers(
 
 export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProps) {
   const { t } = useTranslation();
-  const { viewMode } = useViewMode();
+  const { viewMode, iconSize, listColumnWidths, listColumnVisibility } = useViewMode();
   // Photo details and analysis are available automatically in every view.
   const photoAnalysisEnabled = true;
   const { addTab, activeTab, goBack, goForward, canGoBack, canGoForward } = useTabs();
@@ -159,6 +160,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     toggleSelection,
     selectRange,
     selectAll,
+    selectPaths,
     clearSelection,
     editingPath,
     setEditingPath,
@@ -168,7 +170,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
 
   useEffect(() => {
     if (
-      viewMode === "column" &&
+      (viewMode === "column" || viewMode === "gallery") &&
       !loading &&
       !selectedPath &&
       !fileToSelect &&
@@ -404,18 +406,21 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     return null;
   }, []);
 
+  const gridItemWidth = Math.max(GRID_ITEM_MIN_WIDTH, iconSize + 16);
+  const photoGridRowHeight = Math.max(212, iconSize + 104);
+  const folderGridRowHeight = Math.max(GRID_ROW_HEIGHT, Math.round(iconSize * 0.65) + 42);
+
   // 计算网格每行列数
   const updateGridColumns = useCallback(() => {
     const el = gridScrollRef.current;
     if (!el) return;
     const containerWidth = el.clientWidth - 16; // p-2 padding
-    const itemWidth = photoAnalysisEnabled ? 176 : GRID_ITEM_MIN_WIDTH;
     const nextColumns = Math.max(
       1,
-      Math.floor((containerWidth + GRID_GAP) / (itemWidth + GRID_GAP))
+      Math.floor((containerWidth + GRID_GAP) / (gridItemWidth + GRID_GAP))
     );
     setGridColumns((current) => (current === nextColumns ? current : nextColumns));
-  }, [photoAnalysisEnabled]);
+  }, [gridItemWidth]);
 
   useEffect(() => {
     updateGridColumns();
@@ -446,20 +451,45 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     count: gridRowCount,
     getScrollElement: () => gridScrollRef.current,
     estimateSize: (rowIndex) => {
-      if (!photoAnalysisEnabled) return GRID_ROW_HEIGHT;
+      if (!photoAnalysisEnabled) return folderGridRowHeight;
       const start = rowIndex * gridColumns;
       const end = Math.min(sortedEntries.length, start + gridColumns);
       for (let i = start; i < end; i += 1) {
-        if (!sortedEntries[i].is_dir) return PHOTO_GRID_ROW_HEIGHT;
+        if (!sortedEntries[i].is_dir) return photoGridRowHeight;
       }
-      return GRID_ROW_HEIGHT;
+      return folderGridRowHeight;
     },
     overscan: 2,
     useAnimationFrameWithResizeObserver: true,
   });
   useEffect(() => {
     gridVirtualizer.measure();
-  }, [gridColumns, photoAnalysisEnabled, sortedEntries, gridVirtualizer]);
+  }, [
+    folderGridRowHeight,
+    gridColumns,
+    photoAnalysisEnabled,
+    photoGridRowHeight,
+    sortedEntries,
+    gridVirtualizer,
+  ]);
+
+  const { marqueeRect: listMarqueeRect, handleMarqueeMouseDown: handleListMarqueeMouseDown } =
+    useMarqueeSelection({
+      containerRef: listScrollRef,
+      enabled: viewMode === "list" && !editingPath,
+      selectedPaths,
+      onSelectPaths: selectPaths,
+      onClearSelection: clearSelection,
+    });
+
+  const { marqueeRect: gridMarqueeRect, handleMarqueeMouseDown: handleGridMarqueeMouseDown } =
+    useMarqueeSelection({
+      containerRef: gridScrollRef,
+      enabled: viewMode === "icon" && !editingPath,
+      selectedPaths,
+      onSelectPaths: selectPaths,
+      onClearSelection: clearSelection,
+    });
   const gridIsScrolling = viewMode === "icon" && gridVirtualizer.isScrolling;
   const gridViewportStartRow = gridVirtualizer.range?.startIndex ?? null;
   const gridViewportEndRow = gridVirtualizer.range?.endIndex ?? null;
@@ -523,7 +553,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   useEffect(() => {
     const locationKey = `${viewMode}:${currentPath}`;
     if (loading || restoredViewRef.current === locationKey) return;
-    if (viewMode === "column") {
+    if (viewMode === "column" || viewMode === "gallery") {
       restoredViewRef.current = locationKey;
       return;
     }
@@ -898,7 +928,19 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                 gridVirtualizer.scrollToIndex(Math.floor(index / gridColumns), { align: "center" });
             }}
           />
-          {viewMode === "column" ? (
+          {viewMode === "gallery" ? (
+            <FileGalleryView
+              entries={sortedEntries}
+              selectedPath={selectedPath}
+              selectedPaths={selectedPaths}
+              selectedFileEntries={selectedFileEntries}
+              fileActions={fileActions}
+              visibleSharpness={visibleSharpness}
+              onSelect={(entry, index, event) => handleClick(entry, index, event)}
+              onSelectSingle={selectSingle}
+              onDoubleClick={handleOpen}
+            />
+          ) : viewMode === "column" ? (
             <FileColumnView
               currentPath={currentPath}
               selectedPaths={selectedPaths}
@@ -932,7 +974,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
               {emptyMessage}
               <div
                 ref={listScrollRef}
-                className="finder-list-scroll h-[calc(100%-2.5rem)] overflow-y-auto"
+                onMouseDown={handleListMarqueeMouseDown}
+                className="finder-list-scroll relative h-[calc(100%-2.5rem)] overflow-y-auto select-none"
               >
                 <div
                   style={{
@@ -941,6 +984,17 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                     position: "relative",
                   }}
                 >
+                  {listMarqueeRect && (
+                    <div
+                      className="border-primary/70 bg-primary/15 pointer-events-none absolute z-30 rounded-[2px] border"
+                      style={{
+                        left: `${listMarqueeRect.left}px`,
+                        top: `${listMarqueeRect.top}px`,
+                        width: `${listMarqueeRect.width}px`,
+                        height: `${listMarqueeRect.height}px`,
+                      }}
+                    />
+                  )}
                   {listVirtualizer.getVirtualItems().map((virtualItem) => {
                     const entry = sortedEntries[virtualItem.index];
                     if (!entry) return null;
@@ -955,6 +1009,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                       <div
                         key={entry.path}
                         data-index={virtualItem.index}
+                        data-marquee-item="true"
+                        data-marquee-path={entry.path}
                         ref={listVirtualizer.measureElement}
                         style={{
                           position: "absolute",
@@ -989,6 +1045,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                             onItemClick={handleClick}
                             onItemNameClick={handleNameClick}
                             onItemDoubleClick={handleOpen}
+                            columnWidths={listColumnWidths}
+                            columnVisibility={listColumnVisibility}
                           />
                         </AppContextMenu>
                       </div>
@@ -1000,7 +1058,11 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
           ) : (
             <>
               {emptyMessage}
-              <div ref={gridScrollRef} className="file-grid-scrollbar h-full overflow-y-scroll">
+              <div
+                ref={gridScrollRef}
+                onMouseDown={handleGridMarqueeMouseDown}
+                className="file-grid-scrollbar relative h-full overflow-y-scroll select-none"
+              >
                 <div
                   style={{
                     height: `${gridVirtualizer.getTotalSize()}px`,
@@ -1008,6 +1070,17 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                     position: "relative",
                   }}
                 >
+                  {gridMarqueeRect && (
+                    <div
+                      className="border-primary/70 bg-primary/15 pointer-events-none absolute z-30 rounded-[2px] border"
+                      style={{
+                        left: `${gridMarqueeRect.left}px`,
+                        top: `${gridMarqueeRect.top}px`,
+                        width: `${gridMarqueeRect.width}px`,
+                        height: `${gridMarqueeRect.height}px`,
+                      }}
+                    />
+                  )}
                   {gridVirtualizer.getVirtualItems().map((virtualRow) => {
                     const cols = gridColumns;
                     const startIdx = virtualRow.index * cols;
@@ -1028,7 +1101,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                         <div
                           className="grid gap-3 p-2"
                           style={{
-                            gridTemplateColumns: `repeat(${cols}, minmax(0, ${photoAnalysisEnabled ? 176 : GRID_ITEM_MIN_WIDTH}px))`,
+                            gridTemplateColumns: `repeat(${cols}, minmax(0, ${gridItemWidth}px))`,
                           }}
                         >
                           {rowEntries.map((entry, colIdx) => {
@@ -1042,7 +1115,12 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                             );
                             const analysis = photoAnalysis.get(entry.path);
                             return (
-                              <div key={entry.path} {...dragHandlers}>
+                              <div
+                                key={entry.path}
+                                data-marquee-item="true"
+                                data-marquee-path={entry.path}
+                                {...dragHandlers}
+                              >
                                 <AppContextMenu
                                   type={entry.is_dir ? "folder" : "file"}
                                   entry={entry}
@@ -1065,6 +1143,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                                     photoAnalysis={analysis}
                                     visibleSharpness={visibleSharpness.get(entry.path)}
                                     photoAnalysisEnabled={photoAnalysisEnabled}
+                                    iconSize={iconSize}
                                     isScrolling={gridIsScrolling}
                                     isInViewport={gridViewportPathSet.has(entry.path)}
                                     photoGroupColor={getPhotoGroupColor(analysis?.groupId ?? null)}

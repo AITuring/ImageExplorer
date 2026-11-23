@@ -27,14 +27,19 @@ export function useFileSelection(entries: FileEntry[] = []) {
     dispatch({ type: "all", entries: allEntries });
   }, []);
 
+  const selectPaths = useCallback((paths: string[]) => {
+    dispatch({ type: "replace", paths });
+  }, []);
+
   const clearSelection = useCallback(() => dispatch({ type: "clear" }), []);
   const setSelectedPath = useCallback((path: string | null) => {
     dispatch({ type: "set", path });
   }, []);
 
-  const selectedPath = selection.focusedPath && selection.selectedPaths.includes(selection.focusedPath)
-    ? selection.focusedPath
-    : (selection.selectedPaths[0] ?? null);
+  const selectedPath =
+    selection.focusedPath && selection.selectedPaths.includes(selection.focusedPath)
+      ? selection.focusedPath
+      : (selection.selectedPaths[0] ?? null);
 
   const handleStartRename = useCallback((entry: FileEntry) => {
     if (entry.readonly) return;
@@ -57,6 +62,7 @@ export function useFileSelection(entries: FileEntry[] = []) {
     toggleSelection,
     selectRange,
     selectAll,
+    selectPaths,
     clearSelection,
     editingPath,
     setEditingPath,

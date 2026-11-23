@@ -375,7 +375,8 @@ button:focus-visible,
   background: hsl(var(--background));
   padding: 10px;
 }
-.finder-files[data-view="column"] {
+.finder-files[data-view="column"],
+.finder-files[data-view="gallery"] {
   padding: 0;
 }
 .finder-files[data-view="list"] {

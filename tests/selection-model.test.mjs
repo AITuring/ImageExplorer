@@ -70,3 +70,21 @@ test("pruning a removed item clears it from selection and repairs a missing anch
     anchorPath: "/C.png",
   });
 });
+
+test("replace action deduplicates marquee paths and keeps state stable when unchanged", () => {
+  const first = selectionReducer(initialSelection, {
+    type: "replace",
+    paths: ["/B.png", "/C.png", "/B.png"],
+  });
+  assert.deepEqual(first, {
+    selectedPaths: ["/B.png", "/C.png"],
+    focusedPath: "/C.png",
+    anchorPath: "/B.png",
+  });
+
+  const same = selectionReducer(first, {
+    type: "replace",
+    paths: ["/B.png", "/C.png"],
+  });
+  assert.equal(same, first);
+});

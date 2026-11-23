@@ -5,6 +5,7 @@ import { ChevronRight, Folder, HardDrive } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { SMART_FOLDER_PREFIX } from "@/constants/config";
 import { useStatusBar } from "@/stores/statusBar";
+import { ICON_SIZE_MAX, ICON_SIZE_MIN, useViewMode } from "@/stores/viewMode";
 import { formatFileSize } from "@/utils/format";
 import { isTerminalOperationStatus } from "@/hooks/useOperationCenter";
 import type { FileOperationSnapshot } from "@/types";
@@ -25,6 +26,7 @@ export function PathBar({ path, onNavigate }: PathBarProps) {
   const scrollRef = useRef<HTMLElement>(null);
   const segments = path.split("/").filter(Boolean);
   const { path: statusPath, totalCount, selectedCount, selectedBytes, loading } = useStatusBar();
+  const { viewMode, iconSize, setIconSize } = useViewMode();
   const [availableBytes, setAvailableBytes] = useState<number | null>(null);
   const isSmartFolder = path.startsWith(SMART_FOLDER_PREFIX);
 
@@ -132,15 +134,31 @@ export function PathBar({ path, onNavigate }: PathBarProps) {
             );
           })}
       </nav>
-      {statusText && (
-        <div
-          role="status"
-          aria-live="polite"
-          className="finder-statusbar-meta shrink-0 pl-3 text-[11px] whitespace-nowrap tabular-nums opacity-85"
-        >
-          {statusText}
-        </div>
-      )}
+      <div className="flex shrink-0 items-center gap-3">
+        {viewMode === "icon" && (
+          <label className="flex items-center gap-1.5" title={t("common.icon_size")}>
+            <input
+              type="range"
+              min={ICON_SIZE_MIN}
+              max={ICON_SIZE_MAX}
+              step={8}
+              value={iconSize}
+              onChange={(event) => setIconSize(Number(event.target.value))}
+              aria-label={t("common.icon_size")}
+              className="accent-primary h-1 w-20 cursor-pointer"
+            />
+          </label>
+        )}
+        {statusText && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="finder-statusbar-meta shrink-0 pl-3 text-[11px] whitespace-nowrap tabular-nums opacity-85"
+          >
+            {statusText}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

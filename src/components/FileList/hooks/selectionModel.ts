@@ -11,6 +11,7 @@ export type SelectionAction =
   | { type: "toggle"; path: string }
   | { type: "range"; entries: FileEntry[]; toIndex: number }
   | { type: "all"; entries: FileEntry[] }
+  | { type: "replace"; paths: string[] }
   | { type: "clear" }
   | { type: "set"; path: string | null }
   | { type: "prune"; paths: string[] };
@@ -21,10 +22,7 @@ export const initialSelection: SelectionState = {
   anchorPath: null,
 };
 
-export function selectionReducer(
-  state: SelectionState,
-  action: SelectionAction,
-): SelectionState {
+export function selectionReducer(state: SelectionState, action: SelectionAction): SelectionState {
   switch (action.type) {
     case "single":
       return { selectedPaths: [action.path], focusedPath: action.path, anchorPath: action.path };
@@ -60,10 +58,30 @@ export function selectionReducer(
     }
     case "all": {
       const selectedPaths = action.entries.map((entry) => entry.path);
-      const focusedPath = state.focusedPath && selectedPaths.includes(state.focusedPath)
-        ? state.focusedPath
-        : (selectedPaths[selectedPaths.length - 1] ?? null);
+      const focusedPath =
+        state.focusedPath && selectedPaths.includes(state.focusedPath)
+          ? state.focusedPath
+          : (selectedPaths[selectedPaths.length - 1] ?? null);
       return { selectedPaths, focusedPath, anchorPath: focusedPath };
+    }
+    case "replace": {
+      const uniquePaths = Array.from(new Set(action.paths));
+      const focusedPath =
+        state.focusedPath && uniquePaths.includes(state.focusedPath)
+          ? state.focusedPath
+          : (uniquePaths[uniquePaths.length - 1] ?? null);
+      const anchorPath =
+        state.anchorPath && uniquePaths.includes(state.anchorPath)
+          ? state.anchorPath
+          : (uniquePaths[0] ?? null);
+      if (
+        uniquePaths.length === state.selectedPaths.length &&
+        uniquePaths.every((path, index) => path === state.selectedPaths[index]) &&
+        focusedPath === state.focusedPath
+      ) {
+        return state;
+      }
+      return { selectedPaths: uniquePaths, focusedPath, anchorPath };
     }
     case "clear":
       return initialSelection;
@@ -74,12 +92,12 @@ export function selectionReducer(
     case "prune": {
       const available = new Set(action.paths);
       const selectedPaths = state.selectedPaths.filter((path) => available.has(path));
-      const focusedPath = state.focusedPath && available.has(state.focusedPath)
-        ? state.focusedPath
-        : (selectedPaths[0] ?? null);
-      const anchorPath = state.anchorPath && available.has(state.anchorPath)
-        ? state.anchorPath
-        : focusedPath;
+      const focusedPath =
+        state.focusedPath && available.has(state.focusedPath)
+          ? state.focusedPath
+          : (selectedPaths[0] ?? null);
+      const anchorPath =
+        state.anchorPath && available.has(state.anchorPath) ? state.anchorPath : focusedPath;
       if (
         selectedPaths.length === state.selectedPaths.length &&
         focusedPath === state.focusedPath &&
