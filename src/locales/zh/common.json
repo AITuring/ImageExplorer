@@ -13,6 +13,9 @@
     "view_list": "列表视图",
     "view_column": "分栏视图",
     "view_gallery": "画廊视图",
+    "split_view": "双栏分屏 (⌘\\)",
+    "split_pane_close": "关闭副栏",
+    "storage_analyzer": "空间与重复文件分析",
     "icon_size": "图标大小",
     "photo_sharpness_toggle": "清晰度",
     "photo_analysis_enable": "开启清晰度标签、视角与焦点识别",
@@ -195,5 +198,22 @@
     "blue": "蓝色",
     "purple": "紫色",
     "gray": "灰色"
+  },
+  "storage_analyzer": {
+    "title": "空间占用与重复文件分析",
+    "tab_space": "空间占用",
+    "tab_duplicates": "重复文件",
+    "parent_folder": "上级目录",
+    "open_here": "在主窗口打开",
+    "scanning": "正在并行扫描目录...",
+    "summary_counts": "{{files}} 个文件 · {{dirs}} 个文件夹",
+    "largest_files": "体积最大的文件",
+    "dup_summary": "发现 {{groups}} 组重复文件 · 可释放 {{wasted}}",
+    "scanned_files": "共扫描 {{count}} 个文件",
+    "trash_all_duplicates": "清理全部重复项（每组保留首个）",
+    "trash_all_confirm": "将 {{count}} 个重复文件（共 {{size}}）移到废纸篓？每组将保留第一个文件，且可从废纸篓恢复。",
+    "no_duplicates": "未检测到内容完全相同的重复文件",
+    "reclaimable": "可释放 {{size}}",
+    "keep_badge": "保留"
   }
 }

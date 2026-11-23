@@ -11,13 +11,17 @@ import {
   LayoutGrid,
   List as ListIcon,
   Columns,
+  Columns2,
   GalleryHorizontalEnd,
+  PieChart,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AppContextMenu } from "@/components/AppContextMenu";
 import { TextInputActions, SearchResult, SearchResponse, FileActions, FileEntry } from "@/types";
 import { SmartIcon } from "@/components/SmartIcon";
 import { useViewMode } from "@/stores/viewMode";
+import { useSplitView } from "@/stores/splitView";
+import { useStorageAnalyzerDialog } from "@/stores/storageAnalyzerDialog";
 import { useTabs } from "@/hooks/useTabs";
 import { SEARCH_DEBOUNCE_MS, FOCUS_DELAY_MS, SMART_FOLDER_PREFIX } from "@/constants/config";
 import { filterHiddenEntries } from "@/utils/file";
@@ -80,6 +84,9 @@ export function TopBar({ onNavigate }: TopBarProps) {
   const [editValue, setEditValue] = useState(currentPath);
 
   const { viewMode } = useViewMode();
+  const splitViewEnabled = useSplitView((state) => state.enabled);
+  const toggleSplitView = useSplitView((state) => state.toggleSplitView);
+  const openStorageAnalyzer = useStorageAnalyzerDialog((state) => state.open);
   const { scopePath: photoAnalysisScope, progress: photoAnalysisProgress } =
     usePhotoAnalysisProgress();
   const [showHiddenFiles] = useSetting<boolean>("show_hidden_files", false);
@@ -947,6 +954,35 @@ export function TopBar({ onNavigate }: TopBarProps) {
             title={t("common.view_gallery")}
           >
             <GalleryHorizontalEnd className="h-4 w-4" />
+          </button>
+          <span className="bg-border/60 mx-0.5 h-3.5 w-[1px]" aria-hidden="true" />
+          <button
+            type="button"
+            className={`rounded-sm p-1 transition-colors ${
+              splitViewEnabled
+                ? "bg-accent text-accent-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => toggleSplitView(currentPath || "/")}
+            aria-pressed={splitViewEnabled}
+            aria-label={t("common.split_view")}
+            title={t("common.split_view")}
+          >
+            <Columns2 className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            disabled={!currentPath || currentPath.startsWith(SMART_FOLDER_PREFIX)}
+            className="text-muted-foreground hover:text-foreground rounded-sm p-1 transition-colors disabled:opacity-40"
+            onClick={() => {
+              if (currentPath && !currentPath.startsWith(SMART_FOLDER_PREFIX)) {
+                openStorageAnalyzer(currentPath, "space");
+              }
+            }}
+            aria-label={t("common.storage_analyzer")}
+            title={t("common.storage_analyzer")}
+          >
+            <PieChart className="h-4 w-4" />
           </button>
         </div>
 

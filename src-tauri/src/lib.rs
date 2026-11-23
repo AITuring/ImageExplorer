@@ -9,6 +9,7 @@ mod index;
 mod menu;
 mod operations;
 mod raw_preview;
+mod storage_analyzer;
 mod thumb_disk_cache;
 mod thumb_protocol;
 mod trash_commands;
@@ -282,6 +283,50 @@ async fn set_photo_culling_states(
     tauri::async_runtime::spawn_blocking(move || store.set_culling_states(&records))
         .await
         .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn analyze_directory_storage(
+    state: tauri::State<'_, std::sync::Arc<storage_analyzer::StorageAnalysisState>>,
+    path: String,
+    request_id: u64,
+) -> Result<storage_analyzer::DirectoryStorageReport, String> {
+    let shared_state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        storage_analyzer::analyze_directory_storage_blocking(
+            std::path::Path::new(&path),
+            &shared_state,
+            request_id,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn find_duplicate_files(
+    state: tauri::State<'_, std::sync::Arc<storage_analyzer::StorageAnalysisState>>,
+    path: String,
+    request_id: u64,
+) -> Result<storage_analyzer::DuplicateFilesReport, String> {
+    let shared_state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        storage_analyzer::find_duplicate_files_blocking(
+            std::path::Path::new(&path),
+            &shared_state,
+            request_id,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn cancel_storage_analysis(
+    state: tauri::State<'_, std::sync::Arc<storage_analyzer::StorageAnalysisState>>,
+    request_id: u64,
+) {
+    state.cancel(request_id);
 }
 
 #[tauri::command]
@@ -1085,6 +1130,7 @@ pub fn run() {
         .manage(operation_manager)
         .manage(DirectorySearchState::default())
         .manage(DirectorySizeState::default())
+        .manage(Arc::new(storage_analyzer::StorageAnalysisState::default()))
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
 
@@ -1204,6 +1250,9 @@ pub fn run() {
             get_photo_culling_states,
             set_photo_culling_states,
             export_xmp_sidecars,
+            analyze_directory_storage,
+            find_duplicate_files,
+            cancel_storage_analysis,
             get_smart_files,
             get_index_status,
             open_url,

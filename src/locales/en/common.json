@@ -13,6 +13,9 @@
     "view_list": "List View",
     "view_column": "Column View",
     "view_gallery": "Gallery View",
+    "split_view": "Dual-Pane Split View (⌘\\)",
+    "split_pane_close": "Close secondary pane",
+    "storage_analyzer": "Storage & Duplicate Analyzer",
     "icon_size": "Icon size",
     "photo_sharpness_toggle": "Sharpness",
     "photo_analysis_enable": "Enable sharpness labels, viewpoint and focus analysis",
@@ -195,5 +198,22 @@
     "blue": "Blue",
     "purple": "Purple",
     "gray": "Gray"
+  },
+  "storage_analyzer": {
+    "title": "Storage & Duplicate Analyzer",
+    "tab_space": "Space Usage",
+    "tab_duplicates": "Duplicates",
+    "parent_folder": "Parent",
+    "open_here": "Open in window",
+    "scanning": "Scanning directory in parallel...",
+    "summary_counts": "{{files}} files · {{dirs}} folders",
+    "largest_files": "Largest files",
+    "dup_summary": "{{groups}} duplicate groups · {{wasted}} reclaimable",
+    "scanned_files": "{{count}} files scanned",
+    "trash_all_duplicates": "Trash all duplicates (keep first per group)",
+    "trash_all_confirm": "Move {{count}} duplicate files ({{size}}) to Trash? The first copy in each group is kept, and items can be restored from Trash.",
+    "no_duplicates": "No byte-identical duplicate files found",
+    "reclaimable": "{{size}} reclaimable",
+    "keep_badge": "Keep"
   }
 }
