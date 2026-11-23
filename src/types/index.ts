@@ -8,6 +8,8 @@ export interface FileEntry {
   modified: number | null;
   extension: string | null;
   readonly: boolean;
+  /** Whether the macOS Finder Locked flag (UF_IMMUTABLE) is set. */
+  is_locked?: boolean;
   /** Whether the item is hidden by the filesystem or filename convention. */
   is_hidden: boolean;
   /** Whether the item is a symbolic link. */

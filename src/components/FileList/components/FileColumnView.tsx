@@ -15,9 +15,42 @@ import { AppContextMenu } from "@/components/AppContextMenu";
 import { ColumnFilePreview } from "./ColumnFilePreview";
 import { RequestGeneration } from "@/lib/requestGeneration";
 import { Input } from "@/components/ui/input";
+import { COLUMN_VIEW_WIDTH_MAX, COLUMN_VIEW_WIDTH_MIN, useViewMode } from "@/stores/viewMode";
 import type { FileActions } from "@/types";
 
 const COLUMN_ROW_HEIGHT = 32;
+const COLUMN_AUTOFIT_MIN = 180;
+const COLUMN_AUTOFIT_MAX = 440;
+
+let textMeasureCanvas: HTMLCanvasElement | null = null;
+
+function computeColumnAutoFitWidth(entries: FileEntry[]): number {
+  if (entries.length === 0) return COLUMN_AUTOFIT_MIN;
+
+  let ctx: CanvasRenderingContext2D | null = null;
+  if (typeof document !== "undefined") {
+    textMeasureCanvas ??= document.createElement("canvas");
+    ctx = textMeasureCanvas.getContext("2d");
+    if (ctx) {
+      ctx.font = '14px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
+    }
+  }
+
+  let maxRowWidth = COLUMN_AUTOFIT_MIN;
+  // Cap scan at 500 entries so auto-fit stays instant even on huge folders.
+  const limit = Math.min(entries.length, 500);
+  for (let i = 0; i < limit; i++) {
+    const entry = entries[i];
+    const nameWidth = ctx ? ctx.measureText(entry.name).width : entry.name.length * 8.2;
+    const tagAllowance = entry.tags && entry.tags.length > 0 ? 28 : 0;
+    const chevronAllowance = entry.is_dir ? 20 : 0;
+    // Left/right padding (16) + thumbnail (20) + gap (8) + breathing room (18)
+    const rowWidth = Math.ceil(nameWidth + 62 + tagAllowance + chevronAllowance);
+    if (rowWidth > maxRowWidth) maxRowWidth = rowWidth;
+  }
+
+  return Math.max(COLUMN_AUTOFIT_MIN, Math.min(COLUMN_AUTOFIT_MAX, maxRowWidth));
+}
 
 export interface ColumnNavigationHandle {
   navigateLeft: () => boolean;
@@ -68,6 +101,9 @@ interface ColumnData {
 interface ColumnPaneProps {
   column: ColumnData;
   colIdx: number;
+  width: number;
+  onResizeWidth: (columnPath: string, width: number, applyAll: boolean) => void;
+  onAutoFitWidth: (columnPath: string, entries: FileEntry[], applyAll: boolean) => void;
   selectedPaths: string[];
   selectedPathSet: ReadonlySet<string>;
   focusedPath: string | null;
@@ -88,6 +124,9 @@ interface ColumnPaneProps {
 const ColumnPane = memo(function ColumnPane({
   column,
   colIdx,
+  width,
+  onResizeWidth,
+  onAutoFitWidth,
   selectedPaths,
   selectedPathSet,
   focusedPath,
@@ -105,6 +144,42 @@ const ColumnPane = memo(function ColumnPane({
   handleCopyTo,
 }: ColumnPaneProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [isResizing, setIsResizing] = useState(false);
+
+  const handleResizePointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const startX = event.clientX;
+      const startWidth = width;
+      setIsResizing(true);
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+
+      const handlePointerMove = (moveEvent: PointerEvent) => {
+        const nextWidth = Math.max(
+          COLUMN_VIEW_WIDTH_MIN,
+          Math.min(COLUMN_VIEW_WIDTH_MAX, Math.round(startWidth + moveEvent.clientX - startX))
+        );
+        onResizeWidth(column.path, nextWidth, moveEvent.altKey);
+      };
+
+      const handlePointerUp = () => {
+        setIsResizing(false);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        window.removeEventListener("pointermove", handlePointerMove);
+        window.removeEventListener("pointerup", handlePointerUp);
+        window.removeEventListener("pointercancel", handlePointerUp);
+      };
+
+      window.addEventListener("pointermove", handlePointerMove);
+      window.addEventListener("pointerup", handlePointerUp);
+      window.addEventListener("pointercancel", handlePointerUp);
+    },
+    [column.path, onResizeWidth, width]
+  );
+
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: column.entries.length,
@@ -126,7 +201,10 @@ const ColumnPane = memo(function ColumnPane({
   const rangeEnd = virtualizer.range?.endIndex ?? -1;
 
   return (
-    <div className="border-border/30 flex h-full w-60 shrink-0 flex-col border-r last:border-r-0">
+    <div
+      style={{ width: `${width}px` }}
+      className="border-border/30 relative flex h-full shrink-0 flex-col border-r last:border-r-0"
+    >
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
         {column.entries.length === 0 ? (
           <div className="text-muted-foreground flex h-20 items-center justify-center text-xs">
@@ -247,6 +325,26 @@ const ColumnPane = memo(function ColumnPane({
           </div>
         )}
       </div>
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-valuenow={width}
+        aria-valuemin={COLUMN_VIEW_WIDTH_MIN}
+        aria-valuemax={COLUMN_VIEW_WIDTH_MAX}
+        onPointerDown={handleResizePointerDown}
+        onDoubleClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onAutoFitWidth(column.path, column.entries, event.altKey);
+        }}
+        className="group absolute inset-y-0 -right-1 z-20 flex w-2 cursor-col-resize items-center justify-center"
+      >
+        <div
+          className={`h-full w-px transition-colors ${
+            isResizing ? "bg-primary w-0.5" : "group-hover:bg-primary/60 bg-transparent"
+          }`}
+        />
+      </div>
     </div>
   );
 });
@@ -278,8 +376,42 @@ export function FileColumnView({
     requests.invalidate();
     return () => requests.invalidate();
   }, [currentPath, showHiddenFiles]);
+  const columnViewWidth = useViewMode((state) => state.columnViewWidth);
+  const setColumnViewWidth = useViewMode((state) => state.setColumnViewWidth);
+  const [columnWidthOverrides, setColumnWidthOverrides] = useState<Record<string, number>>({});
   const [columns, setColumns] = useState<ColumnData[]>([]);
   const [activeColumnIndex, setActiveColumnIndex] = useState(0);
+
+  const handleResizeColumnWidth = useCallback(
+    (columnPath: string, width: number, applyAll: boolean) => {
+      if (applyAll) {
+        setColumnWidthOverrides({});
+        setColumnViewWidth(width);
+        return;
+      }
+      setColumnWidthOverrides((prev) => {
+        if (!(columnPath in prev)) return prev;
+        const next = { ...prev };
+        delete next[columnPath];
+        return next;
+      });
+      setColumnViewWidth(width);
+    },
+    [setColumnViewWidth]
+  );
+
+  const handleAutoFitColumnWidth = useCallback(
+    (columnPath: string, entries: FileEntry[], applyAll: boolean) => {
+      const idealWidth = computeColumnAutoFitWidth(entries);
+      if (applyAll) {
+        setColumnWidthOverrides({});
+        setColumnViewWidth(idealWidth);
+      } else {
+        setColumnWidthOverrides((prev) => ({ ...prev, [columnPath]: idealWidth }));
+      }
+    },
+    [setColumnViewWidth]
+  );
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const refreshVersionsRef = useRef(new Map<string, number>());
@@ -608,6 +740,9 @@ export function FileColumnView({
           key={column.path}
           column={column}
           colIdx={colIdx}
+          width={columnWidthOverrides[column.path] ?? columnViewWidth}
+          onResizeWidth={handleResizeColumnWidth}
+          onAutoFitWidth={handleAutoFitColumnWidth}
           selectedPaths={selectedPaths}
           selectedPathSet={selectedPathSet}
           focusedPath={focusedPath}

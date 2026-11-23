@@ -19,6 +19,10 @@ export const ICON_SIZE_MIN = 108;
 export const ICON_SIZE_MAX = 240;
 export const ICON_SIZE_DEFAULT = 160;
 
+export const COLUMN_VIEW_WIDTH_MIN = 160;
+export const COLUMN_VIEW_WIDTH_MAX = 480;
+export const COLUMN_VIEW_WIDTH_DEFAULT = 240;
+
 export const DEFAULT_LIST_COLUMN_WIDTHS: ListColumnWidths = {
   kind: 88,
   size: 96,
@@ -34,10 +38,12 @@ export const DEFAULT_LIST_COLUMN_VISIBILITY: ListColumnVisibility = {
 interface ViewModeState {
   viewMode: ViewMode;
   iconSize: number;
+  columnViewWidth: number;
   listColumnWidths: ListColumnWidths;
   listColumnVisibility: ListColumnVisibility;
   setViewMode: (mode: ViewMode) => void;
   setIconSize: (size: number) => void;
+  setColumnViewWidth: (width: number) => void;
   setListColumnWidth: (column: keyof ListColumnWidths, width: number) => void;
   toggleListColumn: (column: keyof ListColumnVisibility) => void;
 }
@@ -45,6 +51,11 @@ interface ViewModeState {
 function clampIconSize(size: number): number {
   if (!Number.isFinite(size)) return ICON_SIZE_DEFAULT;
   return Math.max(ICON_SIZE_MIN, Math.min(ICON_SIZE_MAX, Math.round(size)));
+}
+
+function clampColumnViewWidth(width: number): number {
+  if (!Number.isFinite(width)) return COLUMN_VIEW_WIDTH_DEFAULT;
+  return Math.max(COLUMN_VIEW_WIDTH_MIN, Math.min(COLUMN_VIEW_WIDTH_MAX, Math.round(width)));
 }
 
 function clampColumnWidth(width: number): number {
@@ -57,10 +68,12 @@ export const useViewMode = create<ViewModeState>()(
     (set) => ({
       viewMode: "list",
       iconSize: ICON_SIZE_DEFAULT,
+      columnViewWidth: COLUMN_VIEW_WIDTH_DEFAULT,
       listColumnWidths: DEFAULT_LIST_COLUMN_WIDTHS,
       listColumnVisibility: DEFAULT_LIST_COLUMN_VISIBILITY,
       setViewMode: (mode) => set({ viewMode: mode }),
       setIconSize: (size) => set({ iconSize: clampIconSize(size) }),
+      setColumnViewWidth: (width) => set({ columnViewWidth: clampColumnViewWidth(width) }),
       setListColumnWidth: (column, width) =>
         set((state) => ({
           listColumnWidths: {
@@ -89,6 +102,10 @@ export const useViewMode = create<ViewModeState>()(
               : current.viewMode,
           iconSize:
             typeof saved?.iconSize === "number" ? clampIconSize(saved.iconSize) : current.iconSize,
+          columnViewWidth:
+            typeof saved?.columnViewWidth === "number"
+              ? clampColumnViewWidth(saved.columnViewWidth)
+              : current.columnViewWidth,
           listColumnWidths: {
             ...DEFAULT_LIST_COLUMN_WIDTHS,
             ...(saved?.listColumnWidths ?? {}),

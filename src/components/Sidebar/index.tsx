@@ -29,6 +29,8 @@ import { useTrashDialog } from "@/stores/trashDialog";
 import { getLocationName, useLocations } from "@/stores/locations";
 import { FINDER_TAG_PRESETS } from "@/lib/finderTags";
 import { SMART_FOLDER_PREFIX } from "@/constants/config";
+import { readFileDragData } from "@/lib/dragData";
+import { enqueueFileOperation } from "@/lib/fileOperations";
 
 import { FileEntry, FolderItem, MountedVolume, SidebarItemActions } from "@/types";
 
@@ -47,6 +49,19 @@ function clampSidebarWidth(width: number) {
   return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, width));
 }
 
+interface SidebarFolderDropProps {
+  dropTargetPath: string | null;
+  onDragOverTarget: (event: React.DragEvent, targetPath: string) => void;
+  onDragLeaveTarget: (event: React.DragEvent, targetPath: string) => void;
+  onDropOnTarget: (event: React.DragEvent, targetPath: string) => void;
+}
+
+function isDroppableSidebarPath(path: string): boolean {
+  return path.length > 0 && !path.startsWith(SMART_FOLDER_PREFIX);
+}
+
+const SIDEBAR_DROP_HIGHLIGHT_CLASS = "bg-primary/15 ring-1 ring-primary/50";
+
 function SidebarLocationRow({
   path,
   active,
@@ -56,6 +71,7 @@ function SidebarLocationRow({
   isFavorite,
   onRemoveRecent,
   onRemove,
+  dropProps,
 }: {
   path: string;
   active: boolean;
@@ -65,9 +81,11 @@ function SidebarLocationRow({
   isFavorite?: boolean;
   onRemoveRecent?: () => void;
   onRemove?: () => void;
+  dropProps: SidebarFolderDropProps;
 }) {
   const { t } = useTranslation();
   const label = getLocationName(path);
+  const isDropTarget = dropProps.dropTargetPath === path;
   const sidebarItemActions: SidebarItemActions = {
     onOpen: () => onNavigate(path),
     onOpenInTerminal: () => invoke("open_in_terminal", { path }),
@@ -81,8 +99,13 @@ function SidebarLocationRow({
   return (
     <AppContextMenu type="sidebar-item" sidebarItemActions={sidebarItemActions} asChild>
       <div
-        className="finder-sidebar-row group flex min-w-0 items-center rounded-md"
+        className={`finder-sidebar-row group flex min-w-0 items-center rounded-md transition-colors ${
+          isDropTarget ? SIDEBAR_DROP_HIGHLIGHT_CLASS : ""
+        }`}
         data-active={active}
+        onDragOver={(e) => dropProps.onDragOverTarget(e, path)}
+        onDragLeave={(e) => dropProps.onDragLeaveTarget(e, path)}
+        onDrop={(e) => dropProps.onDropOnTarget(e, path)}
       >
         <button
           className="flex min-h-8 min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm"
@@ -151,6 +174,7 @@ function FolderTreeItem({
   showHiddenFiles,
   hiddenPaths,
   onHide,
+  dropProps,
 }: {
   item: FolderItem;
   currentPath: string;
@@ -159,6 +183,7 @@ function FolderTreeItem({
   showHiddenFiles: boolean;
   hiddenPaths: string[];
   onHide: (path: string) => void;
+  dropProps: SidebarFolderDropProps;
 }) {
   const { t } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(false);
@@ -260,15 +285,22 @@ function FolderTreeItem({
     onRemoveFromSidebar: () => onHide(item.path),
   };
 
+  const isDropTarget = dropProps.dropTargetPath === item.path;
+
   return (
     <div>
       <AppContextMenu type="sidebar-item" sidebarItemActions={sidebarItemActions}>
         <button
-          className="finder-sidebar-row flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
+          className={`finder-sidebar-row flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors ${
+            isDropTarget ? SIDEBAR_DROP_HIGHLIGHT_CLASS : ""
+          }`}
           aria-current={currentPath === item.path ? "page" : undefined}
           data-active={currentPath === item.path}
           style={{ paddingLeft: `${level * 12 + 8}px` }}
           onClick={() => onNavigate(item.path)}
+          onDragOver={(e) => dropProps.onDragOverTarget(e, item.path)}
+          onDragLeave={(e) => dropProps.onDragLeaveTarget(e, item.path)}
+          onDrop={(e) => dropProps.onDropOnTarget(e, item.path)}
         >
           {/* 展开/折叠箭头 */}
           <div
@@ -319,6 +351,7 @@ function FolderTreeItem({
               showHiddenFiles={showHiddenFiles}
               hiddenPaths={hiddenPaths}
               onHide={onHide}
+              dropProps={dropProps}
             />
           ))}
     </div>
@@ -339,6 +372,58 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
   const [home, setHome] = useState<string>("");
   const [mountedVolumes, setMountedVolumes] = useState<MountedVolume[]>([]);
   const [ejectingVolumePath, setEjectingVolumePath] = useState<string | null>(null);
+  const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
+
+  const handleDragOverTarget = useCallback((event: React.DragEvent, targetPath: string) => {
+    if (!isDroppableSidebarPath(targetPath)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = event.altKey ? "copy" : "move";
+    setDropTargetPath((current) => (current === targetPath ? current : targetPath));
+  }, []);
+
+  const handleDragLeaveTarget = useCallback((event: React.DragEvent, targetPath: string) => {
+    if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+      setDropTargetPath((current) => (current === targetPath ? null : current));
+    }
+  }, []);
+
+  const handleDropOnTarget = useCallback((event: React.DragEvent, targetPath: string) => {
+    if (!isDroppableSidebarPath(targetPath)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setDropTargetPath(null);
+
+    const data = readFileDragData(event.dataTransfer);
+    if (!data) return;
+
+    const normalizedTarget = targetPath.replace(/\/+$/, "") || "/";
+    const paths = data.paths.filter((sourcePath) => {
+      const normalizedSource = sourcePath.replace(/\/+$/, "") || "/";
+      if (normalizedSource === normalizedTarget) return false;
+      if (normalizedTarget.startsWith(`${normalizedSource}/`)) return false;
+      return true;
+    });
+    if (paths.length === 0) return;
+
+    void enqueueFileOperation({
+      kind: event.altKey ? "copy" : "move",
+      paths,
+      destDir: targetPath,
+    }).catch((error) => {
+      console.error("Failed to drop files onto sidebar folder:", error);
+    });
+  }, []);
+
+  const folderDropProps = useMemo<SidebarFolderDropProps>(
+    () => ({
+      dropTargetPath,
+      onDragOverTarget: handleDragOverTarget,
+      onDragLeaveTarget: handleDragLeaveTarget,
+      onDropOnTarget: handleDropOnTarget,
+    }),
+    [dropTargetPath, handleDragLeaveTarget, handleDragOverTarget, handleDropOnTarget]
+  );
 
   const handleEjectVolume = useCallback(
     async (volume: MountedVolume) => {
@@ -588,10 +673,15 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
                     sidebarItemActions={sidebarItemActions}
                   >
                     <button
-                      className="finder-sidebar-row flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
+                      className={`finder-sidebar-row flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors ${
+                        dropTargetPath === item.path ? SIDEBAR_DROP_HIGHLIGHT_CLASS : ""
+                      }`}
                       aria-current={currentPath === item.path ? "page" : undefined}
                       data-active={currentPath === item.path}
                       onClick={() => onNavigate(item.path)}
+                      onDragOver={(e) => handleDragOverTarget(e, item.path)}
+                      onDragLeave={(e) => handleDragLeaveTarget(e, item.path)}
+                      onDrop={(e) => handleDropOnTarget(e, item.path)}
                     >
                       <item.icon
                         className="finder-sidebar-icon h-4 w-4 shrink-0"
@@ -626,6 +716,7 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
                       isFavorite
                       onToggleFavorite={() => void toggleFavorite(path)}
                       onRemove={() => void toggleFavorite(path)}
+                      dropProps={folderDropProps}
                     />
                   ))}
                 </div>
@@ -653,6 +744,7 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
                       onNavigate={onNavigate}
                       onRemoveRecent={() => void removeRecentLocation(path)}
                       onRemove={() => void removeRecentLocation(path)}
+                      dropProps={folderDropProps}
                     />
                   ))}
                 </div>
@@ -678,6 +770,7 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
                   showHiddenFiles={showHiddenFiles}
                   hiddenPaths={hiddenSidebarPaths}
                   onHide={(path) => void hideSidebarPath(path)}
+                  dropProps={folderDropProps}
                 />
               ))}
 
@@ -706,7 +799,14 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
                           type="sidebar-item"
                           sidebarItemActions={sidebarItemActions}
                         >
-                          <div className="group flex items-center gap-0.5">
+                          <div
+                            className={`group flex items-center gap-0.5 rounded-md transition-colors ${
+                              dropTargetPath === volume.path ? SIDEBAR_DROP_HIGHLIGHT_CLASS : ""
+                            }`}
+                            onDragOver={(e) => handleDragOverTarget(e, volume.path)}
+                            onDragLeave={(e) => handleDragLeaveTarget(e, volume.path)}
+                            onDrop={(e) => handleDropOnTarget(e, volume.path)}
+                          >
                             <button
                               className="finder-sidebar-row flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
                               aria-current={currentPath === volume.path ? "page" : undefined}

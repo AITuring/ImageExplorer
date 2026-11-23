@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { File, Folder, Link, Package, Info, Loader2 } from "lucide-react";
+import { File, Folder, Link, Package, Info, Loader2, Lock, Unlock } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
   Dialog,
@@ -52,6 +52,7 @@ export function FileInfoDialog() {
   const [loadedEntry, setLoadedEntry] = useState<FileEntry | null>(null);
   const [dirSize, setDirSize] = useState<DirectorySizeSummary | null>(null);
   const [calculatingSize, setCalculatingSize] = useState(false);
+  const [updatingLock, setUpdatingLock] = useState(false);
   const sizeRequestIdRef = useRef(0);
 
   useEffect(() => {
@@ -129,6 +130,31 @@ export function FileInfoDialog() {
     [details]
   );
 
+  const handleToggleLocked = useCallback(async () => {
+    if (!details || updatingLock) return;
+    const nextLocked = !details.is_locked;
+    setUpdatingLock(true);
+    try {
+      const confirmedLocked = await invoke<boolean>("set_file_locked", {
+        path: details.path,
+        locked: nextLocked,
+      });
+      const parent = details.path.slice(0, details.path.lastIndexOf("/")) || "/";
+      invalidateCache(parent);
+      setLoadedEntry({ ...details, is_locked: confirmedLocked });
+      window.dispatchEvent(
+        new CustomEvent("finder-tags-updated", {
+          detail: { parentPath: parent, path: details.path },
+        })
+      );
+    } catch (error) {
+      console.error("Failed to toggle file lock:", error);
+      alert(t("file_info.lock_failed", { error: String(error) }));
+    } finally {
+      setUpdatingLock(false);
+    }
+  }, [details, t, updatingLock]);
+
   const matchingDirSize = details?.is_dir && dirSize?.path === details.path ? dirSize : null;
 
   const sizeValue = useMemo(() => {
@@ -182,6 +208,12 @@ export function FileInfoDialog() {
               <Info className="h-5 w-5 shrink-0" aria-hidden="true" />
             )}
             <span className="truncate">{details?.name ?? t("file_info.title")}</span>
+            {details?.is_locked && (
+              <Lock
+                className="text-muted-foreground h-3.5 w-3.5 shrink-0"
+                aria-label={t("file_info.locked")}
+              />
+            )}
           </DialogTitle>
           <DialogDescription>{t("file_info.description")}</DialogDescription>
         </DialogHeader>
@@ -236,6 +268,34 @@ export function FileInfoDialog() {
                     </button>
                   );
                 })}
+              </dd>
+            </div>
+
+            <div className="grid grid-cols-[7rem_minmax(0,1fr)] items-center gap-3 border-b pb-2">
+              <dt className="text-muted-foreground">{t("file_info.locked")}</dt>
+              <dd className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={Boolean(details.is_locked)}
+                  disabled={updatingLock}
+                  onClick={() => void handleToggleLocked()}
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors disabled:opacity-50 ${
+                    details.is_locked
+                      ? "border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-300"
+                      : "border-border/70 text-muted-foreground hover:bg-accent hover:text-foreground"
+                  }`}
+                >
+                  {updatingLock ? (
+                    <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                  ) : details.is_locked ? (
+                    <Lock className="h-3 w-3" aria-hidden="true" />
+                  ) : (
+                    <Unlock className="h-3 w-3" aria-hidden="true" />
+                  )}
+                  <span>{details.is_locked ? t("common.yes") : t("common.no")}</span>
+                </button>
+                <span className="text-muted-foreground text-xs">{t("file_info.locked_hint")}</span>
               </dd>
             </div>
 

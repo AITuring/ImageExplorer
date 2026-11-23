@@ -27,7 +27,7 @@ use commands::fs::{
     get_disk_space, get_entries, get_file_entry, get_home_dir, get_mounted_volumes, get_parent_dir,
     move_file, open_file, open_in_terminal, open_url, read_camera_af_metadata, read_image_base64,
     read_image_dimensions, read_image_metadata, read_text_file, rename, resolve_original_path,
-    set_file_tags, toggle_file_tag, DirectorySizeState,
+    set_file_locked, set_file_tags, toggle_file_tag, DirectorySizeState,
 };
 use commands::search::{
     cancel_directory_search, get_smart_files, search_directory, search_files, DirectorySearchState,
@@ -1089,6 +1089,7 @@ pub fn run() {
             get_disk_space,
             calculate_directory_size,
             cancel_directory_size,
+            set_file_locked,
             set_file_tags,
             toggle_file_tag,
             resolve_original_path,

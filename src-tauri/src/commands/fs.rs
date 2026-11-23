@@ -297,6 +297,20 @@ fn metadata_details(
     }
 }
 
+fn is_locked_metadata(metadata: &fs::Metadata) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::macos::fs::MetadataExt;
+        metadata.st_flags() & libc::UF_IMMUTABLE != 0
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = metadata;
+        false
+    }
+}
+
 fn system_time_seconds(time: Option<std::io::Result<SystemTime>>) -> Option<u64> {
     time.and_then(|value| value.ok())
         .and_then(|value| value.duration_since(SystemTime::UNIX_EPOCH).ok())
@@ -545,6 +559,7 @@ pub struct FileEntry {
     pub modified: Option<u64>,
     pub extension: Option<String>,
     pub readonly: bool,
+    pub is_locked: bool,
     pub is_hidden: bool,
     pub is_symlink: bool,
     pub symlink_target: Option<String>,
@@ -706,6 +721,7 @@ fn load_directory_entries(path: &str) -> Result<Vec<FileEntry>, String> {
                         path_utils::is_protected_path_with_home(&file_path, home_dir.as_deref());
                 }
 
+                let is_locked = metadata.as_ref().map(is_locked_metadata).unwrap_or(false);
                 let tags = read_file_tags(&file_path);
 
                 entries.push(FileEntry {
@@ -716,6 +732,7 @@ fn load_directory_entries(path: &str) -> Result<Vec<FileEntry>, String> {
                     modified,
                     extension,
                     readonly,
+                    is_locked,
                     is_hidden,
                     is_symlink,
                     symlink_target,
@@ -890,6 +907,7 @@ pub fn get_file_entry(path: String) -> Result<FileEntry, String> {
                 .map(|value| value.to_string_lossy().to_string())
         },
         readonly,
+        is_locked: is_locked_metadata(&metadata),
         is_hidden: is_hidden_entry(&name, Some(&metadata)),
         is_symlink,
         symlink_target,
@@ -1140,6 +1158,60 @@ fn toggle_file_tag_blocking(paths: &[String], tag: &str) -> Result<Vec<String>, 
         crate::cache::invalidate_dir_cache(&parent);
     }
     Ok(first_updated)
+}
+
+/// Toggle macOS Finder "Locked" flag (`UF_IMMUTABLE` via `chflags(2)`).
+#[tauri::command]
+pub async fn set_file_locked(path: String, locked: bool) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || set_file_locked_blocking(Path::new(&path), locked))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn set_file_locked_blocking(file_path: &Path, locked: bool) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::CString;
+        use std::os::macos::fs::MetadataExt;
+        use std::os::unix::ffi::OsStrExt;
+
+        let metadata = fs::symlink_metadata(file_path).map_err(|error| {
+            format!(
+                "Failed to read metadata for {}: {}",
+                file_path.display(),
+                error
+            )
+        })?;
+        let current_flags = metadata.st_flags();
+        let next_flags = if locked {
+            current_flags | libc::UF_IMMUTABLE
+        } else {
+            current_flags & !libc::UF_IMMUTABLE
+        };
+
+        let c_path = CString::new(file_path.as_os_str().as_bytes())
+            .map_err(|_| "Invalid file path containing NUL byte".to_string())?;
+        let rc = unsafe { libc::chflags(c_path.as_ptr(), next_flags) };
+        if rc != 0 {
+            return Err(format!(
+                "Failed to {} {}: {}",
+                if locked { "lock" } else { "unlock" },
+                file_path.display(),
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        if let Some(parent) = file_path.parent() {
+            crate::cache::invalidate_dir_cache(&parent.to_string_lossy());
+        }
+        Ok(locked)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (file_path, locked);
+        Err("File lock flag is only supported on macOS".to_string())
+    }
 }
 
 /// Resolve the original target of a symlink or macOS Finder alias.
@@ -3870,7 +3942,7 @@ mod file_entry_tests {
         delete_to_trash_with_location, get_file_entry, gid_to_group_name, is_alias_entry,
         load_directory_entries, move_path_resumable, package_type, partial_path_for,
         read_file_tags, rename, rename_without_replace, resolve_original_path_blocking,
-        toggle_file_tag_blocking, uid_to_owner_name, validate_file_name,
+        set_file_locked_blocking, toggle_file_tag_blocking, uid_to_owner_name, validate_file_name,
     };
     use std::fs;
     use std::path::Path;
@@ -4501,6 +4573,28 @@ mod file_entry_tests {
                 "IMG_10.jpg"
             ]
         );
+
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn file_locked_flag_toggles_uf_immutable_cleanly() {
+        let root = test_root();
+        let file = root.join("protected.jpg");
+        fs::create_dir_all(&root).expect("create root");
+        fs::write(&file, b"photo").expect("write file");
+
+        let before = get_file_entry(file.to_string_lossy().to_string()).expect("entry before");
+        assert!(!before.is_locked);
+
+        assert!(set_file_locked_blocking(&file, true).expect("lock file"));
+        let locked = get_file_entry(file.to_string_lossy().to_string()).expect("entry locked");
+        assert!(locked.is_locked);
+
+        assert!(!set_file_locked_blocking(&file, false).expect("unlock file"));
+        let unlocked = get_file_entry(file.to_string_lossy().to_string()).expect("entry unlocked");
+        assert!(!unlocked.is_locked);
 
         fs::remove_dir_all(root).expect("remove test root");
     }
