@@ -1642,3 +1642,265 @@ uint8_t *imageexplorer_recognize_text(
         return result;
     }
 }
+
+static NSString *imageexplorer_encode_cgimage_jpeg_base64(CGImageRef image, uint32_t maxEdge) {
+    if (image == NULL) {
+        return nil;
+    }
+    size_t w = CGImageGetWidth(image);
+    size_t h = CGImageGetHeight(image);
+    if (w == 0 || h == 0) {
+        return nil;
+    }
+    double scale = 1.0;
+    size_t maxDim = MAX(w, h);
+    if (maxEdge > 0 && maxDim > maxEdge) {
+        scale = (double)maxEdge / (double)maxDim;
+    }
+    size_t dstW = MAX((size_t)1, (size_t)llround((double)w * scale));
+    size_t dstH = MAX((size_t)1, (size_t)llround((double)h * scale));
+
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(
+        NULL, dstW, dstH, 8, 0, cs, (CGBitmapInfo)kCGImageAlphaPremultipliedLast
+    );
+    CGColorSpaceRelease(cs);
+    if (ctx == NULL) {
+        return nil;
+    }
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationHigh);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, (CGFloat)dstW, (CGFloat)dstH), image);
+    CGImageRef scaled = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+    if (scaled == NULL) {
+        return nil;
+    }
+
+    CFMutableDataRef data = CFDataCreateMutable(kCFAllocatorDefault, 0);
+    CGImageDestinationRef dest = data != NULL
+        ? CGImageDestinationCreateWithData(data, CFSTR("public.jpeg"), 1, NULL)
+        : NULL;
+    NSString *b64 = nil;
+    if (dest != NULL) {
+        NSDictionary *opts = @{(id)kCGImageDestinationLossyCompressionQuality: @0.78};
+        CGImageDestinationAddImage(dest, scaled, (__bridge CFDictionaryRef)opts);
+        if (CGImageDestinationFinalize(dest)) {
+            NSData *nsData = (__bridge NSData *)data;
+            b64 = [nsData base64EncodedStringWithOptions:0];
+        }
+        CFRelease(dest);
+    }
+    if (data != NULL) {
+        CFRelease(data);
+    }
+    CGImageRelease(scaled);
+    return b64;
+}
+
+static uint8_t *imageexplorer_extract_face_embeddings_on_cgimage(
+    CGImageRef cgImage,
+    size_t *outLength
+) {
+    if (cgImage == NULL || outLength == NULL) {
+        return NULL;
+    }
+    *outLength = 0;
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunguarded-availability-new"
+    Class fpClass = NSClassFromString(@"VNGenerateImageFeaturePrintRequest");
+    if (fpClass == Nil) {
+        return NULL;
+    }
+
+    VNDetectFaceRectanglesRequest *faceReq = [[VNDetectFaceRectanglesRequest alloc] init];
+    VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:cgImage
+                                                                            options:@{}];
+    NSError *err = nil;
+    if (![handler performRequests:@[faceReq] error:&err] || err != nil) {
+        return NULL;
+    }
+
+    NSArray<VNFaceObservation *> *observations = faceReq.results;
+    if (observations.count == 0) {
+        return NULL;
+    }
+
+    size_t imgW = CGImageGetWidth(cgImage);
+    size_t imgH = CGImageGetHeight(cgImage);
+    if (imgW == 0 || imgH == 0) {
+        return NULL;
+    }
+
+    NSMutableArray<NSDictionary *> *results = [NSMutableArray array];
+    for (VNFaceObservation *obs in observations) {
+        CGRect box = obs.boundingBox;
+        // Skip tiny background passersby faces that introduce clustering noise
+        if (box.size.width < 0.032 && box.size.height < 0.032) {
+            continue;
+        }
+        double normX = box.origin.x;
+        double normY = 1.0 - (box.origin.y + box.size.height);
+        double normW = box.size.width;
+        double normH = box.size.height;
+
+        // Pad crop by ~20% to capture facial contour & hair context for Vision feature prints
+        double padX = normW * 0.20;
+        double padY = normH * 0.22;
+        double cropX = MAX(0.0, normX - padX) * (double)imgW;
+        double cropY = MAX(0.0, normY - padY) * (double)imgH;
+        double cropRight = MIN(1.0, normX + normW + padX) * (double)imgW;
+        double cropBottom = MIN(1.0, normY + normH + padY) * (double)imgH;
+        double cropW = cropRight - cropX;
+        double cropH = cropBottom - cropY;
+        if (cropW < 16.0 || cropH < 16.0) {
+            continue;
+        }
+
+        CGImageRef faceCrop = CGImageCreateWithImageInRect(
+            cgImage,
+            CGRectMake(cropX, cropY, cropW, cropH)
+        );
+        if (faceCrop == NULL) {
+            continue;
+        }
+
+        VNRequest *fpReq = [[fpClass alloc] init];
+        VNImageRequestHandler *cropHandler = [[VNImageRequestHandler alloc] initWithCGImage:faceCrop
+                                                                                    options:@{}];
+        NSError *fpErr = nil;
+        NSString *embeddingB64 = nil;
+        if ([cropHandler performRequests:@[fpReq] error:&fpErr] && fpErr == nil) {
+            VNFeaturePrintObservation *fpObs = (VNFeaturePrintObservation *)fpReq.results.firstObject;
+            if (fpObs != nil && fpObs.data != nil && fpObs.elementCount > 0) {
+                NSUInteger count = fpObs.elementCount;
+                NSMutableData *floatBytes = [NSMutableData dataWithLength:count * sizeof(float)];
+                float *dst = (float *)floatBytes.mutableBytes;
+                BOOL valid = NO;
+                if (fpObs.elementType == VNElementTypeFloat && fpObs.data.length >= count * sizeof(float)) {
+                    memcpy(dst, fpObs.data.bytes, count * sizeof(float));
+                    valid = YES;
+                } else if (fpObs.elementType == VNElementTypeDouble && fpObs.data.length >= count * sizeof(double)) {
+                    const double *src = (const double *)fpObs.data.bytes;
+                    for (NSUInteger i = 0; i < count; i++) {
+                        dst[i] = (float)src[i];
+                    }
+                    valid = YES;
+                }
+                if (valid) {
+                    // L2-normalize to unit length so dot product == cosine similarity
+                    double normSq = 0.0;
+                    for (NSUInteger i = 0; i < count; i++) {
+                        normSq += (double)dst[i] * (double)dst[i];
+                    }
+                    if (normSq > 1e-12) {
+                        float invNorm = (float)(1.0 / sqrt(normSq));
+                        for (NSUInteger i = 0; i < count; i++) {
+                            dst[i] *= invNorm;
+                        }
+                        embeddingB64 = [floatBytes base64EncodedStringWithOptions:0];
+                    }
+                }
+            }
+        }
+
+        NSString *avatarB64 = embeddingB64 != nil
+            ? imageexplorer_encode_cgimage_jpeg_base64(faceCrop, 112)
+            : nil;
+        CGImageRelease(faceCrop);
+
+        if (embeddingB64 != nil) {
+            NSMutableDictionary *entry = [NSMutableDictionary dictionaryWithDictionary:@{
+                @"x": @(normX),
+                @"y": @(normY),
+                @"width": @(normW),
+                @"height": @(normH),
+                @"area": @(normW * normH),
+                @"embeddingB64": embeddingB64,
+            }];
+            if (avatarB64 != nil) {
+                entry[@"avatarB64"] = avatarB64;
+            }
+            [results addObject:entry];
+        }
+    }
+#pragma clang diagnostic pop
+
+    if (results.count == 0) {
+        return NULL;
+    }
+
+    NSData *json = [NSJSONSerialization dataWithJSONObject:results options:0 error:NULL];
+    if (json == nil || json.length == 0) {
+        return NULL;
+    }
+    uint8_t *output = malloc(json.length);
+    if (output == NULL) {
+        return NULL;
+    }
+    [json getBytes:output length:json.length];
+    *outLength = json.length;
+    return output;
+}
+
+// Detect faces and extract L2-normalized Vision feature-print embeddings from in-memory bytes.
+uint8_t *imageexplorer_extract_face_embeddings_from_bytes(
+    const uint8_t *bytes,
+    size_t length,
+    size_t *outLength
+) {
+    if (bytes == NULL || length == 0 || outLength == NULL) {
+        return NULL;
+    }
+    *outLength = 0;
+
+    @autoreleasepool {
+        CFDataRef data = CFDataCreateWithBytesNoCopy(
+            kCFAllocatorDefault, bytes, (CFIndex)length, kCFAllocatorNull
+        );
+        if (data == NULL) {
+            return NULL;
+        }
+        CGImageSourceRef source = CGImageSourceCreateWithData(data, NULL);
+        CFRelease(data);
+        if (source == NULL) {
+            return NULL;
+        }
+        CGImageRef image = imageexplorer_create_upright_cgimage_for_vision(source);
+        CFRelease(source);
+        if (image == NULL) {
+            return NULL;
+        }
+        uint8_t *result = imageexplorer_extract_face_embeddings_on_cgimage(image, outLength);
+        CGImageRelease(image);
+        return result;
+    }
+}
+
+// Detect faces and extract L2-normalized Vision feature-print embeddings directly from a file path.
+uint8_t *imageexplorer_extract_face_embeddings(const char *path, size_t *outLength) {
+    if (path == NULL || outLength == NULL) {
+        return NULL;
+    }
+    *outLength = 0;
+
+    @autoreleasepool {
+        NSString *filePath = [NSString stringWithUTF8String:path];
+        if (filePath == nil) {
+            return NULL;
+        }
+        NSURL *fileURL = [NSURL fileURLWithPath:filePath];
+        CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)fileURL, NULL);
+        if (source == NULL) {
+            return NULL;
+        }
+        CGImageRef image = imageexplorer_create_upright_cgimage_for_vision(source);
+        CFRelease(source);
+        if (image == NULL) {
+            return NULL;
+        }
+        uint8_t *result = imageexplorer_extract_face_embeddings_on_cgimage(image, outLength);
+        CGImageRelease(image);
+        return result;
+    }
+}

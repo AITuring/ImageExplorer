@@ -19,6 +19,7 @@ import {
   Landmark,
   RefreshCw,
   Terminal,
+  Users,
 } from "lucide-react";
 
 interface EmptyAreaMenuContentProps {
@@ -95,6 +96,13 @@ export function EmptyAreaMenuContent({ actions }: EmptyAreaMenuContentProps) {
           fallbackIcon={Landmark}
           label={t("context_menu.exhibit_label_mode")}
           onClick={actions.onExhibitLabelMode}
+        />
+      )}
+      {actions.onPeopleClusterMode && (
+        <MenuItem
+          fallbackIcon={Users}
+          label={t("context_menu.people_cluster_mode")}
+          onClick={actions.onPeopleClusterMode}
         />
       )}
       <ContextMenuSeparator />

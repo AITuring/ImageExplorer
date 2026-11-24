@@ -9,6 +9,7 @@ mod exhibit_label;
 mod index;
 mod menu;
 mod operations;
+mod people_clustering;
 mod photo_workflow;
 mod raw_preview;
 mod storage_analyzer;
@@ -1358,6 +1359,11 @@ pub fn run() {
             exhibit_label::cancel_exhibit_label_scan,
             exhibit_label::apply_exhibit_label_renames,
             exhibit_label::undo_exhibit_label_renames,
+            people_clustering::scan_people_clusters,
+            people_clustering::cancel_people_scan,
+            people_clustering::recluster_people,
+            people_clustering::organize_people_photos,
+            people_clustering::undo_people_organization,
             zip_preview::list_zip_entries,
             analyze_directory_storage,
             find_duplicate_files,

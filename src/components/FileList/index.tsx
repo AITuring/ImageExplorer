@@ -64,6 +64,7 @@ import { settingsManager } from "@/lib/store";
 import { useStatusBar } from "@/stores/statusBar";
 import { useBatchExportDialog } from "@/stores/batchExportDialog";
 import { useExhibitLabelDialog } from "@/stores/exhibitLabelDialog";
+import { usePeopleClusterDialog } from "@/stores/peopleClusterDialog";
 
 /** 列表视图固定行高 */
 const LIST_ITEM_HEIGHT = 32;
@@ -169,6 +170,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   const setStatusBar = useStatusBar((state) => state.setStatus);
   const openBatchExport = useBatchExportDialog((state) => state.open);
   const openExhibitLabel = useExhibitLabelDialog((state) => state.open);
+  const openPeopleCluster = usePeopleClusterDialog((state) => state.open);
   const [legacyTabNumberShortcuts] = useSetting<boolean>("legacy_cmd_number_tabs", false);
   const [gridColumns, setGridColumns] = useState(6);
   const [columnSelectionContext, setColumnSelectionContext] =
@@ -1316,6 +1318,13 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
           openExhibitLabel(operationPath, targets);
         }
       },
+      onPeopleClusterMode: (targets) => {
+        if (targets.length === 1 && targets[0].is_dir) {
+          openPeopleCluster(targets[0].path, []);
+        } else if (!operationPath.startsWith(SMART_FOLDER_PREFIX)) {
+          openPeopleCluster(operationPath, targets);
+        }
+      },
       onRotateImage: handleRotateImage,
       onShare: handleShare,
       onCopy: handleCopy,
@@ -1363,6 +1372,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       isFavorite,
       openBatchExport,
       openExhibitLabel,
+      openPeopleCluster,
       operationPath,
     ]
   );
@@ -1516,6 +1526,9 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
           onOpenInTerminal: handleOpenInTerminal,
           onExhibitLabelMode: !currentPath.startsWith(SMART_FOLDER_PREFIX)
             ? () => openExhibitLabel(currentPath, [])
+            : undefined,
+          onPeopleClusterMode: !currentPath.startsWith(SMART_FOLDER_PREFIX)
+            ? () => openPeopleCluster(currentPath, [])
             : undefined,
           onSort: handleSort,
           onArrange: () => handleArrange(),

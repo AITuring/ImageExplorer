@@ -45,5 +45,7 @@
   "batch_export": "Batch Export Photos...",
   "exhibit_label_mode": "Exhibit Label Recognition...",
   "exhibit_label_mode_selected": "Exhibit Label Recognition ({{count}})...",
+  "people_cluster_mode": "Group by People...",
+  "people_cluster_mode_selected": "Group by People ({{count}})...",
   "batch_rename": "Batch Rename..."
 }

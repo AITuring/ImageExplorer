@@ -198,6 +198,7 @@ export interface FileActions {
   onCompare?: (entries: FileEntry[]) => void;
   onBatchExport?: (entries: FileEntry[]) => void;
   onExhibitLabelMode?: (entries: FileEntry[]) => void;
+  onPeopleClusterMode?: (entries: FileEntry[]) => void;
   onRotateImage?: (entries: FileEntry[], clockwise: boolean) => void;
   onShare?: (entries: FileEntry[]) => void;
   onCopy: (entries: FileEntry[]) => void;
@@ -225,6 +226,7 @@ export interface EmptyAreaActions {
   onNewFolder: () => void;
   onOpenInTerminal: () => void;
   onExhibitLabelMode?: () => void;
+  onPeopleClusterMode?: () => void;
   onSort: (field: SortField) => void;
   onArrange: () => void;
   onArrangeBy: (field: SortField) => void;

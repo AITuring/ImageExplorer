@@ -33,6 +33,7 @@ import {
   Share,
   Terminal,
   Trash2,
+  Users,
 } from "lucide-react";
 
 const ROTATABLE_IMAGE_EXTS = new Set([
@@ -255,6 +256,32 @@ export function FileMenuContent({ entry, selectedEntries, actions }: FileMenuCon
                   : t("context_menu.exhibit_label_mode")
               }
               onClick={() => actions.onExhibitLabelMode?.(photos)}
+            />
+          );
+        })()}
+
+      {actions.onPeopleClusterMode &&
+        (() => {
+          if (targets.length === 1 && targets[0].is_dir && !targets[0].is_package) {
+            return (
+              <MenuItem
+                fallbackIcon={Users}
+                label={t("context_menu.people_cluster_mode")}
+                onClick={() => actions.onPeopleClusterMode?.(targets)}
+              />
+            );
+          }
+          const photos = targets.filter(isAnalyzablePhoto);
+          if (photos.length === 0) return null;
+          return (
+            <MenuItem
+              fallbackIcon={Users}
+              label={
+                photos.length > 1
+                  ? t("context_menu.people_cluster_mode_selected", { count: photos.length })
+                  : t("context_menu.people_cluster_mode")
+              }
+              onClick={() => actions.onPeopleClusterMode?.(photos)}
             />
           );
         })()}
