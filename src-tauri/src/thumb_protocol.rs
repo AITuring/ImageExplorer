@@ -64,6 +64,13 @@ fn percent_decode(input: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
+        if bytes[i] == b'+' {
+            // Standard query-string decoding (application/x-www-form-urlencoded):
+            // '+' represents a space while literal '+' is encoded as '%2B'.
+            out.push(b' ');
+            i += 1;
+            continue;
+        }
         if bytes[i] == b'%' && i + 2 < bytes.len() {
             let hi = (bytes[i + 1] as char).to_digit(16);
             let lo = (bytes[i + 2] as char).to_digit(16);
@@ -270,11 +277,11 @@ mod tests {
     #[test]
     fn parse_query_params_extracts_all_fields() {
         let params = parse_query_params(
-            "path=%2Ftmp%2Fmy%20photo.jpg&size=288&embedded=1&fallback=0&bg=1&v=1700-42",
+            "path=%2Ftmp%2Fmy%20photo+name%2B2.jpg&size=288&embedded=1&fallback=0&bg=1&v=1700-42",
         );
         assert_eq!(
             params.get("path").map(String::as_str),
-            Some("/tmp/my photo.jpg")
+            Some("/tmp/my photo name+2.jpg")
         );
         assert_eq!(params.get("size").map(String::as_str), Some("288"));
         assert_eq!(params.get("embedded").map(String::as_str), Some("1"));

@@ -197,17 +197,19 @@ export function buildFileThumbnailUrl(
   allowIconFallback = false,
   lowPriority = false
 ): string {
-  const params = new URLSearchParams({
-    path,
-    size: String(Math.round(size)),
-    embedded: preferEmbedded ? "1" : "0",
-    fallback: allowIconFallback ? "1" : "0",
-    v: `${modified ?? 0}-${fileSize}`,
-  });
+  // Use encodeURIComponent instead of URLSearchParams so spaces are encoded as
+  // %20 rather than '+', matching RFC 3986 percent-encoding unambiguously.
+  const parts = [
+    `path=${encodeURIComponent(path)}`,
+    `size=${encodeURIComponent(String(Math.round(size)))}`,
+    `embedded=${preferEmbedded ? "1" : "0"}`,
+    `fallback=${allowIconFallback ? "1" : "0"}`,
+    `v=${encodeURIComponent(`${modified ?? 0}-${fileSize}`)}`,
+  ];
   if (lowPriority) {
-    params.set("bg", "1");
+    parts.push("bg=1");
   }
-  return `thumb://localhost/file?${params.toString()}`;
+  return `thumb://localhost/file?${parts.join("&")}`;
 }
 
 export function buildRawEmbeddedJpegUrl(
@@ -216,12 +218,12 @@ export function buildRawEmbeddedJpegUrl(
   fileSize: number,
   maxPixelSize: number
 ): string {
-  const params = new URLSearchParams({
-    path,
-    max: String(Math.round(maxPixelSize)),
-    v: `${modified ?? 0}-${fileSize}`,
-  });
-  return `thumb://localhost/raw?${params.toString()}`;
+  const parts = [
+    `path=${encodeURIComponent(path)}`,
+    `max=${encodeURIComponent(String(Math.round(maxPixelSize)))}`,
+    `v=${encodeURIComponent(`${modified ?? 0}-${fileSize}`)}`,
+  ];
+  return `thumb://localhost/raw?${parts.join("&")}`;
 }
 
 export const buildArwEmbeddedJpegUrl = buildRawEmbeddedJpegUrl;

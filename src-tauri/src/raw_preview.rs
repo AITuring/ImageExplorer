@@ -136,8 +136,76 @@ pub fn extract_embedded_jpeg(data: &[u8], min_length: usize) -> Option<&[u8]> {
     extract_tiff_jpeg(data, min_length)
 }
 
+/// Maximum number of leading header bytes scanned to verify a candidate JPEG's
+/// SOF marker without faulting megabytes of mmap'd RAW sensor data from disk.
+const MAX_JPEG_HEADER_SCAN_BYTES: usize = 64 * 1024;
+
+/// Verify that `slice` is a standard 8-bit displayable preview JPEG (SOF0/SOF1/SOF2
+/// with 1 or 3 color components) and NOT a Lossless JPEG (SOF3 `0xFFC3`, etc.)
+/// Bayer RAW sensor strip such as Sony ILCE-7M4 lossless ARW, Canon CR2, or DNG.
 fn is_valid_jpeg_slice(slice: &[u8], min_length: usize) -> bool {
-    slice.len() >= min_length.max(4) && slice[0] == 0xFF && slice[1] == 0xD8 && slice[2] == 0xFF
+    if slice.len() < min_length.max(16) || slice[0] != 0xFF || slice[1] != 0xD8 || slice[2] != 0xFF
+    {
+        return false;
+    }
+
+    let scan_limit = slice.len().min(MAX_JPEG_HEADER_SCAN_BYTES);
+    let mut pos = 2usize;
+    while pos + 1 < scan_limit {
+        // Advance to marker prefix 0xFF
+        if slice[pos] != 0xFF {
+            return false;
+        }
+        while pos < scan_limit && slice[pos] == 0xFF {
+            pos += 1;
+        }
+        if pos >= scan_limit {
+            return false;
+        }
+        let marker = slice[pos];
+        pos += 1;
+
+        match marker {
+            // Standalone markers with no length payload
+            0x00 | 0x01 | 0xD0..=0xD8 => continue,
+            // Start of Scan or End of Image before seeing an acceptable SOF
+            0xD9 | 0xDA => return false,
+            // Displayable DCT Start-of-Frame markers: Baseline / Extended / Progressive
+            0xC0..=0xC2 => {
+                if pos + 8 > scan_limit {
+                    return false;
+                }
+                let seg_len = u16::from_be_bytes([slice[pos], slice[pos + 1]]) as usize;
+                let precision = slice[pos + 2];
+                let height = u16::from_be_bytes([slice[pos + 3], slice[pos + 4]]);
+                let width = u16::from_be_bytes([slice[pos + 5], slice[pos + 6]]);
+                let components = slice[pos + 7];
+                return seg_len >= 8
+                    && precision == 8
+                    && width > 0
+                    && height > 0
+                    && matches!(components, 1 | 3);
+            }
+            // Lossless / hierarchical / arithmetic SOF markers (e.g. SOF3 0xC3 Bayer RAW)
+            0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF => return false,
+            // Any other marker segment (APPn, DQT, DHT, DRI, COM, etc.)
+            _ => {
+                if pos + 2 > scan_limit {
+                    return false;
+                }
+                let seg_len = u16::from_be_bytes([slice[pos], slice[pos + 1]]) as usize;
+                if seg_len < 2 {
+                    return false;
+                }
+                pos = match pos.checked_add(seg_len) {
+                    Some(next) => next,
+                    None => return false,
+                };
+            }
+        }
+    }
+
+    false
 }
 
 fn read_u16(data: &[u8], offset: usize, little_endian: bool) -> Option<u16> {
@@ -260,6 +328,7 @@ fn extract_tiff_jpeg(data: &[u8], min_length: usize) -> Option<&[u8]> {
         let mut jpeg_length: Option<usize> = None;
         let mut strip_offset: Option<usize> = None;
         let mut strip_length: Option<usize> = None;
+        let mut photometric: Option<u32> = None;
 
         for idx in 0..entry_count as usize {
             let tag_offset = entries_start + idx * 12;
@@ -287,6 +356,14 @@ fn extract_tiff_jpeg(data: &[u8], min_length: usize) -> Option<&[u8]> {
                         read_tiff_scalar_u32(data, tag_offset, field_type, count, little_endian)
                     {
                         jpeg_length = Some(v as usize);
+                    }
+                }
+                // PhotometricInterpretation (32803 = CFA Bayer, 34892 = LinearRaw)
+                0x0106 => {
+                    if let Some(v) =
+                        read_tiff_scalar_u32(data, tag_offset, field_type, count, little_endian)
+                    {
+                        photometric = Some(v);
                     }
                 }
                 // Single-strip JPEG (used by Nikon NEF, Canon CR2, DNG)
@@ -347,8 +424,11 @@ fn extract_tiff_jpeg(data: &[u8], min_length: usize) -> Option<&[u8]> {
         if let (Some(off), Some(len)) = (jpeg_offset, jpeg_length) {
             consider_candidate(&mut best, data, off, len, min_length);
         }
-        if let (Some(off), Some(len)) = (strip_offset, strip_length) {
-            consider_candidate(&mut best, data, off, len, min_length);
+        let is_raw_sensor_ifd = matches!(photometric, Some(32803 | 34892));
+        if !is_raw_sensor_ifd {
+            if let (Some(off), Some(len)) = (strip_offset, strip_length) {
+                consider_candidate(&mut best, data, off, len, min_length);
+            }
         }
 
         if let Some(next_ifd) = read_u32(data, next_ifd_pos, little_endian) {
@@ -533,8 +613,38 @@ mod tests {
     use super::extract_embedded_jpeg;
 
     fn fake_jpeg(payload_len: usize, fill: u8) -> Vec<u8> {
-        let mut out = vec![0xFF, 0xD8, 0xFF, 0xE0];
-        out.resize(payload_len.saturating_sub(2).max(4), fill);
+        // Minimal valid 8-bit 3-component baseline JPEG (SOI + SOF0 + padding + EOI)
+        let mut out = vec![
+            0xFF, 0xD8, // SOI
+            0xFF, 0xC0, // SOF0 (Baseline DCT)
+            0x00, 0x11, // length = 17
+            0x08, // 8-bit precision
+            0x00, 0x10, // height = 16
+            0x00, 0x10, // width = 16
+            0x03, // 3 components (YCbCr)
+            0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01,
+        ];
+        let target_body = payload_len.saturating_sub(2).max(out.len());
+        out.resize(target_body, fill);
+        out.extend_from_slice(&[0xFF, 0xD9]);
+        out
+    }
+
+    fn fake_lossless_sof3_raw_strip(payload_len: usize, fill: u8) -> Vec<u8> {
+        // Mirrors Sony ILCE-7M4 lossless-compressed ARW Bayer strip:
+        // SOI + SOF3 (0xFFC3), 14-bit precision (0x0E), 4 CFA components.
+        let mut out = vec![
+            0xFF, 0xD8, // SOI
+            0xFF, 0xC3, // SOF3 (Lossless Huffman)
+            0x00, 0x14, // length = 20
+            0x0E, // 14-bit precision
+            0x01, 0x00, // height = 256
+            0x01, 0x00, // width = 256
+            0x04, // 4 CFA components
+            0x01, 0x11, 0x00, 0x02, 0x11, 0x00, 0x03, 0x11, 0x00, 0x04, 0x11, 0x00,
+        ];
+        let target_body = payload_len.saturating_sub(2).max(out.len());
+        out.resize(target_body, fill);
         out.extend_from_slice(&[0xFF, 0xD9]);
         out
     }
@@ -696,6 +806,50 @@ mod tests {
             extract_embedded_jpeg(&cr3, 32).expect("extract CR3 full JPEG"),
             full_jpeg.as_slice()
         );
+    }
+
+    #[test]
+    fn skips_lossless_sof3_raw_sensor_strip_and_extracts_preview_jpeg() {
+        let preview_jpeg = fake_jpeg(192, 0x42);
+        let lossless_raw_strip = fake_lossless_sof3_raw_strip(1024, 0x99);
+
+        // Layout mirroring Sony ILCE-7M4 lossless ARW:
+        // IFD0 points to SubIFD (huge 14-bit SOF3 Bayer strip) AND next IFD (real 8-bit SOF0 preview)
+        let mut data = vec![0u8; 192];
+        data[0..2].copy_from_slice(b"II");
+        data[2..4].copy_from_slice(&42u16.to_le_bytes());
+        data[4..8].copy_from_slice(&8u32.to_le_bytes());
+
+        let preview_offset = data.len() as u32;
+        data.extend_from_slice(&preview_jpeg);
+        let raw_offset = data.len() as u32;
+        data.extend_from_slice(&lossless_raw_strip);
+
+        // IFD0 at 8: SubIFD=64, next_ifd=128
+        let mut ifd0 = Vec::new();
+        ifd0.extend_from_slice(&1u16.to_le_bytes());
+        push_le_tag(&mut ifd0, 0x014A, 4, 1, 64);
+        ifd0.extend_from_slice(&128u32.to_le_bytes());
+        data[8..8 + ifd0.len()].copy_from_slice(&ifd0);
+
+        // SubIFD at 64: StripOffsets/StripByteCounts -> huge SOF3 Bayer sensor strip
+        let mut sub_ifd = Vec::new();
+        sub_ifd.extend_from_slice(&2u16.to_le_bytes());
+        push_le_tag(&mut sub_ifd, 0x0111, 4, 1, raw_offset);
+        push_le_tag(&mut sub_ifd, 0x0117, 4, 1, lossless_raw_strip.len() as u32);
+        sub_ifd.extend_from_slice(&0u32.to_le_bytes());
+        data[64..64 + sub_ifd.len()].copy_from_slice(&sub_ifd);
+
+        // IFD1 at 128: JPEGInterchangeFormat/Length -> real 8-bit preview JPEG
+        let mut ifd1 = Vec::new();
+        ifd1.extend_from_slice(&2u16.to_le_bytes());
+        push_le_tag(&mut ifd1, 0x0201, 4, 1, preview_offset);
+        push_le_tag(&mut ifd1, 0x0202, 4, 1, preview_jpeg.len() as u32);
+        ifd1.extend_from_slice(&0u32.to_le_bytes());
+        data[128..128 + ifd1.len()].copy_from_slice(&ifd1);
+
+        let extracted = extract_embedded_jpeg(&data, 32).expect("extract real SOF0 preview JPEG");
+        assert_eq!(extracted, preview_jpeg.as_slice());
     }
 
     #[test]

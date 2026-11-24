@@ -10,7 +10,7 @@ export type VisibleSharpness = "sharp" | "soft" | "unavailable";
 
 const IMAGE_TYPES = new Set(IMAGE_EXTENSIONS.filter((type) => type !== "svg" && type !== "psd"));
 const SOURCE_SIZE = 1024;
-const SHARPNESS_CACHE_VERSION = 1;
+const SHARPNESS_CACHE_VERSION = 2;
 const PUBLISH_INTERVAL_MS = 160;
 const PUBLISH_BATCH_SIZE = 12;
 const SQLITE_PERSIST_BATCH_SIZE = 16;

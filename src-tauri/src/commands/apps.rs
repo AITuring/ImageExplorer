@@ -285,7 +285,7 @@ pub fn get_raw_embedded_jpeg_bytes_blocking(
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
     let cache_key = format!(
-        "raw:{}:{}:{}:{}",
+        "raw2:{}:{}:{}:{}",
         path,
         metadata.len(),
         modified,
