@@ -878,9 +878,9 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
 
       {/* 底部液态玻璃功能坞：废纸篓 & 设置 */}
       <div className="finder-sidebar-footer shrink-0">
-        <div className="grid grid-cols-2 gap-1.5">
+        <div className="grid grid-cols-[1.2fr_1fr] gap-1">
           <button
-            className="finder-sidebar-footer-btn text-muted-foreground hover:text-foreground flex h-8 items-center justify-center gap-1.5 px-2 text-xs font-medium"
+            className="finder-sidebar-footer-btn text-muted-foreground hover:text-foreground flex h-8 min-w-0 items-center justify-center gap-1 px-1.5 text-[11.5px] font-medium whitespace-nowrap"
             onClick={() => setTrashOpen(true)}
             aria-label={t("trash.title")}
           >
@@ -888,7 +888,7 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
             <span className="truncate">{t("trash.title")}</span>
           </button>
           <button
-            className="finder-sidebar-footer-btn text-muted-foreground hover:text-foreground flex h-8 items-center justify-center gap-1.5 px-2 text-xs font-medium"
+            className="finder-sidebar-footer-btn text-muted-foreground hover:text-foreground flex h-8 min-w-0 items-center justify-center gap-1 px-1.5 text-[11.5px] font-medium whitespace-nowrap"
             onClick={(e) => {
               e.stopPropagation();
               setIsSettingsOpen(true);

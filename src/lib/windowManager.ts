@@ -3,6 +3,7 @@ import {
   getAllWebviewWindows,
   getCurrentWebviewWindow,
 } from "@tauri-apps/api/webviewWindow";
+import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { emit, listen, UnlistenFn } from "@tauri-apps/api/event";
 import { nanoid } from "nanoid";
 import type { Tab } from "@/types/tab";
@@ -138,6 +139,7 @@ class WindowManager {
       y: options?.y,
       transparent: true,
       titleBarStyle: "overlay",
+      trafficLightPosition: new LogicalPosition(18, 24),
       hiddenTitle: true,
       // Keep HTML5 drag/drop available in dynamically-created windows.
       dragDropEnabled: false,
