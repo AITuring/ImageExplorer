@@ -188,166 +188,140 @@ function clearLiveZoomTransform(frame: HTMLDivElement | null) {
   frame.style.removeProperty("backface-visibility");
 }
 
-const FocusAnalysisDetails = memo(function FocusAnalysisDetails({
+const QuickLookPhotoFooter = memo(function QuickLookPhotoFooter({
+  metadata,
   analysis,
   cameraAfMetadata,
+  histogram,
+  showClippingOverlay,
+  onToggleClippingOverlay,
 }: {
+  metadata: PhotoMetadata | null;
   analysis?: PhotoAnalysisRecord;
   cameraAfMetadata?: CameraAfMetadata | null;
+  histogram: PhotoHistogramData | null;
+  showClippingOverlay: boolean;
+  onToggleClippingOverlay: () => void;
 }) {
   const { t } = useTranslation();
+  const iso = metadata?.iso?.match(/\d+(?:\.\d+)?/)?.[0] ?? null;
+  const exposureItems = [
+    { label: "ISO", value: iso ? `ISO ${iso}` : null },
+    { label: t("file_list.details.aperture"), value: formatAperture(metadata?.aperture ?? null) },
+    {
+      label: t("file_list.details.shutter"),
+      value: formatShutterSpeed(metadata?.shutterSpeed ?? null),
+    },
+    {
+      label: t("file_list.details.focal"),
+      value: formatFocalLength(metadata?.focalLength ?? null),
+    },
+  ].filter((item): item is { label: string; value: string } => Boolean(item.value));
+
+  const cameraModel = metadata?.model || metadata?.make || null;
+  const lensModel = metadata?.lens || null;
+  const equipmentText = [cameraModel, lensModel].filter(Boolean).join(" · ");
+
   const focusAnalysis = analysis?.focusAnalysis;
   const cameraAfRegions = getCameraAfRegions(cameraAfMetadata);
   const regions = cameraAfRegions ?? focusAnalysis?.regions ?? [];
   const region = regions[0];
 
+  let focusBadgeText: string | null = null;
+  let focusTooltip: string | undefined;
+  if (cameraAfMetadata?.source === "camera-maker-note" && cameraAfRegions?.length) {
+    focusBadgeText = t("common.quick_look.focus_camera_af_regions", {
+      count: cameraAfRegions.length,
+    });
+    focusTooltip = [
+      t("common.quick_look.focus_camera_af"),
+      focusBadgeText,
+      region
+        ? t("common.quick_look.focus_camera_af_size", {
+            width: Math.round(region.width * 100),
+            height: Math.round(region.height * 100),
+          })
+        : null,
+      cameraAfMetadata.areaMode,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  } else if (focusAnalysis?.kind === "full-frame") {
+    const confidence = Math.round(focusAnalysis.confidence * 100);
+    focusBadgeText = `${t("common.quick_look.focus_full_frame")} · ${confidence}%`;
+    focusTooltip = `${t("common.quick_look.focus_data")} · ${focusBadgeText} · ${t("common.quick_look.focus_method")}`;
+  } else if (focusAnalysis && region) {
+    const confidence = Math.round(focusAnalysis.confidence * 100);
+    focusBadgeText = `${t("common.quick_look.focus_regions", { count: regions.length })} · ${confidence}%`;
+    focusTooltip = [
+      t("common.quick_look.focus_data"),
+      t("common.quick_look.focus_regions", { count: regions.length }),
+      t("common.quick_look.focus_region_size", {
+        width: Math.round(region.width * 100),
+        height: Math.round(region.height * 100),
+      }),
+      t("common.quick_look.focus_confidence", { value: confidence }),
+      t("common.quick_look.focus_method"),
+    ].join(" · ");
+  }
+
   return (
-    <div
-      className="bg-muted/30 text-muted-foreground flex min-h-7 w-full shrink-0 flex-wrap items-center justify-center gap-x-3 gap-y-1 rounded-md border px-3 py-1 text-[11px] leading-4"
-      role="status"
-      aria-live="polite"
+    <footer
+      className="border-border/50 bg-muted/25 flex h-10 w-full shrink-0 items-center justify-between gap-3 rounded-md border px-2.5 pr-6 text-xs"
+      aria-label={t("file_list.details.shooting")}
     >
-      <span className="text-foreground font-medium">
-        {cameraAfRegions !== null
-          ? t("common.quick_look.focus_camera_af")
-          : t("common.quick_look.focus_data")}
-      </span>
-      {cameraAfMetadata?.source === "camera-maker-note" && cameraAfRegions?.length ? (
-        <>
-          <span>
-            {t("common.quick_look.focus_camera_af_regions", {
-              count: cameraAfRegions.length,
-            })}
-          </span>
-          {cameraAfRegions.length === 1 && (
-            <span>
-              {t("common.quick_look.focus_camera_af_center", {
-                x: Math.round((region.x + region.width / 2) * 100),
-                y: Math.round((region.y + region.height / 2) * 100),
-              })}
-            </span>
-          )}
-          <span>
-            {t("common.quick_look.focus_camera_af_size", {
-              width: Math.round(region.width * 100),
-              height: Math.round(region.height * 100),
-            })}
-          </span>
-          <span>
-            {cameraAfMetadata.exact
-              ? t("common.quick_look.focus_camera_af_exact")
-              : t("common.quick_look.focus_camera_af_approx")}
-          </span>
-          {cameraAfMetadata.areaMode && <span>{cameraAfMetadata.areaMode}</span>}
-        </>
-      ) : cameraAfMetadata?.source === "camera-maker-note" ? (
-        <>
-          <span>{t("common.quick_look.focus_camera_af_unavailable")}</span>
-          {cameraAfMetadata.areaMode && <span>{cameraAfMetadata.areaMode}</span>}
-          {cameraAfMetadata.focusMode && <span>{cameraAfMetadata.focusMode}</span>}
-        </>
-      ) : focusAnalysis?.kind === "full-frame" ? (
-        <>
-          <span>{t("common.quick_look.focus_full_frame")}</span>
-          <span>
-            {t("common.quick_look.focus_confidence", {
-              value: Math.round(focusAnalysis.confidence * 100),
-            })}
-          </span>
-          <span>{t("common.quick_look.focus_method")}</span>
-          {cameraAfMetadata?.source === "unavailable" && (
-            <span>{t("common.quick_look.focus_camera_af_unavailable")}</span>
-          )}
-        </>
-      ) : focusAnalysis && region ? (
-        <>
-          <span>
-            {t("common.quick_look.focus_regions", {
-              count: regions.length,
-            })}
-          </span>
-          {regions.length === 1 && (
-            <span>
-              {t("common.quick_look.focus_region_position", {
-                x: Math.round((region.x + region.width / 2) * 100),
-                y: Math.round((region.y + region.height / 2) * 100),
-              })}
-            </span>
-          )}
-          <span>
-            {t("common.quick_look.focus_region_size", {
-              width: Math.round(region.width * 100),
-              height: Math.round(region.height * 100),
-            })}
-          </span>
-          <span>
-            {t("common.quick_look.focus_confidence", {
-              value: Math.round(focusAnalysis.confidence * 100),
-            })}
-          </span>
-          <span>{t("common.quick_look.focus_method")}</span>
-          {cameraAfMetadata?.source === "unavailable" && (
-            <span>{t("common.quick_look.focus_camera_af_unavailable")}</span>
-          )}
-        </>
-      ) : (
-        <>
-          <span>{t("common.quick_look.focus_unavailable")}</span>
-          {cameraAfMetadata?.source === "unavailable" && (
-            <span>{t("common.quick_look.focus_camera_af_unavailable")}</span>
-          )}
-        </>
-      )}
-    </div>
-  );
-});
-
-const PhotoMetadataPanel = memo(function PhotoMetadataPanel({
-  metadata,
-}: {
-  metadata: PhotoMetadata | null;
-}) {
-  const { t } = useTranslation();
-  const iso = metadata?.iso?.match(/\d+(?:\.\d+)?/)?.[0] ?? null;
-  const settings = [
-    { label: "ISO", value: iso ? `ISO ${iso}` : "—" },
-    {
-      label: t("file_list.details.aperture"),
-      value: formatAperture(metadata?.aperture ?? null) ?? "—",
-    },
-    {
-      label: t("file_list.details.shutter"),
-      value: formatShutterSpeed(metadata?.shutterSpeed ?? null) ?? "—",
-    },
-    {
-      label: t("file_list.details.focal"),
-      value: formatFocalLength(metadata?.focalLength ?? null) ?? "—",
-    },
-  ];
-
-  return (
-    <section className="quick-look-metadata shrink-0" aria-label={t("file_list.details.shooting")}>
-      <dl className="quick-look-metadata-grid">
-        {settings.map(({ label, value }) => (
-          <div className="quick-look-metadata-cell" key={label}>
-            <dt>{label}</dt>
-            <dd>{value}</dd>
+      <div className="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden">
+        {exposureItems.length > 0 && (
+          <div className="text-foreground flex shrink-0 items-center gap-2 font-mono text-xs font-medium whitespace-nowrap tabular-nums">
+            {exposureItems.map(({ label, value }, idx) => (
+              <span key={label} title={`${label}: ${value}`} className="inline-flex items-center">
+                {idx > 0 && <span className="text-muted-foreground/45 mr-2">·</span>}
+                {value}
+              </span>
+            ))}
           </div>
-        ))}
-      </dl>
-      <dl className="quick-look-equipment">
-        <div>
-          <dt>{t("file_list.details.model")}</dt>
-          <dd title={metadata?.model || metadata?.make || undefined}>
-            {metadata?.model || metadata?.make || "—"}
-          </dd>
+        )}
+        {equipmentText && (
+          <>
+            {exposureItems.length > 0 && (
+              <span className="bg-border/60 h-3.5 w-px shrink-0" aria-hidden="true" />
+            )}
+            <div
+              className="text-muted-foreground min-w-0 truncate text-[11px]"
+              title={equipmentText}
+            >
+              {cameraModel && <span className="text-foreground/90 font-medium">{cameraModel}</span>}
+              {cameraModel && lensModel && <span className="text-muted-foreground/50 mx-1">·</span>}
+              {lensModel && <span>{lensModel}</span>}
+            </div>
+          </>
+        )}
+        {focusBadgeText && (
+          <>
+            <span className="bg-border/60 hidden h-3.5 w-px shrink-0 lg:block" aria-hidden="true" />
+            <span
+              className="bg-secondary/45 text-muted-foreground hidden shrink-0 items-center rounded px-1.5 py-0.5 text-[11px] whitespace-nowrap tabular-nums lg:inline-flex"
+              title={focusTooltip}
+              role="status"
+              aria-live="polite"
+            >
+              {focusBadgeText}
+            </span>
+          </>
+        )}
+      </div>
+
+      {histogram && (
+        <div className="border-border/50 flex shrink-0 items-center border-l pl-2.5">
+          <PhotoHistogram
+            histogram={histogram}
+            showClippingOverlay={showClippingOverlay}
+            onToggleClippingOverlay={onToggleClippingOverlay}
+            inline
+          />
         </div>
-        <div>
-          <dt>{t("file_list.details.lens")}</dt>
-          <dd title={metadata?.lens || undefined}>{metadata?.lens || "—"}</dd>
-        </div>
-      </dl>
-    </section>
+      )}
+    </footer>
   );
 });
 
@@ -1303,7 +1277,7 @@ export function QuickLook({
 
     switch (previewType) {
       case "image":
-        return "max-h-[96vh] max-w-[98vw]";
+        return "max-h-[calc(100vh-2.75rem)] max-w-[calc(100vw-1rem)]";
       case "pdf":
       case "video":
         return "h-[min(92vh,64rem)] w-[min(96vw,96rem)]";
@@ -1316,9 +1290,11 @@ export function QuickLook({
   }, [entry, previewType]);
 
   const contentPaddingClass =
-    previewType === "image" || previewType === "pdf" || previewType === "video"
-      ? "p-1.5 md:p-2"
-      : "p-8";
+    previewType === "image"
+      ? "p-1"
+      : previewType === "pdf" || previewType === "video"
+        ? "p-1.5 md:p-2"
+        : "p-8";
 
   const quickLookEntries = useMemo(
     () => entries.filter((candidate) => !candidate.name.startsWith("._")),
@@ -1447,10 +1423,11 @@ export function QuickLook({
     if (previewType !== "image") {
       return undefined;
     }
-    const maxDialogHeight = Math.max(240, viewportSize.height - 84);
+    const maxDialogWidth = Math.max(360, viewportSize.width - 16);
+    const maxDialogHeight = Math.max(280, viewportSize.height - 44);
     return {
-      width: `${Math.min(customDialogSize?.width ?? viewportSize.width * 0.96, viewportSize.width * 0.98)}px`,
-      height: `${Math.min(customDialogSize?.height ?? viewportSize.height * 0.9, maxDialogHeight)}px`,
+      width: `${Math.min(customDialogSize?.width ?? maxDialogWidth, maxDialogWidth)}px`,
+      height: `${Math.min(customDialogSize?.height ?? maxDialogHeight, maxDialogHeight)}px`,
     };
   }, [customDialogSize, previewType, viewportSize.height, viewportSize.width]);
 
@@ -2139,25 +2116,14 @@ export function QuickLook({
                 cameraAfMetadata={cameraAfMetadata}
               />
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="min-w-0 flex-1 space-y-1">
-                <FocusAnalysisDetails
-                  analysis={photoAnalysis?.get(entry.path)}
-                  cameraAfMetadata={cameraAfMetadata}
-                />
-                <PhotoMetadataPanel metadata={photoMetadata} />
-              </div>
-              {activeHistogram && (
-                <div className="w-52 shrink-0">
-                  <PhotoHistogram
-                    histogram={activeHistogram}
-                    showClippingOverlay={showClippingOverlay}
-                    onToggleClippingOverlay={() => setShowClippingOverlay((v) => !v)}
-                    compact
-                  />
-                </div>
-              )}
-            </div>
+            <QuickLookPhotoFooter
+              metadata={photoMetadata}
+              analysis={photoAnalysis?.get(entry.path)}
+              cameraAfMetadata={cameraAfMetadata}
+              histogram={activeHistogram}
+              showClippingOverlay={showClippingOverlay}
+              onToggleClippingOverlay={() => setShowClippingOverlay((v) => !v)}
+            />
           </div>
         );
 
@@ -2336,7 +2302,7 @@ export function QuickLook({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 px-3 pt-16 pb-3"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 px-2 pt-9 pb-2"
       onClick={onClose}
     >
       <div
@@ -2351,13 +2317,13 @@ export function QuickLook({
         onClick={(e) => e.stopPropagation()}
       >
         {/* Title Bar */}
-        <div className="bg-muted/25 relative flex items-center justify-between border-b border-black/6 px-3 py-2">
-          <div className="flex gap-2">
+        <div className="bg-muted/25 relative flex h-10 shrink-0 items-center justify-between border-b border-black/6 px-2.5">
+          <div className="flex gap-1">
             <button
               type="button"
               onClick={onClose}
               aria-label={t("common.quick_look.close")}
-              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex h-8 w-8 items-center justify-center rounded-full transition-colors hover:bg-black/10 focus-visible:ring-2 focus-visible:outline-none dark:hover:bg-white/10"
+              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex h-7 w-7 items-center justify-center rounded-full transition-colors hover:bg-black/10 focus-visible:ring-2 focus-visible:outline-none dark:hover:bg-white/10"
             >
               <X className="h-4 w-4" aria-hidden="true" />
             </button>
@@ -2368,7 +2334,7 @@ export function QuickLook({
                   onClick={() => previousEntry && onNavigate(previousEntry)}
                   disabled={!previousEntry}
                   aria-label={t("common.quick_look.previous")}
-                  className="text-muted-foreground hover:text-foreground disabled:text-muted-foreground/40 focus-visible:ring-ring flex h-8 w-8 items-center justify-center rounded-full transition-colors hover:bg-black/10 focus-visible:ring-2 focus-visible:outline-none disabled:hover:bg-transparent dark:hover:bg-white/10"
+                  className="text-muted-foreground hover:text-foreground disabled:text-muted-foreground/40 focus-visible:ring-ring flex h-7 w-7 items-center justify-center rounded-full transition-colors hover:bg-black/10 focus-visible:ring-2 focus-visible:outline-none disabled:hover:bg-transparent dark:hover:bg-white/10"
                 >
                   <ChevronLeft className="h-4 w-4" aria-hidden="true" />
                 </button>
@@ -2377,21 +2343,21 @@ export function QuickLook({
                   onClick={() => nextEntry && onNavigate(nextEntry)}
                   disabled={!nextEntry}
                   aria-label={t("common.quick_look.next")}
-                  className="text-muted-foreground hover:text-foreground disabled:text-muted-foreground/40 focus-visible:ring-ring flex h-8 w-8 items-center justify-center rounded-full transition-colors hover:bg-black/10 focus-visible:ring-2 focus-visible:outline-none disabled:hover:bg-transparent dark:hover:bg-white/10"
+                  className="text-muted-foreground hover:text-foreground disabled:text-muted-foreground/40 focus-visible:ring-ring flex h-7 w-7 items-center justify-center rounded-full transition-colors hover:bg-black/10 focus-visible:ring-2 focus-visible:outline-none disabled:hover:bg-transparent dark:hover:bg-white/10"
                 >
                   <ChevronRight className="h-4 w-4" aria-hidden="true" />
                 </button>
               </>
             ) : null}
           </div>
-          <div className="pointer-events-none absolute left-1/2 max-w-[50%] min-w-0 -translate-x-1/2 text-center text-sm font-medium">
-            <div className="truncate" title={entry.name}>
+          <div className="pointer-events-none absolute left-1/2 flex max-w-[44%] min-w-0 -translate-x-1/2 items-center gap-2 text-xs font-medium">
+            <span className="truncate" title={entry.name}>
               {entry.name}
-            </div>
-            <div className="text-muted-foreground text-xs">
+            </span>
+            <span className="text-muted-foreground shrink-0 font-normal tabular-nums">
               {t("common.quick_look.preview")}
               <span ref={zoomIndicatorRef}>{previewType === "image" ? " 100%" : ""}</span>
-            </div>
+            </span>
           </div>
           <div className="flex items-center gap-2">
             {previewType === "image" && (
@@ -2504,7 +2470,7 @@ export function QuickLook({
             type="button"
             aria-label={t("common.quick_look.resize")}
             title={t("common.quick_look.resize")}
-            className="text-muted-foreground/70 hover:text-foreground focus-visible:ring-primary absolute right-0 bottom-0 z-40 flex h-8 w-8 cursor-nwse-resize items-end justify-end rounded-tl-lg p-1.5 focus-visible:ring-2"
+            className="text-muted-foreground/70 hover:text-foreground focus-visible:ring-primary absolute right-0 bottom-0 z-40 flex h-5 w-5 cursor-nwse-resize items-end justify-end rounded-tl p-1 focus-visible:ring-2"
             onClick={(event) => event.stopPropagation()}
             onPointerDown={(event) => {
               if (event.button !== 0 || !dialogRef.current) return;
@@ -2525,11 +2491,11 @@ export function QuickLook({
               const dialog = dialogRef.current;
               if (!start || !dialog || start.pointerId !== event.pointerId) return;
               const width = Math.min(
-                viewportSize.width * 0.98,
+                Math.max(360, viewportSize.width - 16),
                 Math.max(480, start.width + 2 * (event.clientX - start.x))
               );
               const height = Math.min(
-                Math.max(240, viewportSize.height - 84),
+                Math.max(280, viewportSize.height - 44),
                 Math.max(420, start.height + 2 * (event.clientY - start.y))
               );
               dialog.style.width = `${width}px`;
@@ -2550,11 +2516,11 @@ export function QuickLook({
               if (!dialog) return;
               setCustomDialogSize({
                 width: Math.min(
-                  viewportSize.width * 0.98,
+                  Math.max(360, viewportSize.width - 16),
                   Math.max(480, dialog.offsetWidth + widthDelta)
                 ),
                 height: Math.min(
-                  Math.max(240, viewportSize.height - 84),
+                  Math.max(280, viewportSize.height - 44),
                   Math.max(420, dialog.offsetHeight + heightDelta)
                 ),
               });
@@ -2562,7 +2528,7 @@ export function QuickLook({
           >
             <span
               aria-hidden="true"
-              className="block h-3 w-3 border-r-2 border-b-2 border-current"
+              className="block h-2.5 w-2.5 border-r-2 border-b-2 border-current"
             />
           </button>
         ) : null}

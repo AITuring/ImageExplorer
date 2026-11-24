@@ -8,6 +8,7 @@ interface PhotoHistogramProps {
   showClippingOverlay?: boolean;
   onToggleClippingOverlay?: () => void;
   compact?: boolean;
+  inline?: boolean;
 }
 
 function buildChannelPath(bins: Uint32Array, scalePeak: number, height: number): string {
@@ -38,9 +39,10 @@ export const PhotoHistogram = memo(function PhotoHistogram({
   showClippingOverlay = false,
   onToggleClippingOverlay,
   compact = false,
+  inline = false,
 }: PhotoHistogramProps) {
   const { t } = useTranslation();
-  const chartHeight = compact ? 44 : 64;
+  const chartHeight = inline ? 32 : compact ? 44 : 64;
 
   const paths = useMemo(() => {
     if (!histogram) return null;
@@ -61,6 +63,103 @@ export const PhotoHistogram = memo(function PhotoHistogram({
   const hasHighlightClip = histogram.highlightClipRatio >= 0.002;
   const hasShadowClip = histogram.shadowClipRatio >= 0.002;
 
+  const svgChart = (
+    <svg
+      viewBox={`0 0 256 ${chartHeight}`}
+      preserveAspectRatio="none"
+      className={`bg-background/80 block overflow-hidden rounded border border-black/10 dark:border-white/10 ${
+        inline ? "h-7 w-28 shrink-0" : compact ? "h-11 w-full" : "h-16 w-full"
+      }`}
+      aria-label={t("file_list.histogram.title")}
+    >
+      {/* Subtle quartile exposure grid lines */}
+      <line
+        x1="64"
+        y1="0"
+        x2="64"
+        y2={chartHeight}
+        stroke="currentColor"
+        strokeOpacity="0.1"
+        strokeWidth="1"
+      />
+      <line
+        x1="128"
+        y1="0"
+        x2="128"
+        y2={chartHeight}
+        stroke="currentColor"
+        strokeOpacity="0.12"
+        strokeWidth="1"
+      />
+      <line
+        x1="192"
+        y1="0"
+        x2="192"
+        y2={chartHeight}
+        stroke="currentColor"
+        strokeOpacity="0.1"
+        strokeWidth="1"
+      />
+      <path d={paths.r} fill="rgba(239, 68, 68, 0.38)" />
+      <path d={paths.g} fill="rgba(34, 197, 94, 0.38)" />
+      <path d={paths.b} fill="rgba(59, 130, 246, 0.38)" />
+      <path
+        d={paths.luma}
+        fill="rgba(161, 161, 170, 0.25)"
+        stroke="rgba(161, 161, 170, 0.75)"
+        strokeWidth="1"
+      />
+    </svg>
+  );
+
+  const clippingControls = (
+    <div className="flex shrink-0 items-center gap-1.5 text-[11px] whitespace-nowrap tabular-nums">
+      <span
+        className={`inline-flex items-center gap-1 ${
+          hasShadowClip ? "font-medium text-blue-500" : "text-muted-foreground"
+        }`}
+        title={t("file_list.histogram.shadow_clip")}
+      >
+        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500" />
+        {shadowPct}%
+      </span>
+      <span
+        className={`inline-flex items-center gap-1 ${
+          hasHighlightClip ? "font-medium text-red-500" : "text-muted-foreground"
+        }`}
+        title={t("file_list.histogram.highlight_clip")}
+      >
+        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-red-500" />
+        {highlightPct}%
+      </span>
+      {onToggleClippingOverlay && (
+        <button
+          type="button"
+          onClick={onToggleClippingOverlay}
+          aria-pressed={showClippingOverlay}
+          title={t("file_list.histogram.toggle_clipping")}
+          className={`inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap transition-colors ${
+            showClippingOverlay
+              ? "bg-red-500/20 text-red-600 dark:text-red-300"
+              : "text-muted-foreground hover:bg-accent hover:text-foreground"
+          }`}
+        >
+          <AlertTriangle className="h-2.5 w-2.5 shrink-0" aria-hidden="true" />
+          <span>{t("file_list.histogram.clipping_short")}</span>
+        </button>
+      )}
+    </div>
+  );
+
+  if (inline) {
+    return (
+      <div className="flex shrink-0 items-center gap-2" title={t("file_list.histogram.title")}>
+        {svgChart}
+        {clippingControls}
+      </div>
+    );
+  }
+
   return (
     <div
       className={`border-border/50 bg-secondary/20 rounded-lg border ${
@@ -68,91 +167,13 @@ export const PhotoHistogram = memo(function PhotoHistogram({
       }`}
     >
       <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px]">
-        <span className="font-medium">{t("file_list.histogram.title")}</span>
-        <div className="flex items-center gap-1.5 tabular-nums">
-          <span
-            className={`inline-flex items-center gap-1 ${
-              hasShadowClip ? "font-medium text-blue-500" : "text-muted-foreground"
-            }`}
-            title={t("file_list.histogram.shadow_clip")}
-          >
-            <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
-            {shadowPct}%
-          </span>
-          <span
-            className={`inline-flex items-center gap-1 ${
-              hasHighlightClip ? "font-medium text-red-500" : "text-muted-foreground"
-            }`}
-            title={t("file_list.histogram.highlight_clip")}
-          >
-            <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
-            {highlightPct}%
-          </span>
-          {onToggleClippingOverlay && (
-            <button
-              type="button"
-              onClick={onToggleClippingOverlay}
-              aria-pressed={showClippingOverlay}
-              title={t("file_list.histogram.toggle_clipping")}
-              className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
-                showClippingOverlay
-                  ? "bg-red-500/20 text-red-600 dark:text-red-300"
-                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
-              }`}
-            >
-              <AlertTriangle className="h-2.5 w-2.5" aria-hidden="true" />
-              {t("file_list.histogram.clipping_short")}
-            </button>
-          )}
-        </div>
+        <span className="truncate font-medium whitespace-nowrap">
+          {t("file_list.histogram.title")}
+        </span>
+        {clippingControls}
       </div>
 
-      <svg
-        viewBox={`0 0 256 ${chartHeight}`}
-        preserveAspectRatio="none"
-        className={`bg-background/80 block w-full overflow-hidden rounded border border-black/10 dark:border-white/10 ${
-          compact ? "h-11" : "h-16"
-        }`}
-        aria-label={t("file_list.histogram.title")}
-      >
-        {/* Subtle quartile exposure grid lines */}
-        <line
-          x1="64"
-          y1="0"
-          x2="64"
-          y2={chartHeight}
-          stroke="currentColor"
-          strokeOpacity="0.1"
-          strokeWidth="1"
-        />
-        <line
-          x1="128"
-          y1="0"
-          x2="128"
-          y2={chartHeight}
-          stroke="currentColor"
-          strokeOpacity="0.12"
-          strokeWidth="1"
-        />
-        <line
-          x1="192"
-          y1="0"
-          x2="192"
-          y2={chartHeight}
-          stroke="currentColor"
-          strokeOpacity="0.1"
-          strokeWidth="1"
-        />
-        <path d={paths.r} fill="rgba(239, 68, 68, 0.38)" />
-        <path d={paths.g} fill="rgba(34, 197, 94, 0.38)" />
-        <path d={paths.b} fill="rgba(59, 130, 246, 0.38)" />
-        <path
-          d={paths.luma}
-          fill="rgba(161, 161, 170, 0.25)"
-          stroke="rgba(161, 161, 170, 0.75)"
-          strokeWidth="1"
-        />
-      </svg>
+      {svgChart}
     </div>
   );
 });
