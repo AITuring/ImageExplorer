@@ -1904,3 +1904,361 @@ uint8_t *imageexplorer_extract_face_embeddings(const char *path, size_t *outLeng
         return result;
     }
 }
+
+static long long imageexplorer_gcd_ll(long long a, long long b) {
+    if (a < 0) a = -a;
+    if (b < 0) b = -b;
+    while (b != 0) {
+        long long t = a % b;
+        a = b;
+        b = t;
+    }
+    return a > 0 ? a : 1;
+}
+
+// ImageIO's CGImageMetadataSetValueMatchingImageProperty serializes XMP rational
+// tags (FNumber, ExposureTime, FocalLength) accurately when given "num/den" strings;
+// passing NSNumber directly truncates decimals like 1.4 or 0.004 to integers.
+static NSString *imageexplorer_double_to_exif_rational(double val, BOOL preferUnitFraction) {
+    if (!isfinite(val) || val <= 0.0) {
+        return nil;
+    }
+    if (preferUnitFraction && val < 1.0) {
+        double recip = 1.0 / val;
+        long long rounded = llround(recip);
+        if (rounded >= 1 && rounded <= 100000 && fabs(recip - (double)rounded) < 0.02 * (double)rounded) {
+            return [NSString stringWithFormat:@"1/%lld", rounded];
+        }
+        long long den = 100000;
+        long long num = llround(val * (double)den);
+        if (num < 1) num = 1;
+        long long g = imageexplorer_gcd_ll(num, den);
+        return [NSString stringWithFormat:@"%lld/%lld", num / g, den / g];
+    }
+    long long den = 100;
+    long long num = llround(val * (double)den);
+    if (num < 1) num = 1;
+    long long g = imageexplorer_gcd_ll(num, den);
+    return [NSString stringWithFormat:@"%lld/%lld", num / g, den / g];
+}
+
+// Losslessly merge EXIF, TIFF, ExifAux, and GPS metadata into a JPEG/HEIC/PNG/TIFF
+// using ImageIO `CGImageDestinationCopyImageSource` (zero pixel re-compression),
+// replacing the file atomically.
+int imageexplorer_write_image_metadata(
+    const char *path,
+    const char *patchJson,
+    int overwriteExisting,
+    char **outError
+) {
+    if (outError != NULL) {
+        *outError = NULL;
+    }
+    if (path == NULL || patchJson == NULL) {
+        return 0;
+    }
+
+    @autoreleasepool {
+        NSString *filePath = [NSString stringWithUTF8String:path];
+        NSData *jsonData = [NSData dataWithBytes:patchJson length:strlen(patchJson)];
+        if (filePath == nil || jsonData == nil) {
+            return 0;
+        }
+
+        NSError *parseErr = nil;
+        id parsed = [NSJSONSerialization JSONObjectWithData:jsonData options:0 error:&parseErr];
+        if (![parsed isKindOfClass:NSDictionary.class]) {
+            if (outError != NULL && parseErr != nil) {
+                *outError = imageexplorer_copy_utf8(parseErr.localizedDescription);
+            }
+            return 0;
+        }
+        NSDictionary *patch = (NSDictionary *)parsed;
+
+        NSURL *srcURL = [NSURL fileURLWithPath:filePath];
+        CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)srcURL, NULL);
+        if (source == NULL) {
+            if (outError != NULL) {
+                *outError = imageexplorer_copy_utf8(@"Unable to open image for EXIF update");
+            }
+            return 0;
+        }
+
+        CFStringRef sourceType = CGImageSourceGetType(source);
+        if (sourceType == NULL) {
+            CFRelease(source);
+            if (outError != NULL) {
+                *outError = imageexplorer_copy_utf8(@"Unknown image format");
+            }
+            return 0;
+        }
+
+        NSDictionary *existingProps = CFBridgingRelease(
+            CGImageSourceCopyPropertiesAtIndex(source, 0, NULL)
+        );
+        NSDictionary *existingExif = [existingProps[(id)kCGImagePropertyExifDictionary] isKindOfClass:NSDictionary.class]
+            ? existingProps[(id)kCGImagePropertyExifDictionary]
+            : @{};
+        NSDictionary *existingExifAux = [existingProps[(id)kCGImagePropertyExifAuxDictionary] isKindOfClass:NSDictionary.class]
+            ? existingProps[(id)kCGImagePropertyExifAuxDictionary]
+            : @{};
+        NSDictionary *existingTiff = [existingProps[(id)kCGImagePropertyTIFFDictionary] isKindOfClass:NSDictionary.class]
+            ? existingProps[(id)kCGImagePropertyTIFFDictionary]
+            : @{};
+        NSDictionary *existingGps = [existingProps[(id)kCGImagePropertyGPSDictionary] isKindOfClass:NSDictionary.class]
+            ? existingProps[(id)kCGImagePropertyGPSDictionary]
+            : @{};
+
+        NSMutableDictionary *nextExif = [existingExif mutableCopy];
+        NSMutableDictionary *nextExifAux = [existingExifAux mutableCopy];
+        NSMutableDictionary *nextTiff = [existingTiff mutableCopy];
+        NSMutableDictionary *nextGps = [existingGps mutableCopy];
+
+        CGImageMetadataRef existingMeta = CGImageSourceCopyMetadataAtIndex(source, 0, NULL);
+        CGMutableImageMetadataRef mutableMeta = existingMeta != NULL
+            ? CGImageMetadataCreateMutableCopy(existingMeta)
+            : CGImageMetadataCreateMutable();
+        if (existingMeta != NULL) {
+            CFRelease(existingMeta);
+        }
+        if (mutableMeta == NULL) {
+            mutableMeta = CGImageMetadataCreateMutable();
+        }
+        BOOL changed = NO;
+
+        BOOL (^shouldWrite)(NSDictionary *, id) = ^BOOL(NSDictionary *dict, id key) {
+            if (overwriteExisting) return YES;
+            id cur = dict[key];
+            if (cur == nil || cur == [NSNull null]) return YES;
+            if ([cur isKindOfClass:NSString.class] && [(NSString *)cur length] == 0) return YES;
+            if ([cur isKindOfClass:NSArray.class] && [(NSArray *)cur count] == 0) return YES;
+            return NO;
+        };
+
+        void (^setMetaProp)(CFStringRef, CFStringRef, id) = ^(CFStringRef dictName, CFStringRef propName, id val) {
+            if (mutableMeta != NULL && val != nil) {
+                CGImageMetadataSetValueMatchingImageProperty(
+                    mutableMeta,
+                    dictName,
+                    propName,
+                    (__bridge CFTypeRef)val
+                );
+            }
+        };
+
+        NSString *make = [patch[@"make"] isKindOfClass:NSString.class] ? patch[@"make"] : nil;
+        if (make.length > 0 && shouldWrite(existingTiff, (id)kCGImagePropertyTIFFMake)) {
+            nextTiff[(id)kCGImagePropertyTIFFMake] = make;
+            setMetaProp(kCGImagePropertyTIFFDictionary, kCGImagePropertyTIFFMake, make);
+            changed = YES;
+        }
+
+        NSString *model = [patch[@"model"] isKindOfClass:NSString.class] ? patch[@"model"] : nil;
+        if (model.length > 0 && shouldWrite(existingTiff, (id)kCGImagePropertyTIFFModel)) {
+            nextTiff[(id)kCGImagePropertyTIFFModel] = model;
+            setMetaProp(kCGImagePropertyTIFFDictionary, kCGImagePropertyTIFFModel, model);
+            changed = YES;
+        }
+
+        NSString *lens = [patch[@"lens"] isKindOfClass:NSString.class] ? patch[@"lens"] : nil;
+        if (lens.length > 0 &&
+            (overwriteExisting ||
+             (shouldWrite(existingExif, (id)kCGImagePropertyExifLensModel) &&
+              shouldWrite(existingExifAux, (id)kCGImagePropertyExifAuxLensModel)))) {
+            nextExif[(id)kCGImagePropertyExifLensModel] = lens;
+            nextExifAux[(id)kCGImagePropertyExifAuxLensModel] = lens;
+            setMetaProp(kCGImagePropertyExifDictionary, kCGImagePropertyExifLensModel, lens);
+            setMetaProp(kCGImagePropertyExifAuxDictionary, kCGImagePropertyExifAuxLensModel, lens);
+            changed = YES;
+        }
+
+        NSNumber *iso = [patch[@"iso"] isKindOfClass:NSNumber.class] ? patch[@"iso"] : nil;
+        if (iso != nil && iso.doubleValue > 0 &&
+            shouldWrite(existingExif, (id)kCGImagePropertyExifISOSpeedRatings)) {
+            NSArray *isoArr = @[@(iso.integerValue)];
+            nextExif[(id)kCGImagePropertyExifISOSpeedRatings] = isoArr;
+            setMetaProp(kCGImagePropertyExifDictionary, kCGImagePropertyExifISOSpeedRatings, isoArr);
+            changed = YES;
+        }
+
+        NSNumber *aperture = [patch[@"aperture"] isKindOfClass:NSNumber.class] ? patch[@"aperture"] : nil;
+        if (aperture != nil && aperture.doubleValue > 0 &&
+            shouldWrite(existingExif, (id)kCGImagePropertyExifFNumber)) {
+            nextExif[(id)kCGImagePropertyExifFNumber] = aperture;
+            NSString *apRat = imageexplorer_double_to_exif_rational(aperture.doubleValue, NO);
+            setMetaProp(kCGImagePropertyExifDictionary, kCGImagePropertyExifFNumber, apRat ?: (id)aperture);
+            changed = YES;
+        }
+
+        NSNumber *shutter = [patch[@"shutterSpeed"] isKindOfClass:NSNumber.class] ? patch[@"shutterSpeed"] : nil;
+        if (shutter != nil && shutter.doubleValue > 0 &&
+            shouldWrite(existingExif, (id)kCGImagePropertyExifExposureTime)) {
+            nextExif[(id)kCGImagePropertyExifExposureTime] = shutter;
+            NSString *shRat = imageexplorer_double_to_exif_rational(shutter.doubleValue, YES);
+            setMetaProp(kCGImagePropertyExifDictionary, kCGImagePropertyExifExposureTime, shRat ?: (id)shutter);
+            changed = YES;
+        }
+
+        NSNumber *focal = [patch[@"focalLength"] isKindOfClass:NSNumber.class] ? patch[@"focalLength"] : nil;
+        if (focal != nil && focal.doubleValue > 0 &&
+            shouldWrite(existingExif, (id)kCGImagePropertyExifFocalLength)) {
+            nextExif[(id)kCGImagePropertyExifFocalLength] = focal;
+            NSString *flRat = imageexplorer_double_to_exif_rational(focal.doubleValue, NO);
+            setMetaProp(kCGImagePropertyExifDictionary, kCGImagePropertyExifFocalLength, flRat ?: (id)focal);
+            changed = YES;
+        }
+
+        NSString *capturedAt = [patch[@"capturedAt"] isKindOfClass:NSString.class] ? patch[@"capturedAt"] : nil;
+        if (capturedAt.length > 0 && shouldWrite(existingExif, (id)kCGImagePropertyExifDateTimeOriginal)) {
+            nextExif[(id)kCGImagePropertyExifDateTimeOriginal] = capturedAt;
+            nextExif[(id)kCGImagePropertyExifDateTimeDigitized] = capturedAt;
+            nextTiff[(id)kCGImagePropertyTIFFDateTime] = capturedAt;
+            setMetaProp(kCGImagePropertyExifDictionary, kCGImagePropertyExifDateTimeOriginal, capturedAt);
+            setMetaProp(kCGImagePropertyExifDictionary, kCGImagePropertyExifDateTimeDigitized, capturedAt);
+            setMetaProp(kCGImagePropertyTIFFDictionary, kCGImagePropertyTIFFDateTime, capturedAt);
+            changed = YES;
+        }
+
+        NSNumber *lat = [patch[@"latitude"] isKindOfClass:NSNumber.class] ? patch[@"latitude"] : nil;
+        NSNumber *lon = [patch[@"longitude"] isKindOfClass:NSNumber.class] ? patch[@"longitude"] : nil;
+        if (lat != nil && lon != nil &&
+            (overwriteExisting ||
+             shouldWrite(existingGps, (id)kCGImagePropertyGPSLatitude) ||
+             shouldWrite(existingGps, (id)kCGImagePropertyGPSLongitude))) {
+            double latVal = lat.doubleValue;
+            double lonVal = lon.doubleValue;
+            if (latVal >= -90.0 && latVal <= 90.0 && lonVal >= -180.0 && lonVal <= 180.0) {
+                NSNumber *absLat = @(fabs(latVal));
+                NSString *latRef = latVal < 0.0 ? @"S" : @"N";
+                NSNumber *absLon = @(fabs(lonVal));
+                NSString *lonRef = lonVal < 0.0 ? @"W" : @"E";
+                nextGps[(id)kCGImagePropertyGPSLatitude] = absLat;
+                nextGps[(id)kCGImagePropertyGPSLatitudeRef] = latRef;
+                nextGps[(id)kCGImagePropertyGPSLongitude] = absLon;
+                nextGps[(id)kCGImagePropertyGPSLongitudeRef] = lonRef;
+                nextGps[(id)kCGImagePropertyGPSVersion] = @"2.3.0.0";
+                setMetaProp(kCGImagePropertyGPSDictionary, kCGImagePropertyGPSLatitude, absLat);
+                setMetaProp(kCGImagePropertyGPSDictionary, kCGImagePropertyGPSLatitudeRef, latRef);
+                setMetaProp(kCGImagePropertyGPSDictionary, kCGImagePropertyGPSLongitude, absLon);
+                setMetaProp(kCGImagePropertyGPSDictionary, kCGImagePropertyGPSLongitudeRef, lonRef);
+                setMetaProp(kCGImagePropertyGPSDictionary, kCGImagePropertyGPSVersion, @"2.3.0.0");
+                changed = YES;
+            }
+        }
+
+        if (!changed) {
+            if (mutableMeta != NULL) {
+                CFRelease(mutableMeta);
+            }
+            CFRelease(source);
+            return 2; // No-op (nothing missing / nothing to write)
+        }
+
+        NSMutableDictionary *mergeOptions = [NSMutableDictionary dictionary];
+        mergeOptions[(id)kCGImageDestinationMergeMetadata] = @YES;
+        if (mutableMeta != NULL) {
+            mergeOptions[(id)kCGImageDestinationMetadata] = (__bridge id)mutableMeta;
+        }
+
+        NSString *tempPath = [NSString stringWithFormat:@"%@.exif-%@.tmp",
+                              filePath, [[NSUUID UUID] UUIDString]];
+        NSURL *tempURL = [NSURL fileURLWithPath:tempPath];
+        CGImageDestinationRef dest = CGImageDestinationCreateWithURL(
+            (__bridge CFURLRef)tempURL,
+            sourceType,
+            1,
+            NULL
+        );
+        if (dest == NULL) {
+            if (mutableMeta != NULL) {
+                CFRelease(mutableMeta);
+            }
+            CFRelease(source);
+            if (outError != NULL) {
+                *outError = imageexplorer_copy_utf8(@"Image format does not support metadata writing");
+            }
+            return 0;
+        }
+
+        CFErrorRef copyError = NULL;
+        BOOL ok = CGImageDestinationCopyImageSource(
+            dest,
+            source,
+            (__bridge CFDictionaryRef)mergeOptions,
+            &copyError
+        );
+        if (mutableMeta != NULL) {
+            CFRelease(mutableMeta);
+            mutableMeta = NULL;
+        }
+        if (!ok) {
+            // Fallback for formats where lossless CopyImageSource is unsupported (e.g., certain PNGs)
+            if (copyError != NULL) {
+                CFRelease(copyError);
+                copyError = NULL;
+            }
+            CFRelease(dest);
+            [[NSFileManager defaultManager] removeItemAtURL:tempURL error:NULL];
+
+            CGImageRef img = CGImageSourceCreateImageAtIndex(source, 0, NULL);
+            if (img != NULL) {
+                CGImageDestinationRef fallbackDest = CGImageDestinationCreateWithURL(
+                    (__bridge CFURLRef)tempURL,
+                    sourceType,
+                    1,
+                    NULL
+                );
+                if (fallbackDest != NULL) {
+                    NSMutableDictionary *fullProps = existingProps != nil
+                        ? [existingProps mutableCopy]
+                        : [NSMutableDictionary dictionary];
+                    if (nextExif.count > 0) fullProps[(id)kCGImagePropertyExifDictionary] = nextExif;
+                    if (nextExifAux.count > 0) fullProps[(id)kCGImagePropertyExifAuxDictionary] = nextExifAux;
+                    if (nextTiff.count > 0) fullProps[(id)kCGImagePropertyTIFFDictionary] = nextTiff;
+                    if (nextGps.count > 0) fullProps[(id)kCGImagePropertyGPSDictionary] = nextGps;
+                    fullProps[(id)kCGImageDestinationLossyCompressionQuality] = @0.96;
+                    CGImageDestinationAddImage(fallbackDest, img, (__bridge CFDictionaryRef)fullProps);
+                    ok = CGImageDestinationFinalize(fallbackDest);
+                    CFRelease(fallbackDest);
+                }
+                CGImageRelease(img);
+            }
+        } else {
+            CFRelease(dest);
+        }
+        CFRelease(source);
+
+        if (!ok) {
+            [[NSFileManager defaultManager] removeItemAtURL:tempURL error:NULL];
+            if (outError != NULL) {
+                if (copyError != NULL) {
+                    NSError *nsErr = CFBridgingRelease(copyError);
+                    *outError = imageexplorer_copy_utf8(nsErr.localizedDescription);
+                } else {
+                    *outError = imageexplorer_copy_utf8(@"Failed to write EXIF metadata");
+                }
+            }
+            return 0;
+        }
+        if (copyError != NULL) {
+            CFRelease(copyError);
+        }
+
+        NSError *replaceError = nil;
+        NSURL *resultingURL = nil;
+        BOOL replaced = [[NSFileManager defaultManager] replaceItemAtURL:srcURL
+                                                           withItemAtURL:tempURL
+                                                          backupItemName:nil
+                                                                 options:0
+                                                        resultingItemURL:&resultingURL
+                                                                   error:&replaceError];
+        if (!replaced) {
+            [[NSFileManager defaultManager] removeItemAtURL:tempURL error:NULL];
+            if (outError != NULL && replaceError != nil) {
+                *outError = imageexplorer_copy_utf8(replaceError.localizedDescription);
+            }
+            return 0;
+        }
+        return 1;
+    }
+}

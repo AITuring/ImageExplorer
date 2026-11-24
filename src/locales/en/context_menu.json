@@ -47,5 +47,7 @@
   "exhibit_label_mode_selected": "Exhibit Label Recognition ({{count}})...",
   "people_cluster_mode": "Group by People...",
   "people_cluster_mode_selected": "Group by People ({{count}})...",
+  "exif_sync_mode": "Repair / Sync EXIF & GPS...",
+  "exif_sync_mode_selected": "Repair / Sync EXIF & GPS ({{count}})...",
   "batch_rename": "Batch Rename..."
 }

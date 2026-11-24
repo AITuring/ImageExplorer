@@ -47,5 +47,7 @@
   "exhibit_label_mode_selected": "文物展牌识别模式 ({{count}} 张)...",
   "people_cluster_mode": "一键人物分类...",
   "people_cluster_mode_selected": "一键人物分类 ({{count}} 张)...",
+  "exif_sync_mode": "一键补充 / 同步 EXIF 与 GPS...",
+  "exif_sync_mode_selected": "补充 / 同步 EXIF 与 GPS ({{count}} 张)...",
   "batch_rename": "批量重命名..."
 }

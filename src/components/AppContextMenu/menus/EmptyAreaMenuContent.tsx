@@ -14,6 +14,7 @@ import { MenuItem } from "../MenuItem";
 import {
   ArrowDownAZ,
   ArrowDownUp,
+  Camera,
   FileText,
   Folder,
   Landmark,
@@ -103,6 +104,13 @@ export function EmptyAreaMenuContent({ actions }: EmptyAreaMenuContentProps) {
           fallbackIcon={Users}
           label={t("context_menu.people_cluster_mode")}
           onClick={actions.onPeopleClusterMode}
+        />
+      )}
+      {actions.onExifSyncMode && (
+        <MenuItem
+          fallbackIcon={Camera}
+          label={t("context_menu.exif_sync_mode")}
+          onClick={actions.onExifSyncMode}
         />
       )}
       <ContextMenuSeparator />

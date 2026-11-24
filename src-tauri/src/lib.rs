@@ -6,6 +6,7 @@ mod commands;
 mod config;
 mod db;
 mod exhibit_label;
+mod exif_sync;
 mod index;
 mod menu;
 mod operations;
@@ -1364,6 +1365,9 @@ pub fn run() {
             people_clustering::recluster_people,
             people_clustering::organize_people_photos,
             people_clustering::undo_people_organization,
+            exif_sync::inspect_folder_exif,
+            exif_sync::read_reference_exif,
+            exif_sync::apply_exif_sync,
             zip_preview::list_zip_entries,
             analyze_directory_storage,
             find_duplicate_files,

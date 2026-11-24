@@ -199,6 +199,21 @@ export function getCachedPhotoMetadata(entry: FileEntry): PhotoMetadata | null |
   return metadataCache.get(getPhotoMetadataKey(entry));
 }
 
+export function invalidatePhotoMetadataCache(paths?: string[]) {
+  if (!paths || paths.length === 0) {
+    metadataCache.clear();
+    scheduleAnyMetadataNotify();
+    return;
+  }
+  const prefixes = paths.map((p) => `${p}:`);
+  for (const key of Array.from(metadataCache.keys())) {
+    if (prefixes.some((prefix) => key.startsWith(prefix))) {
+      metadataCache.delete(key);
+    }
+  }
+  scheduleAnyMetadataNotify();
+}
+
 function pumpMetadataQueue() {
   while (activeMetadataLoads < MAX_CONCURRENT_METADATA && metadataQueue.length > 0) {
     const pending = metadataQueue.shift();

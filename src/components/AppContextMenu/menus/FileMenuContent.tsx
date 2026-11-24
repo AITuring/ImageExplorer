@@ -16,6 +16,7 @@ import { LoadableOpenWithMenu } from "../LoadableOpenWithMenu";
 import {
   ArrowUpRight,
   Archive,
+  Camera,
   Clipboard,
   Columns2,
   Copy,
@@ -282,6 +283,32 @@ export function FileMenuContent({ entry, selectedEntries, actions }: FileMenuCon
                   : t("context_menu.people_cluster_mode")
               }
               onClick={() => actions.onPeopleClusterMode?.(photos)}
+            />
+          );
+        })()}
+
+      {actions.onExifSyncMode &&
+        (() => {
+          if (targets.length === 1 && targets[0].is_dir && !targets[0].is_package) {
+            return (
+              <MenuItem
+                fallbackIcon={Camera}
+                label={t("context_menu.exif_sync_mode")}
+                onClick={() => actions.onExifSyncMode?.(targets)}
+              />
+            );
+          }
+          const photos = targets.filter(isAnalyzablePhoto);
+          if (photos.length === 0) return null;
+          return (
+            <MenuItem
+              fallbackIcon={Camera}
+              label={
+                photos.length > 1
+                  ? t("context_menu.exif_sync_mode_selected", { count: photos.length })
+                  : t("context_menu.exif_sync_mode")
+              }
+              onClick={() => actions.onExifSyncMode?.(photos)}
             />
           );
         })()}

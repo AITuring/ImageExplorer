@@ -25,6 +25,7 @@ import { BatchExportDialog } from "@/components/BatchExportDialog";
 import { SdIngestDialog } from "@/components/SdIngestDialog";
 import { ExhibitLabelDialog } from "@/components/ExhibitLabelDialog";
 import { PeopleClusterDialog } from "@/components/PeopleClusterDialog";
+import { ExifSyncDialog } from "@/components/ExifSyncDialog";
 import { ensureDirectoryAccess } from "@/lib/directoryAccess";
 import { useLocations } from "@/stores/locations";
 import { useClipboard } from "@/stores/clipboard";
@@ -374,6 +375,7 @@ function App() {
       <SdIngestDialog onNavigate={handleNavigate} />
       <ExhibitLabelDialog />
       <PeopleClusterDialog />
+      <ExifSyncDialog />
 
       {isInitializing ? (
         <div className="flex h-full flex-1 items-center justify-center">
