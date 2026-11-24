@@ -2,7 +2,8 @@ import { SharpnessBadge, PhotoParameters } from "./PhotoDetails";
 import { usePhotoMetadata } from "@/hooks/usePhotoMetadata";
 import { getPhotoMetadataSummary } from "@/lib/photoMetadata";
 import { isAnalyzablePhoto } from "@/lib/photoAnalysis";
-import type { VisibleSharpness } from "@/hooks/useVisibleSharpness";
+import { usePhotoCullingEntry } from "@/hooks/usePhotoCulling";
+import { usePhotoSharpness, type VisibleSharpness } from "@/hooks/useVisibleSharpness";
 import { memo, useEffect, useRef } from "react";
 import { Check, ChevronDown, ChevronRight, Loader2, Star, XCircle } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -48,7 +49,7 @@ interface FileListItemProps {
 export const FileListItem = memo(function FileListItem({
   entry,
   index = 0,
-  visibleSharpness,
+  visibleSharpness: visibleSharpnessProp,
   isInViewport = true,
   isScrolling = false,
   isSelected,
@@ -67,7 +68,7 @@ export const FileListItem = memo(function FileListItem({
   columnWidths,
   columnVisibility,
   pairedBadge,
-  cullingState,
+  cullingState: cullingStateProp,
   depth = 0,
   canExpand = false,
   isExpanded = false,
@@ -78,6 +79,16 @@ export const FileListItem = memo(function FileListItem({
   const metadata = usePhotoMetadata(entry, isInViewport && !isScrolling);
   const summary = getPhotoMetadataSummary(metadata);
   const isPhoto = isAnalyzablePhoto(entry);
+  const subscribedSharpness = usePhotoSharpness(
+    entry.path,
+    isPhoto && visibleSharpnessProp === undefined
+  );
+  const visibleSharpness = visibleSharpnessProp ?? subscribedSharpness;
+  const subscribedCulling = usePhotoCullingEntry(
+    entry.path,
+    !entry.is_dir && cullingStateProp === undefined
+  );
+  const cullingState = cullingStateProp ?? subscribedCulling;
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {

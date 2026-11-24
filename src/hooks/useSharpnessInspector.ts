@@ -28,11 +28,16 @@ interface UseSharpnessInspectorOptions {
 interface CachedSourceImage {
   requestSize: number;
   image: HTMLImageElement;
+  reachedNativeCeiling: boolean;
 }
 
 const FULL_IMAGE_SELECTION: NormalizedRect = { x: 0, y: 0, width: 1, height: 1 };
 const SHARPNESS_ANALYSIS_VERSION = 7;
 const MAX_CACHED_FULL_IMAGE_RESULTS = 5;
+const MIN_REUSABLE_PREVIEW_EDGE = 1024;
+const MAX_INTERACTIVE_SOURCE_REQUEST_SIZE = 2048;
+const INTERACTIVE_FULL_ANALYSIS_EDGE = 1280;
+const INTERACTIVE_REGION_ANALYSIS_EDGE = 1024;
 const fullImageResultCache = new Map<string, SharpnessMaskResult>();
 
 function getFullImageResultCacheKey(entry: FileEntry) {
@@ -145,10 +150,12 @@ export function useSharpnessInspector({
 
   const loadSourceImage = useCallback(
     async (requestedSize: number, signal: AbortSignal, exactSize = false) => {
+      const boundedSize = Math.min(requestedSize, MAX_INTERACTIVE_SOURCE_REQUEST_SIZE);
       const cached = sourceImageRef.current;
       if (
         cached &&
-        (exactSize ? cached.requestSize === requestedSize : cached.requestSize >= requestedSize)
+        (cached.reachedNativeCeiling ||
+          (exactSize ? cached.requestSize === boundedSize : cached.requestSize >= boundedSize))
       ) {
         return cached.image;
       }
@@ -157,12 +164,21 @@ export function useSharpnessInspector({
         entry.path,
         entry.modified,
         entry.size,
-        requestedSize,
+        boundedSize,
         true,
         false
       );
       const image = await loadHtmlImage(url, signal);
-      sourceImageRef.current = { requestSize: requestedSize, image };
+      const naturalMaxEdge = Math.max(image.naturalWidth, image.naturalHeight);
+      // If the embedded preview returned fewer pixels than requested (e.g. Sony
+      // 1616px ARW embedded JPEG), requesting larger embedded sizes won't yield
+      // more pixels and would only repeat a slow Rust/disk round-trip.
+      const reachedNativeCeiling = naturalMaxEdge > 0 && naturalMaxEdge < boundedSize * 0.92;
+      sourceImageRef.current = {
+        requestSize: boundedSize,
+        image,
+        reachedNativeCeiling,
+      };
       return image;
     },
     [entry.modified, entry.path, entry.size]
@@ -191,21 +207,29 @@ export function useSharpnessInspector({
       setStatus("analyzing");
 
       try {
-        // Full-image analysis uses the high-resolution embedded JPEG. The
-        // displayed preview can be smaller and hide local focus differences.
-        const requestSize = isFullImage
-          ? FULL_IMAGE_SHARPNESS_SOURCE_SIZE
-          : getSharpnessSourceRequestSize(nextSelection, displayedDimensions);
+        const requestSize = Math.min(
+          MAX_INTERACTIVE_SOURCE_REQUEST_SIZE,
+          isFullImage
+            ? FULL_IMAGE_SHARPNESS_SOURCE_SIZE
+            : getSharpnessSourceRequestSize(nextSelection, displayedDimensions)
+        );
         const displayedImage = preferredImage ?? displayedImageRef.current;
+        const displayedMaxEdge = displayedImage
+          ? Math.max(displayedImage.naturalWidth, displayedImage.naturalHeight)
+          : 0;
+        // Reuse the already-decoded preview image whenever it is at least 1024px
+        // on the long edge (covering RAW embedded JPEGs and upgraded previews),
+        // avoiding a 1-3s Rust re-fetch/demosaic on every click or box selection.
         const canUseDisplayedImage = Boolean(
-          !isFullImage &&
-          displayedImage &&
-          Math.max(displayedImage.naturalWidth, displayedImage.naturalHeight) >=
-            (preferredImage ? 1 : requestSize)
+          displayedImage && displayedImage.complete && displayedMaxEdge >= MIN_REUSABLE_PREVIEW_EDGE
         );
         let image = canUseDisplayedImage
           ? displayedImage!
           : await loadSourceImage(requestSize, controller.signal, isFullImage);
+
+        const maxAnalysisEdge = isFullImage
+          ? INTERACTIVE_FULL_ANALYSIS_EDGE
+          : INTERACTIVE_REGION_ANALYSIS_EDGE;
 
         const analyzeImage = async (candidate: HTMLImageElement) => {
           if (displayedDimensions) {
@@ -218,11 +242,10 @@ export function useSharpnessInspector({
             }
           }
 
-          // Yield once so the analyzing state is painted before the bounded
-          // source crop is copied. The high-frequency pass itself runs in a
-          // worker so it cannot stall preview controls or image navigation.
+          // Yield once so the selection box and status pill paint before the
+          // bounded canvas crop is extracted and sent to the worker.
           await waitForNextFrame(controller.signal);
-          const region = extractSharpnessRegionPixels(candidate, nextSelection);
+          const region = extractSharpnessRegionPixels(candidate, nextSelection, maxAnalysisEdge);
           return computeSharpnessMaskOffThread(
             region.pixels,
             region.width,

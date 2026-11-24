@@ -12,7 +12,8 @@ import { getCameraAfRegions } from "@/lib/cameraAfMetadata";
 import { getPhotoMetadataSummary } from "@/lib/photoMetadata";
 import { useCameraAfMetadata } from "@/hooks/useCameraAfMetadata";
 import { usePhotoMetadata } from "@/hooks/usePhotoMetadata";
-import type { VisibleSharpness } from "@/hooks/useVisibleSharpness";
+import { usePhotoCullingEntry } from "@/hooks/usePhotoCulling";
+import { usePhotoSharpness, type VisibleSharpness } from "@/hooks/useVisibleSharpness";
 import { FinderTagDots } from "@/components/FinderTagDots";
 import { Input } from "@/components/ui/input";
 
@@ -61,17 +62,27 @@ export const FileGridItem = memo(function FileGridItem({
   onItemNameClick,
   onItemDoubleClick,
   photoAnalysis,
-  visibleSharpness,
+  visibleSharpness: visibleSharpnessProp,
   photoGroupColor,
   photoAnalysisEnabled = false,
   iconSize = 160,
   pairedBadge = null,
-  cullingState,
+  cullingState: cullingStateProp,
   isScrolling = false,
   isInViewport = true,
 }: FileGridItemProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const { t } = useTranslation();
+  const subscribedSharpness = usePhotoSharpness(
+    entry.path,
+    photoAnalysisEnabled && !entry.is_dir && visibleSharpnessProp === undefined
+  );
+  const visibleSharpness = visibleSharpnessProp ?? subscribedSharpness;
+  const subscribedCulling = usePhotoCullingEntry(
+    entry.path,
+    !entry.is_dir && cullingStateProp === undefined
+  );
+  const cullingState = cullingStateProp ?? subscribedCulling;
   // Metadata/ExifTool reads are useful after the user stops, but starting one
   // for every newly mounted overscan row makes fast scrolling compete with
   // thumbnail decoding.

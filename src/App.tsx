@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -18,20 +18,70 @@ import { useTabShortcuts } from "@/hooks/useTabShortcuts";
 import { windowManager } from "@/lib/windowManager";
 import { OperationCenter } from "@/components/OperationCenter";
 import { OperationConflictDialog } from "@/components/OperationConflictDialog";
-import { TrashDialog } from "@/components/TrashDialog";
 import { FileInfoDialog } from "@/components/FileInfoDialog";
-import { StorageAnalyzerDialog } from "@/components/StorageAnalyzerDialog";
-import { BatchExportDialog } from "@/components/BatchExportDialog";
-import { SdIngestDialog } from "@/components/SdIngestDialog";
-import { ExhibitLabelDialog } from "@/components/ExhibitLabelDialog";
-import { PeopleClusterDialog } from "@/components/PeopleClusterDialog";
-import { ExifSyncDialog } from "@/components/ExifSyncDialog";
 import { ensureDirectoryAccess } from "@/lib/directoryAccess";
 import { useLocations } from "@/stores/locations";
 import { useClipboard } from "@/stores/clipboard";
 import { useSplitView } from "@/stores/splitView";
+import { useTrashDialog } from "@/stores/trashDialog";
+import { useStorageAnalyzerDialog } from "@/stores/storageAnalyzerDialog";
+import { useBatchExportDialog } from "@/stores/batchExportDialog";
+import { useSdIngestDialog } from "@/stores/sdIngestDialog";
+import { useExhibitLabelDialog } from "@/stores/exhibitLabelDialog";
+import { usePeopleClusterDialog } from "@/stores/peopleClusterDialog";
+import { useExifSyncDialog } from "@/stores/exifSyncDialog";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+
+const TrashDialog = lazy(() =>
+  import("@/components/TrashDialog").then((m) => ({ default: m.TrashDialog }))
+);
+const StorageAnalyzerDialog = lazy(() =>
+  import("@/components/StorageAnalyzerDialog").then((m) => ({
+    default: m.StorageAnalyzerDialog,
+  }))
+);
+const BatchExportDialog = lazy(() =>
+  import("@/components/BatchExportDialog").then((m) => ({ default: m.BatchExportDialog }))
+);
+const SdIngestDialog = lazy(() =>
+  import("@/components/SdIngestDialog").then((m) => ({ default: m.SdIngestDialog }))
+);
+const ExhibitLabelDialog = lazy(() =>
+  import("@/components/ExhibitLabelDialog").then((m) => ({ default: m.ExhibitLabelDialog }))
+);
+const PeopleClusterDialog = lazy(() =>
+  import("@/components/PeopleClusterDialog").then((m) => ({ default: m.PeopleClusterDialog }))
+);
+const ExifSyncDialog = lazy(() =>
+  import("@/components/ExifSyncDialog").then((m) => ({ default: m.ExifSyncDialog }))
+);
+
+function LazyAppDialogs({
+  onNavigate,
+}: {
+  onNavigate: (path: string, selectFile?: string) => void;
+}) {
+  const trashOpen = useTrashDialog((s) => s.open);
+  const storageOpen = useStorageAnalyzerDialog((s) => Boolean(s.targetPath));
+  const batchExportOpen = useBatchExportDialog((s) => s.isOpen);
+  const sdIngestOpen = useSdIngestDialog((s) => s.isOpen);
+  const exhibitLabelOpen = useExhibitLabelDialog((s) => s.isOpen);
+  const peopleClusterOpen = usePeopleClusterDialog((s) => s.isOpen);
+  const exifSyncOpen = useExifSyncDialog((s) => s.isOpen);
+
+  return (
+    <Suspense fallback={null}>
+      {trashOpen && <TrashDialog />}
+      {storageOpen && <StorageAnalyzerDialog onNavigate={onNavigate} />}
+      {batchExportOpen && <BatchExportDialog onNavigate={onNavigate} />}
+      {sdIngestOpen && <SdIngestDialog onNavigate={onNavigate} />}
+      {exhibitLabelOpen && <ExhibitLabelDialog />}
+      {peopleClusterOpen && <PeopleClusterDialog />}
+      {exifSyncOpen && <ExifSyncDialog />}
+    </Suspense>
+  );
+}
 
 function App() {
   useEffect(() => {
@@ -73,7 +123,13 @@ function App() {
       : null;
   const [secondaryFileToSelect, setSecondaryFileToSelect] = useState<string | null>(null);
   const splitContainerRef = useRef<HTMLDivElement>(null);
-  const splitView = useSplitView();
+  const primaryPaneRef = useRef<HTMLDivElement>(null);
+  const splitEnabled = useSplitView((s) => s.enabled);
+  const splitActivePane = useSplitView((s) => s.activePane);
+  const splitRatio = useSplitView((s) => s.splitRatio);
+  const secondaryPath = useSplitView((s) => s.secondaryPath);
+  const secondaryHistoryIndex = useSplitView((s) => s.secondaryHistoryIndex);
+  const secondaryHistoryLength = useSplitView((s) => s.secondaryHistory.length);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -154,48 +210,52 @@ function App() {
         console.error("Failed to request directory access:", error);
       }
       setSecondaryFileToSelect(selectFile ?? null);
-      splitView.navigateSecondary(path);
+      useSplitView.getState().navigateSecondary(path);
     },
-    [splitView, t]
+    [t]
   );
 
   const handleSidebarNavigate = useCallback(
     (path: string, selectFile?: string) => {
-      if (splitView.enabled && splitView.activePane === "secondary") {
+      const { enabled, activePane } = useSplitView.getState();
+      if (enabled && activePane === "secondary") {
         void handleSecondaryNavigate(path, selectFile);
       } else {
         void handleNavigate(path, selectFile);
       }
     },
-    [handleNavigate, handleSecondaryNavigate, splitView.activePane, splitView.enabled]
+    [handleNavigate, handleSecondaryNavigate]
   );
 
-  const handleSplitPointerDown = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>) => {
-      event.preventDefault();
-      const container = splitContainerRef.current;
-      if (!container) return;
-      document.body.style.cursor = "col-resize";
-      document.body.style.userSelect = "none";
+  const handleSplitPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const container = splitContainerRef.current;
+    const primaryPane = primaryPaneRef.current;
+    if (!container) return;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
 
-      const handleMove = (moveEvent: PointerEvent) => {
-        const rect = container.getBoundingClientRect();
-        if (rect.width <= 0) return;
-        splitView.setSplitRatio((moveEvent.clientX - rect.left) / rect.width);
-      };
-      const handleUp = () => {
-        document.body.style.cursor = "";
-        document.body.style.userSelect = "";
-        window.removeEventListener("pointermove", handleMove);
-        window.removeEventListener("pointerup", handleUp);
-        window.removeEventListener("pointercancel", handleUp);
-      };
-      window.addEventListener("pointermove", handleMove);
-      window.addEventListener("pointerup", handleUp);
-      window.addEventListener("pointercancel", handleUp);
-    },
-    [splitView]
-  );
+    let latestRatio = useSplitView.getState().splitRatio;
+    const handleMove = (moveEvent: PointerEvent) => {
+      const rect = container.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      latestRatio = Math.min(0.8, Math.max(0.2, (moveEvent.clientX - rect.left) / rect.width));
+      if (primaryPane) {
+        primaryPane.style.width = `${(latestRatio * 100).toFixed(2)}%`;
+      }
+    };
+    const handleUp = () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+      window.removeEventListener("pointercancel", handleUp);
+      useSplitView.getState().setSplitRatio(latestRatio);
+    };
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+    window.addEventListener("pointercancel", handleUp);
+  }, []);
 
   // 监听跨窗口 Tab 移动完成事件（关闭源 Tab 或窗口）
   useEffect(() => {
@@ -368,14 +428,8 @@ function App() {
       <IndexingOverlay />
       <OperationCenter />
       <OperationConflictDialog />
-      <TrashDialog />
       <FileInfoDialog />
-      <StorageAnalyzerDialog onNavigate={handleNavigate} />
-      <BatchExportDialog onNavigate={handleNavigate} />
-      <SdIngestDialog onNavigate={handleNavigate} />
-      <ExhibitLabelDialog />
-      <PeopleClusterDialog />
-      <ExifSyncDialog />
+      <LazyAppDialogs onNavigate={handleNavigate} />
 
       {isInitializing ? (
         <div className="flex h-full flex-1 items-center justify-center">
@@ -387,8 +441,8 @@ function App() {
           <Sidebar
             onNavigate={handleSidebarNavigate}
             currentPath={
-              splitView.enabled && splitView.activePane === "secondary"
-                ? splitView.secondaryPath
+              splitEnabled && splitActivePane === "secondary"
+                ? secondaryPath
                 : (activeTab?.path ?? "")
             }
           />
@@ -400,16 +454,13 @@ function App() {
               className="finder-content flex min-h-0 flex-1 overflow-hidden"
             >
               <div
-                onMouseDown={() => splitView.enabled && splitView.setActivePane("primary")}
-                style={
-                  splitView.enabled
-                    ? { width: `${(splitView.splitRatio * 100).toFixed(2)}%` }
-                    : undefined
-                }
+                ref={primaryPaneRef}
+                onMouseDown={() => splitEnabled && useSplitView.getState().setActivePane("primary")}
+                style={splitEnabled ? { width: `${(splitRatio * 100).toFixed(2)}%` } : undefined}
                 className={`flex min-h-0 min-w-0 flex-col overflow-hidden ${
-                  splitView.enabled ? "shrink-0" : "flex-1"
+                  splitEnabled ? "shrink-0" : "flex-1"
                 } ${
-                  splitView.enabled && splitView.activePane === "primary"
+                  splitEnabled && splitActivePane === "primary"
                     ? "ring-primary/35 ring-1 ring-inset"
                     : ""
                 }`}
@@ -425,28 +476,26 @@ function App() {
                 )}
               </div>
 
-              {splitView.enabled && (
+              {splitEnabled && (
                 <>
                   <div
                     role="separator"
                     aria-orientation="vertical"
                     onPointerDown={handleSplitPointerDown}
-                    onDoubleClick={() => splitView.setSplitRatio(0.5)}
+                    onDoubleClick={() => useSplitView.getState().setSplitRatio(0.5)}
                     className="group bg-border/50 hover:bg-primary/60 relative z-20 w-1 shrink-0 cursor-col-resize transition-colors"
                   />
                   <div
-                    onMouseDown={() => splitView.setActivePane("secondary")}
+                    onMouseDown={() => useSplitView.getState().setActivePane("secondary")}
                     className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${
-                      splitView.activePane === "secondary"
-                        ? "ring-primary/35 ring-1 ring-inset"
-                        : ""
+                      splitActivePane === "secondary" ? "ring-primary/35 ring-1 ring-inset" : ""
                     }`}
                   >
                     <div className="border-border/50 bg-muted/25 flex h-8 shrink-0 items-center gap-1 border-b px-2 text-xs">
                       <button
                         type="button"
-                        disabled={splitView.secondaryHistoryIndex <= 0}
-                        onClick={() => splitView.goBackSecondary()}
+                        disabled={secondaryHistoryIndex <= 0}
+                        onClick={() => useSplitView.getState().goBackSecondary()}
                         aria-label={t("nav.back")}
                         className="text-muted-foreground hover:bg-accent hover:text-foreground rounded p-1 disabled:opacity-35"
                       >
@@ -454,10 +503,8 @@ function App() {
                       </button>
                       <button
                         type="button"
-                        disabled={
-                          splitView.secondaryHistoryIndex >= splitView.secondaryHistory.length - 1
-                        }
-                        onClick={() => splitView.goForwardSecondary()}
+                        disabled={secondaryHistoryIndex >= secondaryHistoryLength - 1}
+                        onClick={() => useSplitView.getState().goForwardSecondary()}
                         aria-label={t("nav.forward")}
                         className="text-muted-foreground hover:bg-accent hover:text-foreground rounded p-1 disabled:opacity-35"
                       >
@@ -465,9 +512,9 @@ function App() {
                       </button>
                       <button
                         type="button"
-                        disabled={!splitView.secondaryPath || splitView.secondaryPath === "/"}
+                        disabled={!secondaryPath || secondaryPath === "/"}
                         onClick={() => {
-                          const normalized = splitView.secondaryPath.replace(/\/+$/, "");
+                          const normalized = secondaryPath.replace(/\/+$/, "");
                           const slash = normalized.lastIndexOf("/");
                           const parent = slash <= 0 ? "/" : normalized.slice(0, slash);
                           void handleSecondaryNavigate(parent);
@@ -479,13 +526,13 @@ function App() {
                       </button>
                       <span
                         className="text-muted-foreground min-w-0 flex-1 truncate px-1 font-mono text-[11px]"
-                        title={splitView.secondaryPath}
+                        title={secondaryPath}
                       >
-                        {splitView.secondaryPath}
+                        {secondaryPath}
                       </span>
                       <button
                         type="button"
-                        onClick={() => splitView.closeSplitView()}
+                        onClick={() => useSplitView.getState().closeSplitView()}
                         aria-label={t("common.split_pane_close")}
                         title={t("common.split_pane_close")}
                         className="text-muted-foreground hover:bg-accent hover:text-foreground rounded p-1"
@@ -495,7 +542,7 @@ function App() {
                     </div>
                     <div className="min-h-0 flex-1 overflow-hidden">
                       <FileList
-                        currentPath={splitView.secondaryPath || activeTab?.path || "/"}
+                        currentPath={secondaryPath || activeTab?.path || "/"}
                         onNavigate={handleSecondaryNavigate}
                         fileToSelect={secondaryFileToSelect}
                       />

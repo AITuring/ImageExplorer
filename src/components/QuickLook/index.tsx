@@ -510,6 +510,8 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
     ty: number;
   } | null>(null);
 
+  // Keep unused prop referenced cleanly so caller signature remains compatible.
+  void sharpnessAutoReady;
   const canInspectSharpness = isAnalyzablePhoto(entry);
   // Keep sharpness peaking strictly on-demand so browsing and zooming RAWs
   // never stalls the main thread with a 64MB full-frame getImageData() copy.
@@ -526,11 +528,11 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
   const handleDisplayedImageLoad = useCallback(
     (image: HTMLImageElement) => {
       onImageLoadDimensions(image);
-      if (canInspectSharpness && sharpnessAutoReady) {
+      if (canInspectSharpness) {
         registerSharpnessPreviewImage(image);
       }
     },
-    [canInspectSharpness, onImageLoadDimensions, registerSharpnessPreviewImage, sharpnessAutoReady]
+    [canInspectSharpness, onImageLoadDimensions, registerSharpnessPreviewImage]
   );
 
   const imageViewportSize = useMemo(() => {
@@ -1153,7 +1155,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
   );
 });
 
-export function QuickLook({
+export const QuickLook = memo(function QuickLook({
   entry,
   entries,
   entryAnalysis,
@@ -1171,6 +1173,9 @@ export function QuickLook({
   const { t } = useTranslation();
   const activeCulling = cullingState ?? DEFAULT_CULLING_STATE;
   const [showClippingOverlay, setShowClippingOverlay] = useState(false);
+  const handleToggleClippingOverlay = useCallback(() => {
+    setShowClippingOverlay((v) => !v);
+  }, []);
   const [faceDetection, setFaceDetection] = useState<{
     path: string;
     faces: DetectedFace[];
@@ -2137,7 +2142,7 @@ export function QuickLook({
               cameraAfMetadata={cameraAfMetadata}
               histogram={activeHistogram}
               showClippingOverlay={showClippingOverlay}
-              onToggleClippingOverlay={() => setShowClippingOverlay((v) => !v)}
+              onToggleClippingOverlay={handleToggleClippingOverlay}
             />
           </div>
         );
@@ -2550,4 +2555,4 @@ export function QuickLook({
       </div>
     </div>
   );
-}
+});

@@ -119,20 +119,24 @@ export function computeSharpnessMask(
 
   const luma = new Float32Array(pixelCount);
   const opaque = new Uint8Array(pixelCount);
+  let allOpaque = true;
   for (let index = 0; index < pixelCount; index += 1) {
     const pixelIndex = index * 4;
     luma[index] =
       pixels[pixelIndex] * 0.2126 +
       pixels[pixelIndex + 1] * 0.7152 +
       pixels[pixelIndex + 2] * 0.0722;
-    opaque[index] = pixels[pixelIndex + 3] >= 192 ? 1 : 0;
+    const isOpaque = pixels[pixelIndex + 3] >= 192 ? 1 : 0;
+    opaque[index] = isOpaque;
+    if (!isOpaque) allOpaque = false;
   }
 
   // Reduce pixel-scale noise before measuring edge acutance.
   const filtered = new Float32Array(pixelCount);
   for (let y = 1; y < height - 1; y += 1) {
+    const row = y * width;
     for (let x = 1; x < width - 1; x += 1) {
-      const index = y * width + x;
+      const index = row + x;
       filtered[index] =
         (luma[index - width - 1] +
           2 * luma[index - width] +
@@ -142,8 +146,8 @@ export function computeSharpnessMask(
           2 * luma[index + 1] +
           luma[index + width - 1] +
           2 * luma[index + width] +
-          luma[index + width + 1]) /
-        16;
+          luma[index + width + 1]) *
+        0.0625;
     }
   }
 
@@ -159,9 +163,10 @@ export function computeSharpnessMask(
   let maximumScore = 0;
 
   for (let y = 4; y < height - 4; y += 1) {
+    const row = y * width;
     const tileRow = (y >> FOCUS_TILE_SHIFT) * tileColumns;
     for (let x = 4; x < width - 4; x += 1) {
-      const index = y * width + x;
+      const index = row + x;
       const left = index - 1;
       const right = index + 1;
       const top = index - width;
@@ -172,15 +177,16 @@ export function computeSharpnessMask(
       const bottomRight = bottom + 1;
 
       if (
-        !opaque[index] ||
-        !opaque[left] ||
-        !opaque[right] ||
-        !opaque[top] ||
-        !opaque[bottom] ||
-        !opaque[topLeft] ||
-        !opaque[topRight] ||
-        !opaque[bottomLeft] ||
-        !opaque[bottomRight]
+        !allOpaque &&
+        (!opaque[index] ||
+          !opaque[left] ||
+          !opaque[right] ||
+          !opaque[top] ||
+          !opaque[bottom] ||
+          !opaque[topLeft] ||
+          !opaque[topRight] ||
+          !opaque[bottomLeft] ||
+          !opaque[bottomRight])
       ) {
         continue;
       }

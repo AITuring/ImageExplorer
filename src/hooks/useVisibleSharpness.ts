@@ -1,4 +1,12 @@
-import { startTransition, useEffect, useMemo, useRef, useState } from "react";
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+  type MutableRefObject,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { buildFileThumbnailUrl, loadHtmlImage } from "@/lib/iconCache";
 import { extractSharpnessRegionPixels } from "@/lib/sharpnessAnalysis";
@@ -19,6 +27,84 @@ const SQLITE_PERSIST_BATCH_SIZE = 16;
 // not trigger another camera JPEG read for the same file.
 const MAX_RESULTS = 5_000;
 const results = new Map<string, VisibleSharpness>();
+const latestVerdictByPath = new Map<string, VisibleSharpness>();
+const sharpnessPathListeners = new Map<string, Set<() => void>>();
+const sharpnessGlobalListeners = new Set<() => void>();
+let sharpnessStoreVersion = 0;
+
+function publishSharpnessUpdates(changedPaths: Iterable<string>) {
+  let anyChanged = false;
+  for (const path of changedPaths) {
+    anyChanged = true;
+    const bucket = sharpnessPathListeners.get(path);
+    if (!bucket) continue;
+    for (const listener of bucket) {
+      listener();
+    }
+  }
+  if (!anyChanged) return;
+  sharpnessStoreVersion += 1;
+  for (const listener of sharpnessGlobalListeners) {
+    listener();
+  }
+}
+
+function subscribeSharpnessPath(path: string, listener: () => void): () => void {
+  let bucket = sharpnessPathListeners.get(path);
+  if (!bucket) {
+    bucket = new Set();
+    sharpnessPathListeners.set(path, bucket);
+  }
+  bucket.add(listener);
+  return () => {
+    bucket?.delete(listener);
+    if (bucket && bucket.size === 0) {
+      sharpnessPathListeners.delete(path);
+    }
+  };
+}
+
+function subscribeSharpnessGlobal(listener: () => void): () => void {
+  sharpnessGlobalListeners.add(listener);
+  return () => {
+    sharpnessGlobalListeners.delete(listener);
+  };
+}
+
+const noopSubscribe = () => () => undefined;
+const zeroSnapshot = () => 0;
+
+export function getLatestSharpnessMap(): ReadonlyMap<string, VisibleSharpness> {
+  return latestVerdictByPath;
+}
+
+export function useSharpnessStoreVersion(enabled = true): number {
+  return useSyncExternalStore(
+    enabled ? subscribeSharpnessGlobal : noopSubscribe,
+    enabled ? () => sharpnessStoreVersion : zeroSnapshot,
+    enabled ? () => sharpnessStoreVersion : zeroSnapshot
+  );
+}
+
+/** Per-path sharpness subscription so scanning a folder only re-renders the card whose verdict arrived. */
+export function usePhotoSharpness(
+  path: string | null | undefined,
+  enabled = true
+): VisibleSharpness | undefined {
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      if (!enabled || !path) return () => undefined;
+      return subscribeSharpnessPath(path, listener);
+    },
+    [enabled, path]
+  );
+  const getSnapshot = useCallback(
+    () => (enabled && path ? latestVerdictByPath.get(path) : undefined),
+    [enabled, path]
+  );
+
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
 
 interface PersistedSharpnessRecord {
   path: string;
@@ -81,20 +167,18 @@ async function measure(
 export function useVisibleSharpness(
   entries: FileEntry[],
   enabled: boolean,
-  priorityPaths: string[] = []
+  priorityPaths: string[] | MutableRefObject<string[]> = [],
+  subscribeToMap = true
 ) {
   const signature = useMemo(
     () => entries.filter(isSharpnessAnalyzable).map(keyFor).join("\u001f"),
     [entries]
   );
-  const [snapshot, setSnapshot] = useState<{
-    signature: string;
-    verdicts: Map<string, VisibleSharpness>;
-  }>({ signature: "", verdicts: new Map() });
-  const priorityPathsRef = useRef(priorityPaths);
+  const storeVersion = useSharpnessStoreVersion(enabled && subscribeToMap);
+  const prioritySourceRef = useRef(priorityPaths);
   const entriesRef = useRef(entries);
   useEffect(() => {
-    priorityPathsRef.current = priorityPaths;
+    prioritySourceRef.current = priorityPaths;
   }, [priorityPaths]);
   useEffect(() => {
     entriesRef.current = entries;
@@ -106,16 +190,25 @@ export function useVisibleSharpness(
     const currentEntries = entriesRef.current;
     const verdicts = new Map<string, VisibleSharpness>();
     const missingFromMemory: FileEntry[] = [];
+    const hydratedPaths: string[] = [];
     for (const entry of currentEntries) {
       if (!isSharpnessAnalyzable(entry)) continue;
       const cached = results.get(keyFor(entry));
       if (cached) {
         verdicts.set(entry.path, cached);
+        if (latestVerdictByPath.get(entry.path) !== cached) {
+          latestVerdictByPath.set(entry.path, cached);
+          hydratedPaths.push(entry.path);
+        }
       } else {
         missingFromMemory.push(entry);
       }
     }
+    if (hydratedPaths.length > 0) {
+      publishSharpnessUpdates(hydratedPaths);
+    }
     const pendingPersist: PersistedSharpnessRecord[] = [];
+    const pendingPublishPaths = new Set<string>();
     let unpublishedCount = 0;
     let lastPublishedAt = performance.now();
 
@@ -123,10 +216,13 @@ export function useVisibleSharpness(
       if (unpublishedCount === 0 || controller.signal.aborted) return;
       unpublishedCount = 0;
       lastPublishedAt = performance.now();
-      const nextVerdicts = new Map(verdicts);
-      startTransition(() => {
-        setSnapshot({ signature, verdicts: nextVerdicts });
-      });
+      const changed = Array.from(pendingPublishPaths);
+      pendingPublishPaths.clear();
+      if (changed.length > 0) {
+        startTransition(() => {
+          publishSharpnessUpdates(changed);
+        });
+      }
     };
 
     const run = async () => {
@@ -156,6 +252,8 @@ export function useVisibleSharpness(
               results.set(key, row.verdict);
               while (results.size > MAX_RESULTS) results.delete(results.keys().next().value!);
               verdicts.set(entry.path, row.verdict);
+              latestVerdictByPath.set(entry.path, row.verdict);
+              pendingPublishPaths.add(entry.path);
               unpublishedCount += 1;
             }
             flush();
@@ -189,7 +287,10 @@ export function useVisibleSharpness(
         while (!controller.signal.aborted) {
           let entry: FileEntry | undefined;
           let isViewportPriority = false;
-          for (const path of priorityPathsRef.current) {
+          const activePriorityPaths = Array.isArray(prioritySourceRef.current)
+            ? prioritySourceRef.current
+            : prioritySourceRef.current.current;
+          for (const path of activePriorityPaths) {
             entry = pendingByPath.get(path);
             if (entry) {
               isViewportPriority = true;
@@ -216,6 +317,8 @@ export function useVisibleSharpness(
           results.set(key, verdict);
           while (results.size > MAX_RESULTS) results.delete(results.keys().next().value!);
           verdicts.set(entry.path, verdict);
+          latestVerdictByPath.set(entry.path, verdict);
+          pendingPublishPaths.add(entry.path);
           if (verdict === "sharp" || verdict === "soft") {
             pendingPersist.push({
               path: entry.path,
@@ -258,13 +361,13 @@ export function useVisibleSharpness(
   }, [enabled, signature]);
 
   return useMemo(() => {
-    if (!enabled) return new Map<string, VisibleSharpness>();
-    if (snapshot.signature === signature) return snapshot.verdicts;
-    const initial = new Map<string, VisibleSharpness>();
+    void storeVersion;
+    if (!enabled || !subscribeToMap) return new Map<string, VisibleSharpness>();
+    const map = new Map<string, VisibleSharpness>();
     for (const entry of entries) {
       const cached = results.get(keyFor(entry));
-      if (cached) initial.set(entry.path, cached);
+      if (cached) map.set(entry.path, cached);
     }
-    return initial;
-  }, [enabled, entries, signature, snapshot]);
+    return map;
+  }, [enabled, entries, storeVersion, subscribeToMap]);
 }

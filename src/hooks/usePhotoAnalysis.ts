@@ -1,4 +1,11 @@
-import { startTransition, useEffect, useMemo, useRef, useState } from "react";
+import {
+  startTransition,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from "react";
 import type { FileEntry } from "@/types";
 import {
   analyzePhotoEntries,
@@ -28,7 +35,7 @@ export function usePhotoAnalysis(
   entries: FileEntry[],
   enabled: boolean,
   scopePath?: string,
-  priorityPaths: string[] = [],
+  priorityPaths: string[] | MutableRefObject<string[]> = [],
   paused = false
 ) {
   const [state, setState] = useState<PhotoAnalysisState>({
@@ -58,12 +65,12 @@ export function usePhotoAnalysis(
     [analysisEntries]
   );
   const analysisEntriesRef = useRef(analysisEntries);
-  const priorityPathsRef = useRef(priorityPaths);
+  const prioritySourceRef = useRef(priorityPaths);
   useEffect(() => {
     analysisEntriesRef.current = analysisEntries;
   }, [analysisEntries]);
   useEffect(() => {
-    priorityPathsRef.current = priorityPaths;
+    prioritySourceRef.current = priorityPaths;
   }, [priorityPaths]);
   const visibleState: PhotoAnalysisState =
     state.signature === analysisSignature
@@ -207,11 +214,10 @@ export function usePhotoAnalysis(
 
     const startDelayMs = 200;
     const startTimer = window.setTimeout(() => {
-      void analyzePhotoEntries(
-        entriesToProcess,
-        controller.signal,
-        publishProgress,
-        () => priorityPathsRef.current
+      void analyzePhotoEntries(entriesToProcess, controller.signal, publishProgress, () =>
+        Array.isArray(prioritySourceRef.current)
+          ? prioritySourceRef.current
+          : prioritySourceRef.current.current
       )
         .then((nextRecords) => {
           if (generation !== generationRef.current || controller.signal.aborted) return;

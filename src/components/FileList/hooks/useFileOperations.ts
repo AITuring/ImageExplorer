@@ -30,7 +30,6 @@ export function useFileOperations({
   onStartRename,
 }: UseFileOperationsOptions) {
   const { t } = useTranslation();
-  const clipboard = useClipboard();
   const openFileInfo = useFileInfoDialog((state) => state.open);
   const favorites = useLocations((state) => state.favorites);
   const toggleFavorite = useLocations((state) => state.toggleFavorite);
@@ -81,21 +80,16 @@ export function useFileOperations({
     [onNavigate]
   );
 
-  const handleCopy = useCallback(
-    (entries: FileEntry[]) => {
-      clipboard.copy(entries.map((e) => e.path));
-    },
-    [clipboard]
-  );
+  const handleCopy = useCallback((entries: FileEntry[]) => {
+    useClipboard.getState().copy(entries.map((e) => e.path));
+  }, []);
 
-  const handleCut = useCallback(
-    (entries: FileEntry[]) => {
-      clipboard.cut(entries.map((e) => e.path));
-    },
-    [clipboard]
-  );
+  const handleCut = useCallback((entries: FileEntry[]) => {
+    useClipboard.getState().cut(entries.map((e) => e.path));
+  }, []);
 
   const handlePaste = useCallback(async () => {
+    const clipboard = useClipboard.getState();
     const pending = await clipboard.getForPaste();
     if (!pending) return;
 
@@ -115,9 +109,10 @@ export function useFileOperations({
       console.error("Failed to enqueue paste operation:", error);
       alert(t("file_list.error_paste", { error: String(error) }));
     }
-  }, [clipboard, currentPath, t]);
+  }, [currentPath, t]);
 
   const handlePasteAsMove = useCallback(async () => {
+    const clipboard = useClipboard.getState();
     const pending = await clipboard.getForPaste();
     if (!pending) return;
 
@@ -132,7 +127,7 @@ export function useFileOperations({
       console.error("Failed to enqueue move operation:", error);
       alert(t("file_list.error_paste", { error: String(error) }));
     }
-  }, [clipboard, currentPath, t]);
+  }, [currentPath, t]);
 
   const handleDuplicate = useCallback(
     async (entries: FileEntry[]) => {

@@ -1,4 +1,4 @@
-import { ReactNode } from "react";
+import { ReactNode, useState } from "react";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import {
   ContextMenuType,
@@ -45,7 +45,10 @@ export function AppContextMenu(props: AppContextMenuProps) {
     asChild = false,
   } = props;
 
+  const [isOpen, setIsOpen] = useState(false);
+
   const renderContent = () => {
+    if (!isOpen) return null;
     switch (type) {
       case "file":
       case "folder":
@@ -68,7 +71,7 @@ export function AppContextMenu(props: AppContextMenuProps) {
   };
 
   return (
-    <ContextMenu>
+    <ContextMenu onOpenChange={setIsOpen}>
       <ContextMenuTrigger asChild={asChild}>{children}</ContextMenuTrigger>
       {renderContent()}
     </ContextMenu>

@@ -1,4 +1,13 @@
-import { startTransition, useEffect, useMemo, useRef, useCallback, useState } from "react";
+import {
+  lazy,
+  startTransition,
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useCallback,
+  useState,
+} from "react";
 import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -24,14 +33,14 @@ import { useMarqueeSelection } from "./hooks/useMarqueeSelection";
 import { useQuickLook } from "./hooks/useQuickLook";
 import { usePhotoAnalysis } from "@/hooks/usePhotoAnalysis";
 import { FolderSharpnessPanel } from "@/components/FolderSharpnessPanel";
-import { useVisibleSharpness } from "@/hooks/useVisibleSharpness";
+import { getLatestSharpnessMap, useVisibleSharpness } from "@/hooks/useVisibleSharpness";
 import { getPhotoGroupColor, isAnalyzablePhoto } from "@/lib/photoAnalysis";
 import {
   getCachedPhotoMetadata,
   hydratePhotoMetadataCache,
   subscribeAnyPhotoMetadataUpdate,
 } from "@/lib/photoMetadata";
-import { usePhotoCulling } from "@/hooks/usePhotoCulling";
+import { usePhotoCulling, usePhotoCullingEntry } from "@/hooks/usePhotoCulling";
 import {
   exportXmpSidecars,
   updatePhotoCullingStates,
@@ -55,15 +64,20 @@ import { FileListItem } from "./components/FileListItem";
 import { FileGridItem } from "./components/FileGridItem";
 import { FileGalleryView } from "./components/FileGalleryView";
 import { FolderFilterBar } from "./components/FolderFilterBar";
-import { PhotoCompareDialog } from "@/components/PhotoCompareDialog";
 import {
   FileColumnView,
   type ColumnNavigationHandle,
   type ColumnSelectionContext,
 } from "./components/FileColumnView";
-import { BatchRenameDialog } from "@/components/BatchRenameDialog";
+
+const PhotoCompareDialog = lazy(() =>
+  import("@/components/PhotoCompareDialog").then((m) => ({ default: m.PhotoCompareDialog }))
+);
+const BatchRenameDialog = lazy(() =>
+  import("@/components/BatchRenameDialog").then((m) => ({ default: m.BatchRenameDialog }))
+);
 import { readFileDragData } from "@/lib/dragData";
-import { makeNativeFileDragGestureHandlers } from "@/lib/nativeFileDragGesture";
+import { makeDelegatedFileDragGestureHandlers } from "@/lib/nativeFileDragGesture";
 import { isPermissionDeniedError, requestDirectoryAccess } from "@/lib/directoryAccess";
 import { settingsManager } from "@/lib/store";
 import { useStatusBar } from "@/stores/statusBar";
@@ -106,20 +120,17 @@ interface FileListProps {
   fileToSelect?: string | null;
 }
 
-/** 拖拽事件处理工厂（按住 Option / Alt 键执行复制而非移动） */
-function makeDragHandlers(
+/** 仅文件夹需要的拖入目标事件处理（按住 Option / Alt 键执行复制而非移动） */
+function makeDirectoryDropHandlers(
   entry: FileEntry,
-  selectedPaths: string[],
   handleMove: (src: string | string[], dest: string) => void,
   handleCopyTo: (src: string | string[], dest: string) => void,
   isGrid: boolean
 ) {
-  const dragPaths = selectedPaths.includes(entry.path) ? selectedPaths : [entry.path];
+  if (!entry.is_dir) return undefined;
 
   return {
-    ...makeNativeFileDragGestureHandlers(dragPaths),
     onDragOver: (e: React.DragEvent) => {
-      if (!entry.is_dir) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = e.altKey ? "copy" : "move";
       if (isGrid) {
@@ -129,7 +140,6 @@ function makeDragHandlers(
       }
     },
     onDragLeave: (e: React.DragEvent) => {
-      if (!entry.is_dir) return;
       if (!e.currentTarget.contains(e.relatedTarget as Node)) {
         if (isGrid) {
           e.currentTarget.querySelector(".group")?.classList.remove("bg-primary/20", "rounded-lg");
@@ -139,7 +149,6 @@ function makeDragHandlers(
       }
     },
     onDrop: (e: React.DragEvent) => {
-      if (!entry.is_dir) return;
       e.preventDefault();
       e.stopPropagation();
       if (isGrid) {
@@ -244,16 +253,24 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   const displayBaseEntries = folderFilter.pairRawJpeg ? pairingPreview.entries : entries;
 
   const viewportPriorityPathsRef = useRef<string[]>([]);
-  const [viewportPriorityPaths, setViewportPriorityPaths] = useState<string[]>([]);
   const [quickLookOpenFlag, setQuickLookOpenFlag] = useState(false);
+  const [contextMenuTarget, setContextMenuTarget] = useState<FileEntry | null>(null);
+
+  const hasSharpnessFilterActive = folderFilter.sharpness !== "all";
+  const hasCullingFilterActive = folderFilter.flag !== "all" || folderFilter.minRating > 0;
+  const needsSharpnessMap =
+    hasSharpnessFilterActive || viewMode === "gallery" || compareEntries !== null;
+  const needsCullingMap =
+    hasCullingFilterActive || viewMode === "gallery" || compareEntries !== null;
 
   const visibleSharpness = useVisibleSharpness(
     folderScanEntries,
     !loading && !error && !quickLookOpenFlag,
-    viewportPriorityPaths
+    viewportPriorityPathsRef,
+    needsSharpnessMap
   );
 
-  const cullingMap = usePhotoCulling(entries);
+  const cullingMap = usePhotoCulling(entries, needsCullingMap);
   const [metadataTick, setMetadataTick] = useState(0);
   useEffect(() => {
     return subscribeAnyPhotoMetadataUpdate(() => {
@@ -282,8 +299,6 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     };
   }, [displayBaseEntries, metadataTick]);
 
-  const hasSharpnessFilterActive = folderFilter.sharpness !== "all";
-  const hasCullingFilterActive = folderFilter.flag !== "all" || folderFilter.minRating > 0;
   const sharpnessForFilter = hasSharpnessFilterActive ? visibleSharpness : EMPTY_SHARPNESS_MAP;
   const cullingForFilter = hasCullingFilterActive ? cullingMap : EMPTY_CULLING_MAP;
 
@@ -1057,17 +1072,10 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     return visible;
   }, [listEnd, listRows, listStart, viewMode]);
   const computedViewportPriorityPaths = viewMode === "icon" ? gridViewportPaths : listViewportPaths;
-
+  // Sync visible paths via ref instead of setState so scrolling never triggers
+  // a second full FileList re-render on every scroll frame.
   useEffect(() => {
-    const prev = viewportPriorityPathsRef.current;
-    if (
-      prev.length === computedViewportPriorityPaths.length &&
-      prev.every((path, idx) => path === computedViewportPriorityPaths[idx])
-    ) {
-      return;
-    }
     viewportPriorityPathsRef.current = computedViewportPriorityPaths;
-    setViewportPriorityPaths(computedViewportPriorityPaths);
   }, [computedViewportPriorityPaths]);
 
   useEffect(() => {
@@ -1079,7 +1087,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     entries,
     photoAnalysisEnabledForFolder,
     currentPath,
-    computedViewportPriorityPaths,
+    viewportPriorityPathsRef,
     Boolean(quickLookEntry)
   );
 
@@ -1177,12 +1185,30 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     gridVirtualizer,
   ]);
 
-  // 当前选中的文件集合与列表（O(N) 而非 O(N*M)）
+  // 当前选中的文件集合与列表（O(k) Map 查找而非每次切选全表扫描）
+  const selectionEntryByPath = useMemo(() => {
+    const map = new Map<string, FileEntry>();
+    for (const entry of selectionEntries) {
+      map.set(entry.path, entry);
+    }
+    return map;
+  }, [selectionEntries]);
+  const sortedEntryIndexByPath = useMemo(() => {
+    const map = new Map<string, number>();
+    for (let i = 0; i < sortedEntries.length; i += 1) {
+      map.set(sortedEntries[i].path, i);
+    }
+    return map;
+  }, [sortedEntries]);
   const selectedPathSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
-  const selectedFileEntries = useMemo(
-    () => selectionEntries.filter((e) => selectedPathSet.has(e.path)),
-    [selectionEntries, selectedPathSet]
-  );
+  const selectedFileEntries = useMemo(() => {
+    const selected: FileEntry[] = [];
+    for (const path of selectedPaths) {
+      const entry = selectionEntryByPath.get(path);
+      if (entry) selected.push(entry);
+    }
+    return selected;
+  }, [selectedPaths, selectionEntryByPath]);
 
   useEffect(() => {
     scrollToIndexRef.current = (index: number) => {
@@ -1228,12 +1254,41 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
 
   const sortedEntriesRef = useRef(keyboardEntries);
   const selectedPathSetRef = useRef(selectedPathSet);
+  const selectedPathsRef = useRef(selectedPaths);
+  const selectionEntryByPathRef = useRef(selectionEntryByPath);
   useEffect(() => {
     sortedEntriesRef.current = keyboardEntries;
   }, [keyboardEntries]);
   useEffect(() => {
     selectedPathSetRef.current = selectedPathSet;
-  }, [selectedPathSet]);
+    selectedPathsRef.current = selectedPaths;
+  }, [selectedPathSet, selectedPaths]);
+  useEffect(() => {
+    selectionEntryByPathRef.current = selectionEntryByPath;
+  }, [selectionEntryByPath]);
+
+  const delegatedDragHandlers = useMemo(
+    () =>
+      makeDelegatedFileDragGestureHandlers((entryPath) =>
+        selectedPathSetRef.current.has(entryPath) ? selectedPathsRef.current : [entryPath]
+      ),
+    []
+  );
+
+  const handleContainerContextMenuCapture = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      const itemElement = (event.target as Element | null)?.closest<HTMLElement>(
+        "[data-entry-path]"
+      );
+      const path = itemElement?.dataset.entryPath;
+      if (!path) {
+        setContextMenuTarget(null);
+        return;
+      }
+      setContextMenuTarget(selectionEntryByPathRef.current.get(path) ?? null);
+    },
+    []
+  );
 
   // 点击处理（稳定引用，避免破坏 FileListItem / FileGridItem 的 React.memo）
   const handleClick = useCallback(
@@ -1411,11 +1466,24 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     ]
   );
 
-  // Loading 状态
-  const burstAutoPickPlan = useMemo(() => {
-    if (photoAnalysis.size === 0) {
-      return { groupCount: 0, bestPaths: [], rejectedPaths: [] };
+  // 连拍分组计数仅依赖 photoAnalysis（不再跟随每 160ms 的清晰度扫描全表重算）
+  const burstGroupCount = useMemo(() => {
+    if (photoAnalysis.size === 0) return 0;
+    const groupCounts = new Map<number, number>();
+    for (const record of photoAnalysis.values()) {
+      if (record.groupId === null) continue;
+      groupCounts.set(record.groupId, (groupCounts.get(record.groupId) ?? 0) + 1);
     }
+    let groups = 0;
+    for (const count of groupCounts.values()) {
+      if (count >= 2) groups += 1;
+    }
+    return groups;
+  }, [photoAnalysis]);
+
+  const handleAutoPickBest = useCallback(() => {
+    if (photoAnalysis.size === 0) return;
+    const latestSharpness = getLatestSharpnessMap();
     const candidates = [];
     for (const [path, record] of photoAnalysis) {
       candidates.push({
@@ -1423,31 +1491,73 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
         groupId: record.groupId,
         focusConfidence: record.focusAnalysis.confidence,
         focusKind: record.focusAnalysis.kind,
-        sharpnessVerdict: visibleSharpness.get(path),
+        sharpnessVerdict: latestSharpness.get(path),
       });
     }
-    return computeAutoPickBest(candidates);
-  }, [photoAnalysis, visibleSharpness]);
-
-  const handleAutoPickBest = useCallback(() => {
-    if (burstAutoPickPlan.groupCount === 0) return;
+    const plan = computeAutoPickBest(candidates);
+    if (plan.groupCount === 0) return;
     const updates: Array<{ path: string; rating?: number; flag?: PhotoFlag }> = [];
-    for (const path of burstAutoPickPlan.bestPaths) {
+    for (const path of plan.bestPaths) {
       updates.push({ path, flag: "pick", rating: 5 });
     }
-    for (const path of burstAutoPickPlan.rejectedPaths) {
+    for (const path of plan.rejectedPaths) {
       updates.push({ path, flag: "reject" });
     }
     void updatePhotoCullingStates(updates).then(() => {
       alert(
         t("file_list.culling.auto_pick_best_done", {
-          groups: burstAutoPickPlan.groupCount,
-          best: burstAutoPickPlan.bestPaths.length,
-          rejected: burstAutoPickPlan.rejectedPaths.length,
+          groups: plan.groupCount,
+          best: plan.bestPaths.length,
+          rejected: plan.rejectedPaths.length,
         })
       );
     });
-  }, [burstAutoPickPlan, t]);
+  }, [photoAnalysis, t]);
+
+  const quickLookCullingState = usePhotoCullingEntry(
+    quickLookEntry?.path,
+    Boolean(quickLookEntry) && !useNativeQuickLook
+  );
+  const handleCloseQuickLook = useCallback(() => setQuickLookEntry(null), [setQuickLookEntry]);
+  const handleQuickLookToggleTag = useCallback(
+    (target: FileEntry, tag: string) => void handleToggleTag([target], tag),
+    [handleToggleTag]
+  );
+  const handleQuickLookDelete = useCallback(
+    (target: FileEntry) => handleDelete([target]),
+    [handleDelete]
+  );
+  const handleQuickLookExtract = useCallback(
+    (target: FileEntry) => void handleExtract(target),
+    [handleExtract]
+  );
+  const handleQuickLookNavigate = useCallback(
+    (entry: FileEntry) => {
+      const index = sortedEntryIndexByPath.get(entry.path) ?? -1;
+      selectSingle(entry.path, index);
+      if (index >= 0) {
+        if (viewMode === "icon") {
+          const rowIdx = gridRowIndexByPath.get(entry.path) ?? Math.floor(index / gridColumns);
+          gridVirtualizer.scrollToIndex(rowIdx, { align: "auto" });
+        } else if (viewMode === "list") {
+          const rowIdx = listEntryRowIndexByPath.get(entry.path) ?? index;
+          listVirtualizer.scrollToIndex(rowIdx, { align: "auto" });
+        }
+      }
+      setQuickLookEntry(entry);
+    },
+    [
+      gridColumns,
+      gridRowIndexByPath,
+      gridVirtualizer,
+      listEntryRowIndexByPath,
+      listVirtualizer,
+      selectSingle,
+      setQuickLookEntry,
+      sortedEntryIndexByPath,
+      viewMode,
+    ]
+  );
 
   const handleExportXmp = useCallback(async () => {
     const photoPaths = entries.filter(isAnalyzablePhoto).map((entry) => entry.path);
@@ -1551,7 +1661,10 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   return (
     <>
       <AppContextMenu
-        type="empty-area"
+        type={contextMenuTarget ? (contextMenuTarget.is_dir ? "folder" : "file") : "empty-area"}
+        entry={contextMenuTarget ?? undefined}
+        selectedEntries={contextMenuTarget ? selectedFileEntries : undefined}
+        fileActions={contextMenuTarget ? fileActions : undefined}
         asChild
         emptyAreaActions={{
           onPaste: handlePaste,
@@ -1587,6 +1700,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
             isFileDragOver ? "ring-primary/30 ring-2 ring-inset" : ""
           }`}
           tabIndex={0}
+          onContextMenuCapture={handleContainerContextMenuCapture}
           onDragOver={handleFileContainerDragOver}
           onDragLeave={handleFileContainerDragLeave}
           onDrop={handleFileContainerDrop}
@@ -1594,7 +1708,6 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
           <FolderSharpnessPanel
             key={currentPath}
             entries={folderScanEntries}
-            verdicts={visibleSharpness}
             enabled={!loading && !error}
             onLocate={(entry) => {
               const parent = entry.path.slice(0, entry.path.lastIndexOf("/")) || "/";
@@ -1661,7 +1774,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                 pairCount={pairingPreview.pairCount}
                 cameraOptions={cameraOptions}
                 lensOptions={lensOptions}
-                burstGroupCount={burstAutoPickPlan.groupCount}
+                burstGroupCount={burstGroupCount}
                 autoAdvance={cullAutoAdvance}
                 onToggleAutoAdvance={toggleCullAutoAdvance}
                 sortByCaptured={sortField === "captured"}
@@ -1746,6 +1859,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
               <div
                 ref={listScrollRef}
                 onMouseDown={handleListMarqueeMouseDown}
+                {...delegatedDragHandlers}
                 className="finder-list-scroll relative min-h-0 flex-1 overflow-y-auto select-none"
               >
                 <div
@@ -1810,19 +1924,21 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
 
                     const { entry, flatIndex, depth, canExpand, isExpanded, isLoadingChildren } =
                       row;
-                    const dragHandlers = makeDragHandlers(
+                    const dropHandlers = makeDirectoryDropHandlers(
                       entry,
-                      selectedPaths,
                       handleMove,
                       handleCopyTo,
                       false
                     );
+                    const isEditing = editingPath === entry.path;
                     return (
                       <div
                         key={entry.path}
                         data-index={virtualItem.index}
+                        data-entry-path={entry.path}
                         data-marquee-item="true"
                         data-marquee-path={entry.path}
+                        draggable={false}
                         ref={listVirtualizer.measureElement}
                         style={{
                           position: "absolute",
@@ -1831,43 +1947,34 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                           width: "100%",
                           transform: `translateY(${virtualItem.start}px)`,
                         }}
-                        {...dragHandlers}
+                        {...dropHandlers}
                       >
-                        <AppContextMenu
-                          type={entry.is_dir ? "folder" : "file"}
+                        <FileListItem
                           entry={entry}
-                          selectedEntries={selectedFileEntries}
-                          fileActions={fileActions}
-                        >
-                          <FileListItem
-                            entry={entry}
-                            index={flatIndex}
-                            visibleSharpness={visibleSharpness.get(entry.path)}
-                            isInViewport={
-                              virtualItem.index >= listStart && virtualItem.index <= listEnd
-                            }
-                            isScrolling={listVirtualizer.isScrolling}
-                            isSelected={selectedPathSet.has(entry.path)}
-                            isFocused={selectedPath === entry.path}
-                            isEditing={editingPath === entry.path}
-                            editValue={editValue}
-                            onEditValueChange={setEditValue}
-                            onSubmitRename={handleSubmitRename}
-                            onCancelRename={handleCancelRename}
-                            onItemClick={handleClick}
-                            onItemNameClick={handleNameClick}
-                            onItemDoubleClick={handleOpen}
-                            columnWidths={listColumnWidths}
-                            columnVisibility={listColumnVisibility}
-                            cullingState={cullingMap.get(entry.path)}
-                            pairedBadge={pairedCompanionsByPath.has(entry.path) ? "RAW+JPG" : null}
-                            depth={depth}
-                            canExpand={canExpand}
-                            isExpanded={isExpanded}
-                            isLoadingChildren={isLoadingChildren}
-                            onToggleExpand={groupBy === "none" ? handleToggleExpandDir : undefined}
-                          />
-                        </AppContextMenu>
+                          index={flatIndex}
+                          isInViewport={
+                            virtualItem.index >= listStart && virtualItem.index <= listEnd
+                          }
+                          isScrolling={listVirtualizer.isScrolling}
+                          isSelected={selectedPathSet.has(entry.path)}
+                          isFocused={selectedPath === entry.path}
+                          isEditing={isEditing}
+                          editValue={isEditing ? editValue : ""}
+                          onEditValueChange={setEditValue}
+                          onSubmitRename={handleSubmitRename}
+                          onCancelRename={handleCancelRename}
+                          onItemClick={handleClick}
+                          onItemNameClick={handleNameClick}
+                          onItemDoubleClick={handleOpen}
+                          columnWidths={listColumnWidths}
+                          columnVisibility={listColumnVisibility}
+                          pairedBadge={pairedCompanionsByPath.has(entry.path) ? "RAW+JPG" : null}
+                          depth={depth}
+                          canExpand={canExpand}
+                          isExpanded={isExpanded}
+                          isLoadingChildren={isLoadingChildren}
+                          onToggleExpand={groupBy === "none" ? handleToggleExpandDir : undefined}
+                        />
                       </div>
                     );
                   })}
@@ -1880,6 +1987,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
               <div
                 ref={gridScrollRef}
                 onMouseDown={handleGridMarqueeMouseDown}
+                {...delegatedDragHandlers}
                 className="file-grid-scrollbar relative min-h-0 flex-1 overflow-y-scroll select-none"
               >
                 <div
@@ -1964,53 +2072,46 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                         >
                           {rowEntries.map((entry, colIdx) => {
                             const globalIndex = row.startFlatIndex + colIdx;
-                            const dragHandlers = makeDragHandlers(
+                            const dropHandlers = makeDirectoryDropHandlers(
                               entry,
-                              selectedPaths,
                               handleMove,
                               handleCopyTo,
                               true
                             );
                             const analysis = photoAnalysis.get(entry.path);
+                            const isEditing = editingPath === entry.path;
                             return (
                               <div
                                 key={entry.path}
+                                data-entry-path={entry.path}
                                 data-marquee-item="true"
                                 data-marquee-path={entry.path}
-                                {...dragHandlers}
+                                draggable={false}
+                                {...dropHandlers}
                               >
-                                <AppContextMenu
-                                  type={entry.is_dir ? "folder" : "file"}
+                                <FileGridItem
                                   entry={entry}
-                                  selectedEntries={selectedFileEntries}
-                                  fileActions={fileActions}
-                                >
-                                  <FileGridItem
-                                    entry={entry}
-                                    index={globalIndex}
-                                    isSelected={selectedPathSet.has(entry.path)}
-                                    isFocused={selectedPath === entry.path}
-                                    isEditing={editingPath === entry.path}
-                                    editValue={editValue}
-                                    onEditValueChange={setEditValue}
-                                    onSubmitRename={handleSubmitRename}
-                                    onCancelRename={handleCancelRename}
-                                    onItemClick={handleClick}
-                                    onItemNameClick={handleNameClick}
-                                    onItemDoubleClick={handleOpen}
-                                    photoAnalysis={analysis}
-                                    visibleSharpness={visibleSharpness.get(entry.path)}
-                                    photoAnalysisEnabled={photoAnalysisEnabled}
-                                    iconSize={iconSize}
-                                    cullingState={cullingMap.get(entry.path)}
-                                    pairedBadge={
-                                      pairedCompanionsByPath.has(entry.path) ? "RAW+JPG" : null
-                                    }
-                                    isScrolling={gridIsScrolling}
-                                    isInViewport={gridViewportPathSet.has(entry.path)}
-                                    photoGroupColor={getPhotoGroupColor(analysis?.groupId ?? null)}
-                                  />
-                                </AppContextMenu>
+                                  index={globalIndex}
+                                  isSelected={selectedPathSet.has(entry.path)}
+                                  isFocused={selectedPath === entry.path}
+                                  isEditing={isEditing}
+                                  editValue={isEditing ? editValue : ""}
+                                  onEditValueChange={setEditValue}
+                                  onSubmitRename={handleSubmitRename}
+                                  onCancelRename={handleCancelRename}
+                                  onItemClick={handleClick}
+                                  onItemNameClick={handleNameClick}
+                                  onItemDoubleClick={handleOpen}
+                                  photoAnalysis={analysis}
+                                  photoAnalysisEnabled={photoAnalysisEnabled}
+                                  iconSize={iconSize}
+                                  pairedBadge={
+                                    pairedCompanionsByPath.has(entry.path) ? "RAW+JPG" : null
+                                  }
+                                  isScrolling={gridIsScrolling}
+                                  isInViewport={gridViewportPathSet.has(entry.path)}
+                                  photoGroupColor={getPhotoGroupColor(analysis?.groupId ?? null)}
+                                />
                               </div>
                             );
                           })}
@@ -2030,47 +2131,44 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
           entry={quickLookEntry}
           entries={sortedEntries}
           entryAnalysis={quickLookEntry ? photoAnalysis.get(quickLookEntry.path) : undefined}
-          cullingState={quickLookEntry ? cullingMap.get(quickLookEntry.path) : undefined}
+          cullingState={quickLookCullingState}
           autoAdvance={cullAutoAdvance}
-          onClose={() => setQuickLookEntry(null)}
-          onToggleTag={(target, tag) => void handleToggleTag([target], tag)}
+          onClose={handleCloseQuickLook}
+          onToggleTag={handleQuickLookToggleTag}
           onSetRating={handleSetRating}
           onSetFlag={handleSetFlag}
-          onDelete={(target) => handleDelete([target])}
-          onExtract={(target) => void handleExtract(target)}
-          onNavigate={(entry) => {
-            const index = sortedEntries.findIndex((candidate) => candidate.path === entry.path);
-            selectSingle(entry.path, index);
-            if (index >= 0) {
-              if (viewMode === "icon") {
-                gridVirtualizer.scrollToIndex(Math.floor(index / gridColumns), { align: "auto" });
-              } else if (viewMode === "list") {
-                listVirtualizer.scrollToIndex(index, { align: "auto" });
-              }
-            }
-            setQuickLookEntry(entry);
-          }}
+          onDelete={handleQuickLookDelete}
+          onExtract={handleQuickLookExtract}
+          onNavigate={handleQuickLookNavigate}
         />
       )}
 
-      <PhotoCompareDialog
-        entries={compareEntries}
-        allPhotos={allPhotosInView}
-        visibleSharpness={visibleSharpness}
-        cullingMap={cullingMap}
-        onClose={() => setCompareEntries(null)}
-        onToggleTag={(target, tag) => void handleToggleTag([target], tag)}
-        onSetRating={handleSetRating}
-        onSetFlag={handleSetFlag}
-        onDelete={(target) => handleDelete([target])}
-      />
+      {compareEntries && (
+        <Suspense fallback={null}>
+          <PhotoCompareDialog
+            entries={compareEntries}
+            allPhotos={allPhotosInView}
+            visibleSharpness={visibleSharpness}
+            cullingMap={cullingMap}
+            onClose={() => setCompareEntries(null)}
+            onToggleTag={(target, tag) => void handleToggleTag([target], tag)}
+            onSetRating={handleSetRating}
+            onSetFlag={handleSetFlag}
+            onDelete={(target) => handleDelete([target])}
+          />
+        </Suspense>
+      )}
 
-      <BatchRenameDialog
-        open={showBatchRename}
-        onOpenChange={setShowBatchRename}
-        selectedFiles={batchRenameFiles}
-        onComplete={() => loadEntries(false)}
-      />
+      {showBatchRename && (
+        <Suspense fallback={null}>
+          <BatchRenameDialog
+            open={showBatchRename}
+            onOpenChange={setShowBatchRename}
+            selectedFiles={batchRenameFiles}
+            onComplete={() => loadEntries(false)}
+          />
+        </Suspense>
+      )}
     </>
   );
 }

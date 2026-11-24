@@ -20,10 +20,26 @@ export const DEFAULT_CULLING_STATE: PhotoCullingState = {
 
 const cullingCache = new Map<string, PhotoCullingState>();
 const listeners = new Set<() => void>();
+const pathListeners = new Map<string, Set<() => void>>();
 let snapshotVersion = 0;
 
-function notify() {
+function notify(changedPaths?: Iterable<string>) {
   snapshotVersion += 1;
+  if (changedPaths) {
+    for (const path of changedPaths) {
+      const bucket = pathListeners.get(path);
+      if (!bucket) continue;
+      for (const listener of bucket) {
+        listener();
+      }
+    }
+  } else {
+    for (const bucket of pathListeners.values()) {
+      for (const listener of bucket) {
+        listener();
+      }
+    }
+  }
   for (const listener of listeners) {
     listener();
   }
@@ -36,12 +52,31 @@ export function subscribePhotoCulling(listener: () => void): () => void {
   };
 }
 
+export function subscribePhotoCullingPath(path: string, listener: () => void): () => void {
+  let bucket = pathListeners.get(path);
+  if (!bucket) {
+    bucket = new Set();
+    pathListeners.set(path, bucket);
+  }
+  bucket.add(listener);
+  return () => {
+    bucket?.delete(listener);
+    if (bucket && bucket.size === 0) {
+      pathListeners.delete(path);
+    }
+  };
+}
+
 export function getPhotoCullingSnapshotVersion(): number {
   return snapshotVersion;
 }
 
 export function getPhotoCullingMap(): ReadonlyMap<string, PhotoCullingState> {
   return cullingCache;
+}
+
+export function getPhotoCullingEntry(path: string): PhotoCullingState | undefined {
+  return cullingCache.get(path);
 }
 
 export function getPhotoCullingState(path: string): PhotoCullingState {
@@ -57,7 +92,7 @@ export async function hydratePhotoCullingStates(paths: string[]): Promise<void> 
   if (paths.length === 0) return;
   try {
     const records = await invoke<PhotoCullingRecord[]>("get_photo_culling_states", { paths });
-    let changed = false;
+    const changedPaths: string[] = [];
     for (const record of records) {
       const next: PhotoCullingState = {
         rating: Math.max(0, Math.min(5, Math.round(record.rating))),
@@ -66,10 +101,10 @@ export async function hydratePhotoCullingStates(paths: string[]): Promise<void> 
       const prev = cullingCache.get(record.path);
       if (!prev || prev.rating !== next.rating || prev.flag !== next.flag) {
         cullingCache.set(record.path, next);
-        changed = true;
+        changedPaths.push(record.path);
       }
     }
-    if (changed) notify();
+    if (changedPaths.length > 0) notify(changedPaths);
   } catch {
     // SQLite may be unavailable in non-Tauri environments; keep in-memory state.
   }
@@ -80,6 +115,7 @@ export async function updatePhotoCullingStates(
 ): Promise<void> {
   if (updates.length === 0) return;
   const records: PhotoCullingRecord[] = [];
+  const changedPaths: string[] = [];
   for (const update of updates) {
     const prev = cullingCache.get(update.path) ?? DEFAULT_CULLING_STATE;
     const rating =
@@ -93,8 +129,9 @@ export async function updatePhotoCullingStates(
       cullingCache.set(update.path, { rating, flag });
     }
     records.push({ path: update.path, rating, flag });
+    changedPaths.push(update.path);
   }
-  notify();
+  notify(changedPaths);
 
   try {
     await invoke("set_photo_culling_states", { records });

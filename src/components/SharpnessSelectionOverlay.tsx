@@ -1,7 +1,7 @@
 import {
+  memo,
   useEffect,
   useRef,
-  useState,
   type CSSProperties,
   type KeyboardEvent,
   type PointerEvent,
@@ -25,6 +25,8 @@ interface SharpnessSelectionOverlayProps {
 }
 
 const MIN_SELECTION_SIZE_PX = 24;
+const POINT_CLICK_THRESHOLD_PX = 8;
+const POINT_CLICK_BOX_SPAN = 0.24;
 const FULL_IMAGE_RECT: NormalizedRect = { x: 0, y: 0, width: 1, height: 1 };
 
 function selectionStyle(selection: NormalizedRect): CSSProperties {
@@ -36,7 +38,14 @@ function selectionStyle(selection: NormalizedRect): CSSProperties {
   };
 }
 
-export function SharpnessSelectionOverlay({
+function pointClickSelection(point: { x: number; y: number }): NormalizedRect {
+  const half = POINT_CLICK_BOX_SPAN / 2;
+  const x = Math.min(1 - POINT_CLICK_BOX_SPAN, Math.max(0, point.x - half));
+  const y = Math.min(1 - POINT_CLICK_BOX_SPAN, Math.max(0, point.y - half));
+  return { x, y, width: POINT_CLICK_BOX_SPAN, height: POINT_CLICK_BOX_SPAN };
+}
+
+export const SharpnessSelectionOverlay = memo(function SharpnessSelectionOverlay({
   enabled,
   selectionMode,
   selection,
@@ -47,10 +56,17 @@ export function SharpnessSelectionOverlay({
   onEscape,
 }: SharpnessSelectionOverlayProps) {
   const { t } = useTranslation();
-  const [draftSelection, setDraftSelection] = useState<NormalizedRect | null>(null);
-  const selectionStartRef = useRef<{ x: number; y: number } | null>(null);
+  const selectionStartRef = useRef<{
+    x: number;
+    y: number;
+    clientX: number;
+    clientY: number;
+  } | null>(null);
+  const dragBoundsRef = useRef<DOMRect | null>(null);
   const draftSelectionRef = useRef<NormalizedRect | null>(null);
   const draftFrameRef = useRef<number | null>(null);
+  const draftBoxRef = useRef<HTMLSpanElement | null>(null);
+  const committedBoxRef = useRef<HTMLSpanElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -60,7 +76,7 @@ export function SharpnessSelectionOverlay({
     if (!context) return;
     context.clearRect(0, 0, result.width, result.height);
     context.putImageData(new ImageData(result.rgba, result.width, result.height), 0, 0);
-  }, [enabled, result, selectionMode]);
+  }, [result]);
 
   useEffect(() => {
     return () => {
@@ -72,12 +88,29 @@ export function SharpnessSelectionOverlay({
 
   if (!enabled) return null;
 
-  const pointFromEvent = (event: PointerEvent<HTMLDivElement>) => {
-    const bounds = event.currentTarget.getBoundingClientRect();
-    return {
-      x: (event.clientX - bounds.left) / Math.max(bounds.width, 1),
-      y: (event.clientY - bounds.top) / Math.max(bounds.height, 1),
-    };
+  const pointFromBounds = (clientX: number, clientY: number, bounds: DOMRect) => ({
+    x: (clientX - bounds.left) / Math.max(bounds.width, 1),
+    y: (clientY - bounds.top) / Math.max(bounds.height, 1),
+  });
+
+  const paintDraftBox = (rect: NormalizedRect | null) => {
+    const box = draftBoxRef.current;
+    if (!box) return;
+    if (!rect) {
+      box.style.display = "none";
+      if (committedBoxRef.current) {
+        committedBoxRef.current.style.visibility = "";
+      }
+      return;
+    }
+    if (committedBoxRef.current) {
+      committedBoxRef.current.style.visibility = "hidden";
+    }
+    box.style.display = "block";
+    box.style.left = `${rect.x * 100}%`;
+    box.style.top = `${rect.y * 100}%`;
+    box.style.width = `${rect.width * 100}%`;
+    box.style.height = `${rect.height * 100}%`;
   };
 
   const publishDraft = (nextSelection: NormalizedRect) => {
@@ -85,7 +118,7 @@ export function SharpnessSelectionOverlay({
     if (draftFrameRef.current !== null) return;
     draftFrameRef.current = window.requestAnimationFrame(() => {
       draftFrameRef.current = null;
-      setDraftSelection(draftSelectionRef.current);
+      paintDraftBox(draftSelectionRef.current);
     });
   };
 
@@ -95,8 +128,9 @@ export function SharpnessSelectionOverlay({
       draftFrameRef.current = null;
     }
     selectionStartRef.current = null;
+    dragBoundsRef.current = null;
     draftSelectionRef.current = null;
-    setDraftSelection(null);
+    paintDraftBox(null);
   };
 
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
@@ -105,30 +139,50 @@ export function SharpnessSelectionOverlay({
     event.stopPropagation();
     event.currentTarget.focus({ preventScroll: true });
     event.currentTarget.setPointerCapture(event.pointerId);
-    const start = pointFromEvent(event);
-    selectionStartRef.current = start;
-    draftSelectionRef.current = normalizedRectFromPoints(start, start);
-    setDraftSelection(draftSelectionRef.current);
+    const bounds = event.currentTarget.getBoundingClientRect();
+    dragBoundsRef.current = bounds;
+    const startPoint = pointFromBounds(event.clientX, event.clientY, bounds);
+    selectionStartRef.current = {
+      ...startPoint,
+      clientX: event.clientX,
+      clientY: event.clientY,
+    };
+    const initialRect = normalizedRectFromPoints(startPoint, startPoint);
+    draftSelectionRef.current = initialRect;
+    paintDraftBox(initialRect);
   };
 
   const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
     const start = selectionStartRef.current;
-    if (!start || !event.isPrimary) return;
+    const bounds = dragBoundsRef.current;
+    if (!start || !bounds || !event.isPrimary) return;
     event.preventDefault();
-    publishDraft(normalizedRectFromPoints(start, pointFromEvent(event)));
+    publishDraft(
+      normalizedRectFromPoints(start, pointFromBounds(event.clientX, event.clientY, bounds))
+    );
   };
 
   const handlePointerUp = (event: PointerEvent<HTMLDivElement>) => {
     const start = selectionStartRef.current;
+    const bounds = dragBoundsRef.current ?? event.currentTarget.getBoundingClientRect();
     if (!start || !event.isPrimary) return;
     event.preventDefault();
     event.stopPropagation();
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const nextSelection = normalizedRectFromPoints(start, pointFromEvent(event));
+    const endPoint = pointFromBounds(event.clientX, event.clientY, bounds);
+    const nextSelection = normalizedRectFromPoints(start, endPoint);
+    const dragDx = Math.abs(event.clientX - start.clientX);
+    const dragDy = Math.abs(event.clientY - start.clientY);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
     clearDraft();
+
+    // A quick click (点选) inspects a centered patch around the clicked point
+    // immediately instead of failing with a "too small" error.
+    if (dragDx <= POINT_CLICK_THRESHOLD_PX && dragDy <= POINT_CLICK_THRESHOLD_PX) {
+      onSelectionCommit(pointClickSelection(endPoint));
+      return;
+    }
 
     if (
       nextSelection.width * bounds.width < MIN_SELECTION_SIZE_PX ||
@@ -161,8 +215,6 @@ export function SharpnessSelectionOverlay({
     }
   };
 
-  const visibleSelection = draftSelection ?? selection;
-
   return (
     <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden rounded-[inherit]">
       {!selectionMode && result?.highlightedPixels ? (
@@ -177,7 +229,7 @@ export function SharpnessSelectionOverlay({
       ) : null}
       {selectionMode ? (
         <div
-          className="pointer-events-auto absolute inset-0 z-20 cursor-crosshair touch-none outline-none focus-visible:ring-2 focus-visible:ring-white/90 focus-visible:ring-inset"
+          className="pointer-events-auto absolute inset-0 z-20 cursor-crosshair touch-none bg-black/10 outline-none focus-visible:ring-2 focus-visible:ring-white/90 focus-visible:ring-inset"
           role="region"
           tabIndex={0}
           aria-label={t("common.quick_look.sharpness_selection_label")}
@@ -189,13 +241,20 @@ export function SharpnessSelectionOverlay({
           onKeyDown={handleKeyDown}
         />
       ) : null}
-      {visibleSelection ? (
+      {selection ? (
         <span
+          ref={committedBoxRef}
           aria-hidden="true"
-          className={`pointer-events-none absolute z-30 block border-2 border-rose-400 shadow-[0_0_0_1px_rgba(0,0,0,0.85),0_0_0_9999px_rgba(0,0,0,0.12)] ${draftSelection ? "border-dashed" : ""}`}
-          style={selectionStyle(visibleSelection)}
+          className="pointer-events-none absolute z-30 block border-2 border-rose-400 shadow-[0_0_0_1px_rgba(0,0,0,0.8)]"
+          style={selectionStyle(selection)}
         />
       ) : null}
+      <span
+        ref={draftBoxRef}
+        aria-hidden="true"
+        className="pointer-events-none absolute z-30 border-2 border-dashed border-rose-400 shadow-[0_0_0_1px_rgba(0,0,0,0.8)]"
+        style={{ display: "none" }}
+      />
     </div>
   );
-}
+});

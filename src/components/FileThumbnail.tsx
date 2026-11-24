@@ -110,6 +110,23 @@ export const FileThumbnail = memo(function FileThumbnail({
     };
   }, [activeUrl, shouldRenderImg]);
 
+  if (isLoaded && shouldRenderImg && activeUrl) {
+    return (
+      <img
+        src={activeUrl}
+        crossOrigin="anonymous"
+        className={className || "object-contain"}
+        style={className ? undefined : { width: roundedSize, height: roundedSize }}
+        alt=""
+        decoding="async"
+        draggable={false}
+        onLoad={(event) => {
+          onImageLoad?.(event.currentTarget);
+        }}
+      />
+    );
+  }
+
   const fallbackIcon = (
     <SmartIcon
       icon={entry.is_dir ? Folder : File}
@@ -129,23 +146,6 @@ export const FileThumbnail = memo(function FileThumbnail({
 
   if (!shouldRenderImg || !activeUrl) {
     return fallbackIcon;
-  }
-
-  if (isLoaded) {
-    return (
-      <img
-        src={activeUrl}
-        crossOrigin="anonymous"
-        className={className || "object-contain"}
-        style={className ? undefined : { width: roundedSize, height: roundedSize }}
-        alt=""
-        decoding="async"
-        draggable={false}
-        onLoad={(event) => {
-          onImageLoad?.(event.currentTarget);
-        }}
-      />
-    );
   }
 
   return (

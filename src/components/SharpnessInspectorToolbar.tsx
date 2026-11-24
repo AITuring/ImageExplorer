@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Crop, Image, Loader2, RotateCcw, ScanSearch } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { SharpnessInspectorStatus } from "@/hooks/useSharpnessInspector";
@@ -15,7 +15,7 @@ interface SharpnessInspectorToolbarProps {
   onResetSelection: () => void;
 }
 
-export function SharpnessInspectorToolbar({
+export const SharpnessInspectorToolbar = memo(function SharpnessInspectorToolbar({
   enabled,
   status,
   selectionMode,
@@ -150,4 +150,4 @@ export function SharpnessInspectorToolbar({
       </div>
     </div>
   );
-}
+});
