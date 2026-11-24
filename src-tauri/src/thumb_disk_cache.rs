@@ -33,7 +33,7 @@ fn cache_root() -> &'static PathBuf {
         dirs::cache_dir()
             .unwrap_or_else(std::env::temp_dir)
             .join("com.hyperexplorer.app")
-            .join("thumbs_v1")
+            .join("thumbs_v2")
     })
 }
 

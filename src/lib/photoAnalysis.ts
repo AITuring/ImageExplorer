@@ -18,7 +18,7 @@ import type {
   PhotoFeatureWorkerResponse,
 } from "@/workers/photoFeatureWorker";
 
-const ANALYSIS_VERSION = 9;
+const ANALYSIS_VERSION = 10;
 const ANALYSIS_SIZE = 128;
 // Keep more spatial detail than the thumbnail shown in the grid. A 24x24
 // fingerprint is still cheap at 128px, but prevents different crops of the

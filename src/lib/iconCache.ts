@@ -188,6 +188,8 @@ export function toImageDataUrl(base64: string): string {
  * 构建自定义 `thumb://` 二进制缩略图 URL。
  * 由 Rust 异步协议处理器直接返回原始 JPEG/PNG 字节，彻底消除 Base64 传输与 JS 堆驻留。
  */
+const THUMB_PROTOCOL_CACHE_VERSION = "2";
+
 export function buildFileThumbnailUrl(
   path: string,
   modified: number | null | undefined,
@@ -204,7 +206,7 @@ export function buildFileThumbnailUrl(
     `size=${encodeURIComponent(String(Math.round(size)))}`,
     `embedded=${preferEmbedded ? "1" : "0"}`,
     `fallback=${allowIconFallback ? "1" : "0"}`,
-    `v=${encodeURIComponent(`${modified ?? 0}-${fileSize}`)}`,
+    `v=${encodeURIComponent(`${THUMB_PROTOCOL_CACHE_VERSION}-${modified ?? 0}-${fileSize}`)}`,
   ];
   if (lowPriority) {
     parts.push("bg=1");
@@ -221,7 +223,7 @@ export function buildRawEmbeddedJpegUrl(
   const parts = [
     `path=${encodeURIComponent(path)}`,
     `max=${encodeURIComponent(String(Math.round(maxPixelSize)))}`,
-    `v=${encodeURIComponent(`${modified ?? 0}-${fileSize}`)}`,
+    `v=${encodeURIComponent(`${THUMB_PROTOCOL_CACHE_VERSION}-${modified ?? 0}-${fileSize}`)}`,
   ];
   return `thumb://localhost/raw?${parts.join("&")}`;
 }
