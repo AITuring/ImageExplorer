@@ -1602,11 +1602,51 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                 onNavigate(parent, entry.path);
                 return;
               }
-              const index = sortedEntries.findIndex((item) => item.path === entry.path);
-              selectSingle(entry.path, index);
-              if (viewMode === "list") listVirtualizer.scrollToIndex(index, { align: "center" });
-              else
-                gridVirtualizer.scrollToIndex(Math.floor(index / gridColumns), { align: "center" });
+
+              // Resolve paired companion (e.g. JPG stacked under ARW) to its visible primary entry.
+              let targetPath = entry.path;
+              if (
+                folderFilter.pairRawJpeg &&
+                !sortedEntries.some((item) => item.path === targetPath)
+              ) {
+                for (const [primaryPath, companions] of pairedCompanionsByPath) {
+                  if (companions.some((companion) => companion.path === entry.path)) {
+                    targetPath = primaryPath;
+                    break;
+                  }
+                }
+              }
+
+              const activeEntries =
+                viewMode === "list"
+                  ? flatListEntries
+                  : viewMode === "icon"
+                    ? flatGridEntries
+                    : sortedEntries;
+              const index = activeEntries.findIndex((item) => item.path === targetPath);
+
+              if (index < 0) {
+                // If an active folder filter hides this photo, reset filters and jump on next frame.
+                if (hasActiveFolderFilter(folderFilter)) {
+                  setFolderFilter((current) => ({
+                    ...DEFAULT_FOLDER_FILTER,
+                    pairRawJpeg: current.pairRawJpeg,
+                  }));
+                  onNavigate(currentPath, targetPath);
+                }
+                return;
+              }
+
+              selectSingle(targetPath, index);
+              if (viewMode === "list") {
+                const rowIdx = listEntryRowIndexByPath.get(targetPath) ?? index;
+                listVirtualizer.scrollToIndex(rowIdx, { align: "center" });
+              } else if (viewMode === "icon") {
+                const rowIdx =
+                  gridRowIndexByPath.get(targetPath) ??
+                  Math.floor(index / Math.max(1, gridColumns));
+                gridVirtualizer.scrollToIndex(rowIdx, { align: "center" });
+              }
             }}
           />
           {(filterBarForcedOpen ||
