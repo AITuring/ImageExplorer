@@ -10,6 +10,8 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { TabItem } from "./TabItem";
 import { TabContextMenu } from "./TabContextMenu";
 import { NewTabButton } from "./NewTabButton";
+import { PhotoAnalysisProgressIndicator } from "@/components/PhotoAnalysisProgressIndicator";
+import { usePhotoAnalysisProgress } from "@/stores/photoAnalysisProgress";
 
 const TAB_DRAG_MIME = "application/x-imageexplorer-tab";
 const TAB_DRAG_FALLBACK_MIME = "text/plain";
@@ -40,6 +42,7 @@ export function TabBar() {
   const {
     tabs,
     activeTabId,
+    activeTab,
     homePath,
     setActiveTab,
     closeTab,
@@ -51,6 +54,8 @@ export function TabBar() {
     duplicateTab,
     reorderTabs,
   } = useTabs();
+  const photoAnalysisScope = usePhotoAnalysisProgress((state) => state.scopePath);
+  const photoAnalysisProgress = usePhotoAnalysisProgress((state) => state.progress);
 
   // 拖拽状态
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -280,51 +285,59 @@ export function TabBar() {
   }
 
   return (
-    <div
-      className="finder-tabs flex shrink-0 items-center gap-1 overflow-x-auto px-2 py-1"
-      onDragLeave={handleDragLeave}
-      onDragOver={(e) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
-      }}
-      onDrop={(e) => handleDrop(e, tabs.length)}
-    >
-      {tabs.map((tab, index) => (
-        <TabContextMenu
-          key={tab.id}
-          tab={tab}
-          tabIndex={index}
-          totalTabs={tabs.length}
-          onClose={() => closeTab(tab.id)}
-          onCloseOthers={() => closeOtherTabs(tab.id)}
-          onCloseToRight={() => closeTabsToRight(tab.id)}
-          onCopyPath={() => handleCopyPath(tab.path)}
-          onDuplicate={() => duplicateTab(tab.id)}
-          onNewTabLeft={() => addTab(homePath, undefined, index)}
-          onNewTabRight={() => addTab(homePath, undefined, index + 1)}
-        >
-          <TabItem
+    <div className="finder-tabs relative z-30 flex shrink-0 items-center gap-2 px-2 py-1">
+      <div
+        className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+        onDragLeave={handleDragLeave}
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+        }}
+        onDrop={(e) => handleDrop(e, tabs.length)}
+      >
+        {tabs.map((tab, index) => (
+          <TabContextMenu
+            key={tab.id}
             tab={tab}
-            index={index}
-            isActive={tab.id === activeTabId}
-            onSelect={() => setActiveTab(tab.id)}
+            tabIndex={index}
+            totalTabs={tabs.length}
             onClose={() => closeTab(tab.id)}
-            canClose={tabs.length > 1}
-            isDragging={dragIndex === index}
-            isHidden={hiddenTabId === tab.id}
-            domRef={(el) => {
-              if (el) tabDomRefs.current.set(tab.id, el);
-              else tabDomRefs.current.delete(tab.id);
-            }}
-            dragOverIndex={dragOverIndex}
-            onDragStart={handleDragStart}
-            onDragOver={handleDragOver}
-            onDragEnd={handleDragEnd}
-            onDrop={handleDrop}
-          />
-        </TabContextMenu>
-      ))}
-      <NewTabButton onClick={handleNewTab} />
+            onCloseOthers={() => closeOtherTabs(tab.id)}
+            onCloseToRight={() => closeTabsToRight(tab.id)}
+            onCopyPath={() => handleCopyPath(tab.path)}
+            onDuplicate={() => duplicateTab(tab.id)}
+            onNewTabLeft={() => addTab(homePath, undefined, index)}
+            onNewTabRight={() => addTab(homePath, undefined, index + 1)}
+          >
+            <TabItem
+              tab={tab}
+              index={index}
+              isActive={tab.id === activeTabId}
+              onSelect={() => setActiveTab(tab.id)}
+              onClose={() => closeTab(tab.id)}
+              canClose={tabs.length > 1}
+              isDragging={dragIndex === index}
+              isHidden={hiddenTabId === tab.id}
+              domRef={(el) => {
+                if (el) tabDomRefs.current.set(tab.id, el);
+                else tabDomRefs.current.delete(tab.id);
+              }}
+              dragOverIndex={dragOverIndex}
+              onDragStart={handleDragStart}
+              onDragOver={handleDragOver}
+              onDragEnd={handleDragEnd}
+              onDrop={handleDrop}
+            />
+          </TabContextMenu>
+        ))}
+        <NewTabButton onClick={handleNewTab} />
+      </div>
+      <div className="relative flex shrink-0 items-center gap-1.5">
+        {photoAnalysisScope === activeTab?.path && (
+          <PhotoAnalysisProgressIndicator progress={photoAnalysisProgress} />
+        )}
+        <div id="tabbar-status-slot" className="relative flex shrink-0 items-center gap-1.5" />
+      </div>
     </div>
   );
 }

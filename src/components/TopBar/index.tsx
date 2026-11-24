@@ -32,11 +32,9 @@ import { useSetting } from "@/hooks/useSetting";
 import { useClipboard } from "@/stores/clipboard";
 import { useFileInfoDialog } from "@/stores/fileInfoDialog";
 import { useLocations } from "@/stores/locations";
-import { usePhotoAnalysisProgress } from "@/stores/photoAnalysisProgress";
 import { isCommandEnabled, runCommand } from "@/lib/commands";
 import { registerKeyboardCommands } from "@/lib/keyboardShortcuts";
 import { viewModeCommands } from "@/lib/viewModeCommands";
-import { PhotoAnalysisProgressIndicator } from "@/components/PhotoAnalysisProgressIndicator";
 import { getFinderTagColor, matchFinderTagPreset } from "@/lib/finderTags";
 import { filterSearchResultsByKind, type SearchKindFilter } from "@/lib/searchFilter";
 import {
@@ -92,8 +90,6 @@ export function TopBar({ onNavigate }: TopBarProps) {
   const toggleSplitView = useSplitView((state) => state.toggleSplitView);
   const openStorageAnalyzer = useStorageAnalyzerDialog((state) => state.open);
   const openSdIngest = useSdIngestDialog((state) => state.open);
-  const { scopePath: photoAnalysisScope, progress: photoAnalysisProgress } =
-    usePhotoAnalysisProgress();
   const [showHiddenFiles] = useSetting<boolean>("show_hidden_files", false);
   const clipboard = useClipboard();
   const openFileInfo = useFileInfoDialog((state) => state.open);
@@ -1303,9 +1299,6 @@ export function TopBar({ onNavigate }: TopBarProps) {
           )}
         </div>
       </header>
-      {photoAnalysisScope === currentPath && (
-        <PhotoAnalysisProgressIndicator progress={photoAnalysisProgress} />
-      )}
     </>
   );
 }

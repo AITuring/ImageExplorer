@@ -37,35 +37,27 @@ export function PhotoAnalysisProgressIndicator({ progress }: PhotoAnalysisProgre
 
   return (
     <div
-      className="text-muted-foreground border-border/40 flex shrink-0 items-center gap-2 border-b px-3 py-1"
+      className="text-muted-foreground border-border/60 bg-muted/50 flex h-6 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[11px] leading-none"
       role="status"
       aria-live="polite"
       aria-label={label}
-      title={label}
+      title={`${label} · ${stageDetail}`}
     >
-      <Scan className="text-primary h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-      <div className="flex min-w-0 flex-1 items-center gap-3">
-        <div className="flex shrink-0 items-center gap-2 text-[10px] leading-3">
-          <span className="truncate">{t("common.photo_analysis_label")}</span>
-          <span className="shrink-0 font-mono tabular-nums">{percentage}%</span>
-        </div>
-        <div className="min-w-0 truncate text-[10px] leading-3">
-          <span className="text-foreground">{stageLabel}</span>
-          <span className="ml-1">{stageDetail}</span>
-        </div>
+      <Scan className="text-primary h-3 w-3 shrink-0" aria-hidden="true" />
+      <span className="max-w-28 truncate">{stageLabel}</span>
+      <span className="text-foreground shrink-0 font-mono tabular-nums">{percentage}%</span>
+      <div
+        className="bg-muted h-1 w-12 shrink-0 overflow-hidden rounded-full"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percentage}
+        aria-valuetext={`${percentage}%`}
+      >
         <div
-          className="bg-muted ml-auto h-1.5 w-24 shrink-0 overflow-hidden rounded-full"
-          role="progressbar"
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={percentage}
-          aria-valuetext={`${percentage}%`}
-        >
-          <div
-            className="bg-primary h-full rounded-full transition-[width] duration-200 ease-out"
-            style={{ width: `${Math.max(exactPercent > 0 ? 2 : 0, exactPercent).toFixed(1)}%` }}
-          />
-        </div>
+          className="bg-primary h-full rounded-full transition-[width] duration-200 ease-out"
+          style={{ width: `${Math.max(exactPercent > 0 ? 2 : 0, exactPercent).toFixed(1)}%` }}
+        />
       </div>
     </div>
   );

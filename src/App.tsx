@@ -545,6 +545,7 @@ function App() {
                         currentPath={secondaryPath || activeTab?.path || "/"}
                         onNavigate={handleSecondaryNavigate}
                         fileToSelect={secondaryFileToSelect}
+                        isPrimaryPane={false}
                       />
                     </div>
                   </div>

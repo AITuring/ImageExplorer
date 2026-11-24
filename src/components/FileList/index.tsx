@@ -118,6 +118,7 @@ interface FileListProps {
   currentPath: string;
   onNavigate: (path: string, selectFile?: string) => void;
   fileToSelect?: string | null;
+  isPrimaryPane?: boolean;
 }
 
 /** 仅文件夹需要的拖入目标事件处理（按住 Option / Alt 键执行复制而非移动） */
@@ -171,7 +172,12 @@ function makeDirectoryDropHandlers(
 const EMPTY_SHARPNESS_MAP: ReadonlyMap<string, "sharp" | "soft" | "unavailable"> = new Map();
 const EMPTY_CULLING_MAP: ReadonlyMap<string, PhotoCullingState> = new Map();
 
-export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProps) {
+export function FileList({
+  currentPath,
+  onNavigate,
+  fileToSelect,
+  isPrimaryPane = true,
+}: FileListProps) {
   const { t } = useTranslation();
   const {
     viewMode,
@@ -1709,7 +1715,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
             key={currentPath}
             entries={folderScanEntries}
             enabled={!loading && !error}
-            positionClassName={viewMode === "gallery" ? "right-3 bottom-32" : "right-3 bottom-3"}
+            portalToTabBar={isPrimaryPane}
             onLocate={(entry) => {
               const parent = entry.path.slice(0, entry.path.lastIndexOf("/")) || "/";
               if (parent !== currentPath || viewMode === "column") {
