@@ -77,6 +77,7 @@ import { DEFAULT_CULLING_STATE, type PhotoCullingState, type PhotoFlag } from "@
 interface QuickLookProps {
   entry: FileEntry | null;
   entries: FileEntry[];
+  entryAnalysis?: PhotoAnalysisRecord;
   photoAnalysis?: ReadonlyMap<string, PhotoAnalysisRecord>;
   cullingState?: PhotoCullingState;
   autoAdvance?: boolean;
@@ -1165,6 +1166,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
 export function QuickLook({
   entry,
   entries,
+  entryAnalysis,
   photoAnalysis,
   cullingState,
   autoAdvance = false,
@@ -2133,13 +2135,15 @@ export function QuickLook({
                 onBrowserImageError={handleBrowserImageError}
                 onZoomDisplayChange={updateZoomIndicator}
                 onCommittedZoomChange={scheduleZoomSourceUpgrade}
-                focusAnalysis={photoAnalysis?.get(entry.path)?.focusAnalysis ?? null}
+                focusAnalysis={
+                  (entryAnalysis ?? photoAnalysis?.get(entry.path))?.focusAnalysis ?? null
+                }
                 cameraAfMetadata={cameraAfMetadata}
               />
             </div>
             <QuickLookPhotoFooter
               metadata={photoMetadata}
-              analysis={photoAnalysis?.get(entry.path)}
+              analysis={entryAnalysis ?? photoAnalysis?.get(entry.path)}
               cameraAfMetadata={cameraAfMetadata}
               histogram={activeHistogram}
               showClippingOverlay={showClippingOverlay}

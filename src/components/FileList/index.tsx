@@ -2029,7 +2029,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
         <QuickLook
           entry={quickLookEntry}
           entries={sortedEntries}
-          photoAnalysis={photoAnalysis}
+          entryAnalysis={quickLookEntry ? photoAnalysis.get(quickLookEntry.path) : undefined}
           cullingState={quickLookEntry ? cullingMap.get(quickLookEntry.path) : undefined}
           autoAdvance={cullAutoAdvance}
           onClose={() => setQuickLookEntry(null)}
