@@ -1132,7 +1132,7 @@ export function ExifSyncDialog() {
           </div>
 
           {/* Right Panel: Photo Audit List */}
-          <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             {/* List Toolbar */}
             <div className="border-border bg-muted/20 flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2.5 text-xs">
               <div className="flex items-center gap-1">
@@ -1293,9 +1293,11 @@ export function ExifSyncDialog() {
                         <img
                           src={buildFileThumbnailUrl(
                             photo.path,
+                            photo.modified,
+                            photo.size,
                             160,
-                            photo.modified ?? 0,
-                            photo.size
+                            true,
+                            true
                           )}
                           alt={photo.fileName}
                           loading="lazy"

@@ -23,9 +23,9 @@
 - **100% 本地离线、隐私安全**：人脸特征聚类、展牌中英文 OCR、清晰度分析与无损 EXIF/GPS 写入全部在 macOS 本机完成，绝不上传云端。
 - **无损且可撤销**：ImageIO 无损元数据合并、Adobe XMP 双向同步、APFS 零拷贝克隆与批量一键撤销，确保原片始终安全。
 
-![RAW 照片浏览、清晰度标签与整理进度](./docs/screenshots/photo-browser-annotated.png)
+![ImageExplorer RAW 选片主界面：多维筛选栏、精选/淘汰/星级标记、Finder 标签与 EXIF 参数](./docs/screenshots/hero-gallery-culling.png)
 
-*RAW 实拍浏览示例。截图为早期界面版本，当前已全面升级为四视图、双栏分屏、选片标记以及右键本地 AI / EXIF 工作台。*
+*主界面图标选片视图：顶部四视图与分屏工具栏、文件夹内多维筛选栏、精选/淘汰/星级角标、Finder 颜色标签、焦点框与拍摄参数一目了然。*
 
 ---
 
@@ -45,7 +45,7 @@
 - **深度 macOS 原生能力**：APFS 克隆秒级复制、**macOS Finder 标签** 与标签智能文件夹、**AirDrop 共享**（`NSSharingServicePicker`）、无损 90° 左右旋转、**多选汇总简介（`⌘I` / `⌥⌘I`）** 与文件锁定开关、路径跳转（`⇧⌘G`）自动补全、框选自动滚动、首字母快跳、外置磁盘监听与一键推出。
 - **空间治理与可靠传输**：多线程 **存储空间分析器**、三阶段 **重复文件查找器**（大小 → 首尾采样 → 全量 SHA-256）、带冲突处理与进度队列的复制/移动/ZIP 压缩解压、持久化操作记录与一键撤销、废纸篓浏览恢复，以及 **SQLite FTS5** 本地极速搜索。
 
-![分栏浏览和选中文件的大图预览](./docs/screenshots/column-preview-annotated.png)
+![分栏视图：左侧行内缩略图与标签、右侧大图预览与分组化 EXIF 参数检查器](./docs/screenshots/column-inspector.png)
 
 ---
 
@@ -62,7 +62,7 @@
   - **双图 PK 擂台对比 & 3–4 图联排对比**，支持同步缩放平移与即时留用/淘汰。
   - 除图片、视频、音频、PDF、文本外，还内置 **纯 Rust ZIP 压缩包目录直览**。
 
-![Quick Look 放大检查照片细节](./docs/screenshots/quick-look-zoom-focus.png)
+![专业 Quick Look 预览：RGB 实时直方图、人眼核焦 (F)、清晰度分析工具与精选星级栏](./docs/screenshots/quicklook-pro.png)
 
 ---
 
@@ -75,10 +75,14 @@
 - 严格提取并生成 **`时代-名称-出土地-馆藏-原图片名`** 规范命名，支持双行折行标题自动拼接、多文物共享展牌检测与逐张手动指定。
 - 内置 **文物与展牌并排核对视图**、元数据实时编辑联动、`.xmp` / `.acr` 伴随文件同步重命名与 **整批一键撤销**。
 
+![文物展牌识别模式工作台：macOS Vision OCR 自动解析展牌并生成规范命名预览](./docs/screenshots/workbench-exhibit-label.png)
+
 #### 一键人物分类（`一键人物分类...`）
 - 调用 macOS 原生 **Vision** 人脸检测（`VNDetectFaceRectanglesRequest`）与 L2 归一化特征向量（`VNGenerateImageFeaturePrintRequest`），直接支持 RAW 与常见图片格式。
 - 内置同照互斥约束聚类，提供 **聚类严格度实时滑块**（毫秒级重聚，无需重新扫描），支持重命名人物文件夹、手动合并拆分人物，并提供 **多人合照灵活策略**（归入「多人合照」/ 按主人物归类 / 复制到各自文件夹）。
 - 支持移动或复制归类、同步整理 `.xmp` / `.acr` 伴随文件与 **一键撤销恢复原路径**。
+
+![一键人物分类工作台：本地人脸头像聚类、实时严格度滑块与多人合照分流](./docs/screenshots/workbench-people-cluster.png)
 
 #### 一键补充 / 同步 EXIF 与 GPS（`一键补充 / 同步 EXIF 与 GPS...`）
 - 自动审计整个文件夹或选中照片缺失的 **拍摄时间、相机/镜头、曝光参数（ISO/光圈/快门/焦距）与 GPS 定位**，彻底解决 Photoshop 导出或修图后 EXIF 丢失的痛点。
@@ -87,6 +91,8 @@
   2. **智能同名匹配**：自动将修图导出文件（如 `DSC01684_1.jpg`）与同目录同名原片或 RAW（如 `DSC01684.jpg` / `.ARW`）一对一配对回填原始参数。
   3. **全局统一设置 + 常用预设**：手动设定拍摄时间（支持批量 `+1 秒递增` 保持顺序）、机身/镜头、曝光与 GPS（支持直接粘贴苹果/高德/谷歌地图的 `纬度, 经度` 坐标对），并可保存复用 **常用器材与地点预设**。
 - **无损安全写入**：基于 macOS ImageIO `CGImageDestinationCopyImageSource` 与精确 EXIF 有理分数编码原子替换写入，**绝不重新压缩 JPEG 像素画质**；默认 **仅补全缺失字段**（也支持强制覆盖），可选同步更新文件修改时间 `mtime`，并自动保护 RAW 只读不被改写。
+
+![一键补充 / 同步 EXIF 与 GPS 工作台：缺失字段审计、参考照同步与 ImageIO 无损写入](./docs/screenshots/workbench-exif-sync.png)
 
 ---
 

@@ -35,8 +35,8 @@ export function FolderSharpnessPanel({ entries, verdicts, enabled, onLocate }: P
         <Scan className="h-4 w-4 shrink-0" aria-hidden="true" />
         <span role="status">
           {!completed
-            ? t("common.folder_sharpness.scanning", { done: verdicts.size, total: photos.length })
-            : t("common.folder_sharpness.summary", { count: soft.length, unavailable })}
+            ? t("folder_sharpness.scanning", { done: verdicts.size, total: photos.length })
+            : t("folder_sharpness.summary", { count: soft.length, unavailable })}
         </span>
       </button>
     );
@@ -44,26 +44,26 @@ export function FolderSharpnessPanel({ entries, verdicts, enabled, onLocate }: P
 
   return (
     <aside
-      aria-label={t("common.folder_sharpness.title")}
+      aria-label={t("folder_sharpness.title")}
       className="bg-background/95 border-border absolute top-3 right-3 bottom-3 z-20 flex w-80 max-w-[calc(100%-1.5rem)] flex-col rounded-xl border shadow-xl"
     >
       <div className="flex items-center justify-between gap-2 p-3">
         <h2 className="text-sm font-medium">
-          {t("common.folder_sharpness.title")} · {soft.length}
+          {t("folder_sharpness.title")} · {soft.length}
         </h2>
         <button
           type="button"
           className="hover:bg-muted rounded p-1"
-          aria-label={t("common.folder_sharpness.close")}
+          aria-label={t("folder_sharpness.close")}
           onClick={() => setDismissed(true)}
         >
           <X className="h-4 w-4" />
         </button>
       </div>
-      <p className="text-muted-foreground px-3 pb-3 text-xs">{t("common.folder_sharpness.hint")}</p>
+      <p className="text-muted-foreground px-3 pb-3 text-xs">{t("folder_sharpness.hint")}</p>
       {unavailable > 0 && (
         <p className="text-muted-foreground px-3 pb-3 text-xs">
-          {t("common.folder_sharpness.unavailable", { count: unavailable })}
+          {t("folder_sharpness.unavailable", { count: unavailable })}
         </p>
       )}
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">

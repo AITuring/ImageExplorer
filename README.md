@@ -23,9 +23,9 @@ Most photographers juggle **Finder** for disk organization, **Photo Mechanic / L
 - **100% local & privacy-first** — Face clustering, museum plaque OCR, sharpness analysis, and EXIF/GPS writing all run on-device using native macOS frameworks.
 - **Non-destructive & reversible** — Lossless metadata merges, Adobe XMP sidecar sync, APFS clone copies, and one-click batch Undo keep originals safe.
 
-![RAW photo browsing with sharpness labels and analysis progress](./docs/screenshots/photo-browser-annotated.png)
+![ImageExplorer RAW culling workspace with filter bar, Pick/Reject/Star badges, Finder tags, and EXIF readouts](./docs/screenshots/hero-gallery-culling.png)
 
-*Example RAW browsing workflow. Screenshots reflect an earlier layout; the app now includes four views, dual-pane split mode, culling badges, and right-click AI/EXIF workbenches.*
+*Main workspace in Icons view: multi-dimensional in-folder filter bar, Pick/Reject & 5-star culling badges, Finder color tags, focus overlays, and live EXIF metadata.*
 
 ---
 
@@ -45,7 +45,7 @@ Most photographers juggle **Finder** for disk organization, **Photo Mechanic / L
 - **Native macOS Integration** — APFS zero-copy clone copy, **macOS Finder Tags** & Tag Smart Folders, **AirDrop Share** (`NSSharingServicePicker`), lossless 90° rotate, Multi-Item Info Inspector (`⌘I` / `⌥⌘I`) with file lock toggle, Go-to-Folder (`⇧⌘G`) autocomplete, marquee auto-scroll, type-ahead jump, and external volume eject.
 - **Storage & Reliability** — Multi-threaded **Storage Space Analyzer**, 3-stage **Duplicate File Finder** (size → head/tail sample → full SHA-256), queued copy/move/ZIP with conflict resolution, persistent operation history, retry & one-step Undo, Trash restore, and **SQLite FTS5** instant local search.
 
-![Column browsing and large photo preview](./docs/screenshots/column-preview-annotated.png)
+![Columns view with row thumbnails, large RAW preview, and structured EXIF inspector](./docs/screenshots/column-inspector.png)
 
 ---
 
@@ -62,7 +62,7 @@ Most photographers juggle **Finder** for disk organization, **Photo Mechanic / L
   - **2-Up PK Challenger & 3–4 Up Survey Compare** with synchronized pan/zoom and instant keep/reject controls.
   - Built-in **pure-Rust ZIP archive preview** alongside image, video, audio, PDF, and text previews.
 
-![Zooming into real photo detail in Quick Look](./docs/screenshots/quick-look-zoom-focus.png)
+![Pro Quick Look with RGB histogram, Vision face/eye focus zoom, sharpness tools, and Pick/Star culling bar](./docs/screenshots/quicklook-pro.png)
 
 ---
 
@@ -75,10 +75,14 @@ Right-click any folder, empty directory area, or selected set of photos to launc
 - Automatically parses structured fields (`Era - Name - Provenance - Collection - OriginalFilename`), merges wrapped two-line titles, and flags multi-artifact shared plaques for per-photo assignment.
 - Provides a side-by-side **Artifact & Plaque Visual Verifier**, live editable metadata fields, `.xmp` / `.acr` companion file syncing, and **one-click batch Undo**.
 
+![Museum Exhibit Label Recognition workbench with macOS Vision OCR and batch rename proposals](./docs/screenshots/workbench-exhibit-label.png)
+
 #### One-Click People Classification (`Group by People...`)
 - Runs local **macOS Vision** face detection (`VNDetectFaceRectanglesRequest`) and L2-normalized feature embeddings (`VNGenerateImageFeaturePrintRequest`) across folders (including RAW files).
 - Clusters photos of the same person with same-photo cannot-link constraints, offers an **instant strictness slider** (reclusters in milliseconds without rescanning), lets you rename or merge people, and handles multi-person shots flexibly (**Group Shots folder**, **Primary Face**, or **Copy to Each Person**).
 - Organizes by Move or Copy with automatic `.xmp` / `.acr` companion sync and **one-click Undo**.
+
+![One-Click People Classification workbench with local Vision face avatars and live strictness slider](./docs/screenshots/workbench-people-cluster.png)
 
 #### Lossless EXIF & GPS Repair / Sync Workbench (`Repair / Sync EXIF & GPS...`)
 - Audits an entire folder or selection for missing **Capture Time**, **Camera/Lens**, **Exposure (ISO / Aperture / Shutter / Focal Length)**, and **GPS** — specifically solving Photoshop exports that strip EXIF metadata.
@@ -87,6 +91,8 @@ Right-click any folder, empty directory area, or selected set of photos to launc
   2. **Smart Stem Match** — Automatically pairs edited outputs (e.g. `DSC01684_1.jpg`) with their same-stem originals (`DSC01684.jpg` or `DSC01684.ARW`) in the folder.
   3. **Global Manual + Presets** — Set uniform time (with optional `+1s` batch increment to preserve order), camera/lens, exposure, and GPS (paste `"lat, lon"` directly from Apple/Google/Amap), and save reusable **Gear & Location Presets**.
 - **Lossless & Safe**: Writes via macOS ImageIO `CGImageDestinationCopyImageSource` with exact EXIF rational encoding and atomic file replacement (**zero JPEG pixel re-compression**). Defaults to **Fill Missing Fields Only**, optionally syncs file `mtime`, and protects RAW files as read-only.
+
+![Lossless EXIF and GPS Sync workbench auditing missing tags and syncing from reference photos](./docs/screenshots/workbench-exif-sync.png)
 
 ---
 
