@@ -33,7 +33,7 @@ interface FileGalleryViewProps {
   onToggleTag?: (entries: FileEntry[], tag: string) => void;
   onSetRating?: (entry: FileEntry, rating: number) => void;
   onSetFlag?: (entry: FileEntry, flag: PhotoFlag) => void;
-  onCompare?: (entries: [FileEntry, FileEntry]) => void;
+  onCompare?: (entries: FileEntry[]) => void;
 }
 
 const GalleryPreviewStage = memo(function GalleryPreviewStage({

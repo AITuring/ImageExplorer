@@ -18,6 +18,15 @@ function getEntryKind(
   return entry.extension || "file";
 }
 
+export function parseExifCapturedSeconds(raw: string | null | undefined): number | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  // EXIF format: "YYYY:MM:DD HH:MM:SS" (optionally with timezone / subseconds)
+  const normalized = trimmed.replace(/^(\d{4}):(\d{2}):(\d{2})/, "$1-$2-$3").replace(" ", "T");
+  const ms = Date.parse(normalized);
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+}
+
 export function sortFileEntries<
   T extends Pick<
     FileEntry,
@@ -30,7 +39,12 @@ export function sortFileEntries<
     | "is_package"
     | "package_type"
   >,
->(entries: T[], sortField: SortField = "name", sortDirection: SortDirection = "asc"): T[] {
+>(
+  entries: T[],
+  sortField: SortField = "name",
+  sortDirection: SortDirection = "asc",
+  capturedLookup?: (entry: T) => string | null | undefined
+): T[] {
   if (entries.length <= 1) return entries;
   const direction = sortDirection === "asc" ? 1 : -1;
   if (sortField === "name") {
@@ -79,6 +93,17 @@ export function sortFileEntries<
       if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
       const dateCmp = ((a.modified || 0) - (b.modified || 0)) * direction;
       return dateCmp !== 0 ? dateCmp : FILE_NAME_COLLATOR.compare(a.name, b.name);
+    });
+  } else if (sortField === "captured") {
+    const capturedTimes = new Map<T, number>();
+    for (const item of next) {
+      const exifTs = parseExifCapturedSeconds(capturedLookup?.(item));
+      capturedTimes.set(item, exifTs ?? item.modified ?? item.created ?? 0);
+    }
+    next.sort((a, b) => {
+      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+      const capturedCmp = ((capturedTimes.get(a) ?? 0) - (capturedTimes.get(b) ?? 0)) * direction;
+      return capturedCmp !== 0 ? capturedCmp : FILE_NAME_COLLATOR.compare(a.name, b.name);
     });
   } else {
     next.sort((a, b) => {

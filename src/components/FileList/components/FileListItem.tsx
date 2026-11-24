@@ -4,9 +4,11 @@ import { getPhotoMetadataSummary } from "@/lib/photoMetadata";
 import { isAnalyzablePhoto } from "@/lib/photoAnalysis";
 import type { VisibleSharpness } from "@/hooks/useVisibleSharpness";
 import { memo, useEffect, useRef } from "react";
+import { Check, Star, XCircle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { FileEntry } from "@/types/index";
 import type { ListColumnVisibility, ListColumnWidths } from "@/stores/viewMode";
+import type { PhotoCullingState } from "@/lib/photoCulling";
 import { CompactFileThumbnail } from "./CompactFileThumbnail";
 import { FinderTagDots } from "@/components/FinderTagDots";
 import { Input } from "@/components/ui/input";
@@ -35,6 +37,7 @@ interface FileListItemProps {
   columnWidths?: ListColumnWidths;
   columnVisibility?: ListColumnVisibility;
   pairedBadge?: string | null;
+  cullingState?: PhotoCullingState;
 }
 
 export const FileListItem = memo(function FileListItem({
@@ -59,6 +62,7 @@ export const FileListItem = memo(function FileListItem({
   columnWidths,
   columnVisibility,
   pairedBadge,
+  cullingState,
 }: FileListItemProps) {
   const { t } = useTranslation();
   const metadata = usePhotoMetadata(entry, isInViewport && !isScrolling);
@@ -80,7 +84,9 @@ export const FileListItem = memo(function FileListItem({
       data-selected={isSelected}
       className={`finder-list-row flex w-full cursor-default items-center rounded-md p-2 text-sm transition-colors ${
         isSelected ? "bg-accent/80 ring-primary/20 ring-1" : "hover:bg-accent/60 focus:bg-accent/60"
-      } ${isFocused ? "outline-primary outline outline-1 outline-offset-[-1px]" : ""}`}
+      } ${isFocused ? "outline-primary outline outline-1 outline-offset-[-1px]" : ""} ${
+        cullingState?.flag === "reject" ? "opacity-55" : ""
+      }`}
       onClick={(e) => {
         if (onItemClick) onItemClick(entry, index, e);
         else onClick?.(e);
@@ -135,6 +141,31 @@ export const FileListItem = memo(function FileListItem({
         {!isEditing && pairedBadge && (
           <span className="bg-primary/10 text-primary shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium">
             {pairedBadge}
+          </span>
+        )}
+        {!isEditing && cullingState?.flag === "pick" && (
+          <span
+            className="inline-flex shrink-0 items-center rounded bg-emerald-500/15 px-1 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300"
+            title={t("file_list.culling.pick")}
+          >
+            <Check className="h-2.5 w-2.5" aria-hidden="true" />
+          </span>
+        )}
+        {!isEditing && cullingState?.flag === "reject" && (
+          <span
+            className="bg-destructive/15 text-destructive inline-flex shrink-0 items-center rounded px-1 py-0.5 text-[10px] font-medium"
+            title={t("file_list.culling.reject")}
+          >
+            <XCircle className="h-2.5 w-2.5" aria-hidden="true" />
+          </span>
+        )}
+        {!isEditing && cullingState && cullingState.rating > 0 && (
+          <span
+            className="inline-flex shrink-0 items-center gap-0.5 text-[10px] font-medium text-amber-500 tabular-nums"
+            title={`${cullingState.rating}★`}
+          >
+            <Star className="h-2.5 w-2.5 fill-amber-400 text-amber-400" aria-hidden="true" />
+            {cullingState.rating}
           </span>
         )}
         {!isEditing && <FinderTagDots tags={entry.tags} />}

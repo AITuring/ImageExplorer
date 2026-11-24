@@ -2,7 +2,7 @@ import { hasFinderTag } from "./finderTags.ts";
 
 export type FolderFormatFilter = "all" | "raw" | "jpeg" | "video";
 export type FolderSharpnessFilter = "all" | "sharp" | "soft";
-export type FolderFlagFilter = "all" | "pick" | "reject";
+export type FolderFlagFilter = "all" | "pick" | "reject" | "unflagged";
 
 export interface FolderFilterState {
   query: string;
@@ -130,7 +130,11 @@ export function filterFolderEntries<T extends FilterableFolderEntry>(
     if (filter.flag !== "all") {
       if (entry.is_dir) return false;
       const flag = cullingMap?.get(entry.path)?.flag ?? "none";
-      if (flag !== filter.flag) return false;
+      if (filter.flag === "unflagged") {
+        if (flag !== "none") return false;
+      } else if (flag !== filter.flag) {
+        return false;
+      }
     }
 
     if (filter.cameraModel !== null || filter.lensModel !== null) {

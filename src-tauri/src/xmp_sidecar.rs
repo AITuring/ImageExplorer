@@ -103,6 +103,41 @@ pub fn sidecar_path_for(photo_path: &Path) -> PathBuf {
     photo_path.with_extension("xmp")
 }
 
+/// Read `xmp:Rating` from an existing `.xmp` sidecar if present.
+/// Supports both attribute (`xmp:Rating="4"`) and element (`<xmp:Rating>4</xmp:Rating>`)
+/// syntax used by Lightroom, Bridge, Capture One, and Photo Mechanic.
+/// Returns `Some((rating, flag))` where `-1` maps to `(0, "reject")`.
+pub fn read_xmp_culling_state(photo_path: &Path) -> Option<(u8, &'static str)> {
+    let xmp_path = sidecar_path_for(photo_path);
+    let content = fs::read_to_string(&xmp_path).ok()?;
+    parse_xmp_culling_state(&content)
+}
+
+pub fn parse_xmp_culling_state(xml: &str) -> Option<(u8, &'static str)> {
+    static ATTR_RATING_RE: OnceLock<Regex> = OnceLock::new();
+    static ELEM_RATING_RE: OnceLock<Regex> = OnceLock::new();
+
+    let attr_re = ATTR_RATING_RE
+        .get_or_init(|| Regex::new(r#"xmp:Rating\s*=\s*"(-?\d+)""#).expect("valid rating attr re"));
+    let elem_re = ELEM_RATING_RE.get_or_init(|| {
+        Regex::new(r"<xmp:Rating>\s*(-?\d+)\s*</xmp:Rating>").expect("valid rating elem re")
+    });
+
+    let raw = attr_re
+        .captures(xml)
+        .or_else(|| elem_re.captures(xml))
+        .and_then(|caps| caps.get(1))
+        .and_then(|m| m.as_str().parse::<i8>().ok())?;
+
+    if raw < 0 {
+        Some((0, "reject"))
+    } else if raw > 0 {
+        Some(((raw as u8).min(5), "none"))
+    } else {
+        None
+    }
+}
+
 /// Atomically write or update `<stem>.xmp` next to `photo_path`.
 pub fn write_xmp_sidecar(
     photo_path: &Path,
@@ -135,7 +170,10 @@ pub fn write_xmp_sidecar(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_or_merge_xmp, finder_tags_to_xmp_label, write_xmp_sidecar};
+    use super::{
+        build_or_merge_xmp, finder_tags_to_xmp_label, parse_xmp_culling_state,
+        read_xmp_culling_state, write_xmp_sidecar,
+    };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -183,6 +221,33 @@ mod tests {
         let xml = fs::read_to_string(&written).expect("read xmp");
         assert!(xml.contains(r#"xmp:Rating="5""#));
         assert!(xml.contains(r#"xmp:Label="Green""#));
+
+        fs::remove_dir_all(dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn reads_rating_and_reject_from_existing_xmp_sidecar() {
+        assert_eq!(
+            parse_xmp_culling_state(r#"<rdf:Description xmp:Rating="4"/>"#),
+            Some((4, "none"))
+        );
+        assert_eq!(
+            parse_xmp_culling_state(
+                "<rdf:Description><xmp:Rating>-1</xmp:Rating></rdf:Description>"
+            ),
+            Some((0, "reject"))
+        );
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("imageexplorer-xmp-read-{stamp}"));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let raw_path = dir.join("DSC0099.NEF");
+        fs::write(&raw_path, b"raw").expect("write raw");
+        write_xmp_sidecar(&raw_path, 3, "none", None).expect("write xmp");
+        assert_eq!(read_xmp_culling_state(&raw_path), Some((3, "none")));
 
         fs::remove_dir_all(dir).expect("cleanup temp dir");
     }

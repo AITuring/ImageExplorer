@@ -195,7 +195,7 @@ export interface FileActions {
   onShowPackageContents?: (entry: FileEntry) => void;
   onShowOriginal?: (entry: FileEntry) => void;
   onToggleTag?: (entries: FileEntry[], tag: string) => void;
-  onCompare?: (entries: [FileEntry, FileEntry]) => void;
+  onCompare?: (entries: FileEntry[]) => void;
   onCopy: (entries: FileEntry[]) => void;
   onCut: (entries: FileEntry[]) => void;
   onPaste: () => void;
@@ -229,7 +229,7 @@ export interface EmptyAreaActions {
   currentPath: string;
 }
 
-export type SortField = "name" | "kind" | "size" | "date" | "created";
+export type SortField = "name" | "kind" | "size" | "date" | "created" | "captured";
 export type SortDirection = "asc" | "desc";
 
 export interface SidebarItemActions {

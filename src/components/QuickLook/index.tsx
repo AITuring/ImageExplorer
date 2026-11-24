@@ -7,6 +7,7 @@ import {
   useRef,
   useCallback,
   type CSSProperties,
+  type MutableRefObject,
   type ReactNode,
   type PointerEvent,
   type WheelEvent,
@@ -74,6 +75,7 @@ interface QuickLookProps {
   entries: FileEntry[];
   photoAnalysis?: ReadonlyMap<string, PhotoAnalysisRecord>;
   cullingState?: PhotoCullingState;
+  autoAdvance?: boolean;
   onClose: () => void;
   onNavigate: (entry: FileEntry) => void;
   onToggleTag?: (entry: FileEntry, tag: string) => void;
@@ -318,6 +320,11 @@ const PhotoMetadataPanel = memo(function PhotoMetadataPanel({
   );
 });
 
+interface ZoomPreviewActions {
+  toggleOneToOne: () => void;
+  zoomToNormalizedPoint: (normX: number, normY: number, targetZoom?: number) => void;
+}
+
 interface ZoomableImagePreviewProps {
   entry: FileEntry;
   viewportSize: { width: number; height: number };
@@ -327,6 +334,8 @@ interface ZoomableImagePreviewProps {
   minimapSrc: string | null;
   fallbackSrc: string | null;
   fileSrc: string | null;
+  clippingMaskUrl?: string | null;
+  zoomActionsRef?: MutableRefObject<ZoomPreviewActions | null>;
   useNativeImagePreview: boolean;
   progressivePreviewRequestSize: number;
   sharpnessAutoReady: boolean;
@@ -342,6 +351,7 @@ interface ZoomableImageElementProps {
   entry: FileEntry;
   src: string;
   interactionSrc?: string | null;
+  clippingMaskUrl?: string | null;
   renderedImageSize: { width: number; height: number } | null;
   frameRef: (node: HTMLDivElement | null) => void;
   onLoad: (image: HTMLImageElement) => void;
@@ -355,6 +365,7 @@ const ZoomableImageElement = memo(function ZoomableImageElement({
   entry,
   src,
   interactionSrc,
+  clippingMaskUrl,
   renderedImageSize,
   frameRef,
   onLoad,
@@ -404,6 +415,15 @@ const ZoomableImageElement = memo(function ZoomableImageElement({
           draggable={false}
         />
       ) : null}
+      {clippingMaskUrl ? (
+        <img
+          src={clippingMaskUrl}
+          alt=""
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 h-full w-full rounded-lg object-contain select-none"
+          draggable={false}
+        />
+      ) : null}
       {focusRegions.map((region) => (
         <FocusRegionOverlay
           key={`${region.x}-${region.y}-${region.width}-${region.height}`}
@@ -431,6 +451,8 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
   minimapSrc,
   fallbackSrc,
   fileSrc,
+  clippingMaskUrl,
+  zoomActionsRef,
   useNativeImagePreview,
   progressivePreviewRequestSize,
   sharpnessAutoReady,
@@ -796,6 +818,96 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
     [updateImageZoom]
   );
 
+  const commitZoomCenteredAt = useCallback(
+    (targetZoom: number, normX: number, normY: number) => {
+      const clampedZoom = clampZoom(targetZoom);
+      if (zoomInteractionTimeoutRef.current !== null) {
+        window.clearTimeout(zoomInteractionTimeoutRef.current);
+        zoomInteractionTimeoutRef.current = null;
+      }
+      if (zoomAnimationFrameRef.current !== null) {
+        window.cancelAnimationFrame(zoomAnimationFrameRef.current);
+        zoomAnimationFrameRef.current = null;
+      }
+      pendingZoomRef.current = null;
+      imageZoomRef.current = clampedZoom;
+      onZoomDisplayChange(clampedZoom);
+
+      const viewport = imageViewportRef.current;
+      const clampedNormX = Math.min(1, Math.max(0, normX));
+      const clampedNormY = Math.min(1, Math.max(0, normY));
+      if (viewport) {
+        const viewportRect = viewport.getBoundingClientRect();
+        const anchor: ZoomGestureAnchor = {
+          imageRatioX: clampedNormX,
+          imageRatioY: clampedNormY,
+          originX: 0,
+          originY: 0,
+          viewportX: viewportRect.width / 2,
+          viewportY: viewportRect.height / 2,
+        };
+        settleAnchorRef.current = anchor;
+        if (Math.abs(clampedZoom - settledImageZoomRef.current) < 0.001) {
+          const frame = imageFrameRef.current;
+          if (frame) {
+            const frameRect = frame.getBoundingClientRect();
+            viewport.scrollLeft = Math.max(
+              0,
+              viewport.scrollLeft +
+                frameRect.left +
+                frameRect.width * clampedNormX -
+                (viewportRect.left + viewportRect.width / 2)
+            );
+            viewport.scrollTop = Math.max(
+              0,
+              viewport.scrollTop +
+                frameRect.top +
+                frameRect.height * clampedNormY -
+                (viewportRect.top + viewportRect.height / 2)
+            );
+          }
+          settleAnchorRef.current = null;
+        } else {
+          setSettledImageZoom(clampedZoom);
+        }
+      } else {
+        setSettledImageZoom(clampedZoom);
+      }
+      onCommittedZoomChange(clampedZoom);
+    },
+    [onCommittedZoomChange, onZoomDisplayChange]
+  );
+
+  useEffect(() => {
+    if (!zoomActionsRef) return;
+    zoomActionsRef.current = {
+      toggleOneToOne: () => {
+        const current = settledImageZoomRef.current;
+        if (current > 1.05) {
+          commitZoomCenteredAt(1, 0.5, 0.5);
+          return;
+        }
+        const naturalScale =
+          imageDimensions && fittedImageSize
+            ? imageDimensions.width / Math.max(1, fittedImageSize.width)
+            : 2.5;
+        const targetZoom = clampZoom(Math.max(2.2, Math.min(4, naturalScale)));
+        commitZoomCenteredAt(targetZoom, 0.5, 0.5);
+      },
+      zoomToNormalizedPoint: (normX: number, normY: number, targetZoom?: number) => {
+        const naturalScale =
+          imageDimensions && fittedImageSize
+            ? imageDimensions.width / Math.max(1, fittedImageSize.width)
+            : 3;
+        const resolvedZoom = clampZoom(targetZoom ?? Math.max(2.5, Math.min(4.5, naturalScale)));
+        commitZoomCenteredAt(resolvedZoom, normX, normY);
+      },
+    };
+    return () => {
+      zoomActionsRef.current = null;
+    };
+  }, [commitZoomCenteredAt, fittedImageSize, imageDimensions, zoomActionsRef]);
+
   useEffect(() => {
     return () => {
       if (zoomAnimationFrameRef.current !== null) {
@@ -870,6 +982,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
                 entry={entry}
                 src={nativePreviewSrc}
                 interactionSrc={interactionPreviewSrc}
+                clippingMaskUrl={clippingMaskUrl}
                 renderedImageSize={renderedImageSize}
                 frameRef={registerZoomFrame}
                 onLoad={handleDisplayedImageLoad}
@@ -903,6 +1016,15 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
                   fallbackClassName="text-muted-foreground h-40 w-40"
                   onImageLoad={handleDisplayedImageLoad}
                 />
+                {clippingMaskUrl ? (
+                  <img
+                    src={clippingMaskUrl}
+                    alt=""
+                    aria-hidden="true"
+                    className="pointer-events-none absolute inset-0 h-full w-full rounded-lg object-contain select-none"
+                    draggable={false}
+                  />
+                ) : null}
                 {renderedImageSize &&
                   focusRegions.map((region) => (
                     <FocusRegionOverlay
@@ -924,6 +1046,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
             <ZoomableImageElement
               entry={entry}
               src={fallbackSrc || fileSrc || ""}
+              clippingMaskUrl={clippingMaskUrl}
               renderedImageSize={renderedImageSize}
               frameRef={registerZoomFrame}
               onLoad={handleDisplayedImageLoad}
@@ -991,6 +1114,7 @@ export function QuickLook({
   entries,
   photoAnalysis,
   cullingState,
+  autoAdvance = false,
   onClose,
   onNavigate,
   onToggleTag,
@@ -1000,10 +1124,13 @@ export function QuickLook({
 }: QuickLookProps) {
   const { t } = useTranslation();
   const activeCulling = cullingState ?? DEFAULT_CULLING_STATE;
+  const [showClippingOverlay, setShowClippingOverlay] = useState(false);
   const [histogramRecord, setHistogramRecord] = useState<{
     path: string;
     histogram: PhotoHistogramData;
+    clippingMaskUrl: string | null;
   } | null>(null);
+  const zoomActionsRef = useRef<ZoomPreviewActions | null>(null);
   const isOpen = Boolean(entry);
   const entryPath = entry?.path ?? null;
   const entryModified = entry?.modified ?? 0;
@@ -1381,8 +1508,21 @@ export function QuickLook({
         return;
       }
 
+      if (
+        previewType === "image" &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey &&
+        (e.key === "z" || e.key === "Z")
+      ) {
+        e.preventDefault();
+        zoomActionsRef.current?.toggleOneToOne();
+        return;
+      }
+
       // Photography culling shortcuts inside QuickLook:
-      // 1-7 toggle Finder color tags; Cmd+Backspace deletes and advances.
+      // 1-7 toggle Finder color tags; P/X/U flag; Shift+0..5 star; Cmd+Backspace deletes and advances.
       if (
         onToggleTag &&
         !e.metaKey &&
@@ -1395,6 +1535,7 @@ export function QuickLook({
         if (preset) {
           e.preventDefault();
           onToggleTag(entry, preset.id);
+          if (autoAdvance && nextEntry) onNavigate(nextEntry);
           return;
         }
       }
@@ -1421,6 +1562,7 @@ export function QuickLook({
         } else {
           onSetFlag(entry, "none");
         }
+        if (autoAdvance && nextEntry) onNavigate(nextEntry);
         return;
       }
 
@@ -1435,6 +1577,7 @@ export function QuickLook({
         e.preventDefault();
         const star = Number(e.code.slice(5));
         onSetRating(entry, star === activeCulling.rating ? 0 : star);
+        if (autoAdvance && nextEntry) onNavigate(nextEntry);
         return;
       }
 
@@ -1481,6 +1624,7 @@ export function QuickLook({
   }, [
     activeCulling.flag,
     activeCulling.rating,
+    autoAdvance,
     canNavigate,
     entry,
     nextEntry,
@@ -1490,6 +1634,7 @@ export function QuickLook({
     onSetFlag,
     onSetRating,
     onToggleTag,
+    previewType,
     previousEntry,
   ]);
 
@@ -1728,29 +1873,48 @@ export function QuickLook({
     setError(null);
   }, [entryPath]);
 
-  // Compute compact RGB histogram from the thumbnail URL asynchronously without
-  // blocking QuickLook zoom/pan interactions.
+  // Compute compact RGB histogram (and optional blown-highlight/crushed-shadow clipping mask)
+  // from the thumbnail URL asynchronously without blocking QuickLook zoom/pan interactions.
   useEffect(() => {
     if (!entryPath || previewType !== "image") return;
     const controller = new AbortController();
-    const url = buildFileThumbnailUrl(entryPath, entryModified, entrySize, 384, true, false);
+    const url = buildFileThumbnailUrl(
+      entryPath,
+      entryModified,
+      entrySize,
+      showClippingOverlay ? 512 : 384,
+      true,
+      false
+    );
     void loadHtmlImage(url, controller.signal)
       .then((img) => {
         if (controller.signal.aborted) return;
-        const extracted = extractHistogramFromImageElement(img, 256, false);
+        const extracted = extractHistogramFromImageElement(
+          img,
+          showClippingOverlay ? 384 : 256,
+          showClippingOverlay
+        );
         if (extracted) {
-          setHistogramRecord({ path: entryPath, histogram: extracted.histogram });
+          setHistogramRecord({
+            path: entryPath,
+            histogram: extracted.histogram,
+            clippingMaskUrl: extracted.clippingMaskUrl,
+          });
         }
       })
       .catch(() => undefined);
     return () => {
       controller.abort();
     };
-  }, [entryModified, entryPath, entrySize, previewType]);
+  }, [entryModified, entryPath, entrySize, previewType, showClippingOverlay]);
 
   if (!entry) return null;
 
   const activeHistogram = histogramRecord?.path === entryPath ? histogramRecord.histogram : null;
+  const activeClippingMaskUrl =
+    showClippingOverlay && histogramRecord?.path === entryPath
+      ? histogramRecord.clippingMaskUrl
+      : null;
 
   const renderPreview = () => {
     if (loading) {
@@ -1786,6 +1950,8 @@ export function QuickLook({
                 minimapSrc={cachedNativePreview?.src ?? null}
                 fallbackSrc={fallbackSrc}
                 fileSrc={fileSrc}
+                clippingMaskUrl={activeClippingMaskUrl}
+                zoomActionsRef={zoomActionsRef}
                 useNativeImagePreview={useNativeImagePreview}
                 progressivePreviewRequestSize={progressivePreviewRequestSize}
                 sharpnessAutoReady={
@@ -1809,8 +1975,13 @@ export function QuickLook({
                 <PhotoMetadataPanel metadata={photoMetadata} />
               </div>
               {activeHistogram && (
-                <div className="w-48 shrink-0">
-                  <PhotoHistogram histogram={activeHistogram} compact />
+                <div className="w-52 shrink-0">
+                  <PhotoHistogram
+                    histogram={activeHistogram}
+                    showClippingOverlay={showClippingOverlay}
+                    onToggleClippingOverlay={() => setShowClippingOverlay((v) => !v)}
+                    compact
+                  />
                 </div>
               )}
             </div>

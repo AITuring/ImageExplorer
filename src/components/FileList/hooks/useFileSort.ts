@@ -5,7 +5,11 @@ import { compareFileNames, sortFileEntries } from "./finderListModel";
 
 export { compareFileNames, sortFileEntries };
 
-export function useFileSort(entries: FileEntry[]) {
+export function useFileSort(
+  entries: FileEntry[],
+  capturedLookup?: (entry: FileEntry) => string | null | undefined,
+  capturedVersion = 0
+) {
   const [sortField, setSortField] = useState<SortField>("name");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const deferredEntries = useDeferredValue(entries);
@@ -34,10 +38,10 @@ export function useFileSort(entries: FileEntry[]) {
     [sortField]
   );
 
-  const sortedEntries = useMemo(
-    () => sortFileEntries(deferredEntries, sortField, sortDirection),
-    [deferredEntries, sortField, sortDirection]
-  );
+  const sortedEntries = useMemo(() => {
+    void capturedVersion;
+    return sortFileEntries(deferredEntries, sortField, sortDirection, capturedLookup);
+  }, [capturedLookup, capturedVersion, deferredEntries, sortField, sortDirection]);
 
   return {
     sortField,

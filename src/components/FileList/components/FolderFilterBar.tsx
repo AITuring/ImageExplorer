@@ -1,6 +1,9 @@
 import { memo } from "react";
 import {
+  Camera,
   Check,
+  CircleDashed,
+  FastForward,
   FileCode2,
   Filter,
   FolderOutput,
@@ -30,6 +33,10 @@ interface FolderFilterBarProps {
   cameraOptions?: string[];
   lensOptions?: string[];
   burstGroupCount?: number;
+  autoAdvance?: boolean;
+  onToggleAutoAdvance?: () => void;
+  sortByCaptured?: boolean;
+  onToggleSortByCaptured?: () => void;
   onAutoPickBest?: () => void;
   onExportXmp?: () => void;
   onExportFiltered?: () => void;
@@ -46,6 +53,10 @@ export const FolderFilterBar = memo(function FolderFilterBar({
   cameraOptions = [],
   lensOptions = [],
   burstGroupCount = 0,
+  autoAdvance = false,
+  onToggleAutoAdvance,
+  sortByCaptured = false,
+  onToggleSortByCaptured,
   onAutoPickBest,
   onExportXmp,
   onExportFiltered,
@@ -201,6 +212,19 @@ export const FolderFilterBar = memo(function FolderFilterBar({
         </button>
         <button
           type="button"
+          aria-pressed={filter.flag === "unflagged"}
+          onClick={() => setFlag("unflagged")}
+          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] transition-colors ${
+            filter.flag === "unflagged"
+              ? "bg-primary/15 text-primary font-medium"
+              : "text-muted-foreground hover:bg-accent"
+          }`}
+        >
+          <CircleDashed className="h-3 w-3" aria-hidden="true" />
+          {t("file_list.culling.unflagged")}
+        </button>
+        <button
+          type="button"
           onClick={() =>
             onChange({ ...filter, minRating: filter.minRating >= 5 ? 0 : filter.minRating + 1 })
           }
@@ -295,6 +319,42 @@ export const FolderFilterBar = memo(function FolderFilterBar({
         <Layers className="h-3 w-3" aria-hidden="true" />
         <span>RAW+JPG{filter.pairRawJpeg && pairCount > 0 ? ` (${pairCount})` : ""}</span>
       </button>
+
+      {/* Sort by EXIF Capture Time */}
+      {onToggleSortByCaptured && (
+        <button
+          type="button"
+          aria-pressed={sortByCaptured}
+          onClick={onToggleSortByCaptured}
+          title={t("file_list.culling.sort_captured_hint")}
+          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] transition-colors ${
+            sortByCaptured
+              ? "bg-primary/15 text-primary font-medium"
+              : "text-muted-foreground hover:bg-accent"
+          }`}
+        >
+          <Camera className="h-3 w-3" aria-hidden="true" />
+          <span>{t("file_list.culling.sort_captured")}</span>
+        </button>
+      )}
+
+      {/* Auto-advance culling toggle */}
+      {onToggleAutoAdvance && (
+        <button
+          type="button"
+          aria-pressed={autoAdvance}
+          onClick={onToggleAutoAdvance}
+          title={t("file_list.culling.auto_advance_hint")}
+          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] transition-colors ${
+            autoAdvance
+              ? "bg-primary/15 text-primary font-medium"
+              : "text-muted-foreground hover:bg-accent"
+          }`}
+        >
+          <FastForward className="h-3 w-3" aria-hidden="true" />
+          <span>{t("file_list.culling.auto_advance")}</span>
+        </button>
+      )}
 
       {/* Auto-Pick Best for burst similarity groups */}
       {burstGroupCount > 0 && onAutoPickBest && (

@@ -6,6 +6,10 @@ import {
 } from "../src/lib/histogramAnalysis.ts";
 import { computeAutoPickBest } from "../src/lib/autoPickBest.ts";
 import { DEFAULT_FOLDER_FILTER, filterFolderEntries } from "../src/lib/folderFilter.ts";
+import {
+  parseExifCapturedSeconds,
+  sortFileEntries,
+} from "../src/components/FileList/hooks/finderListModel.ts";
 
 test("computeHistogramFromRgba and buildClippingMaskRgba accurately track highlights and shadows", () => {
   // 4 pixels: pure black (shadow clip), mid gray, pure white (highlight clip), mid green
@@ -83,5 +87,42 @@ test("filterFolderEntries supports star ratings, pick/reject flags, and camera/l
       (entry) => meta.get(entry.path)
     ).map((e) => e.name),
     ["p2.arw"]
+  );
+
+  // Unflagged filter returns only entries without pick/reject flags
+  const withUnflagged = [
+    ...entries,
+    { name: "p4.jpg", path: "/s/p4.jpg", is_dir: false, extension: "jpg", tags: [] },
+  ];
+  assert.deepEqual(
+    filterFolderEntries(
+      withUnflagged,
+      { ...DEFAULT_FOLDER_FILTER, flag: "unflagged" },
+      undefined,
+      culling
+    ).map((e) => e.name),
+    ["p4.jpg"]
+  );
+});
+
+test("parseExifCapturedSeconds and sortFileEntries sort photos accurately by EXIF capture time", () => {
+  const ts1 = parseExifCapturedSeconds("2025:05:10 08:30:12");
+  const ts2 = parseExifCapturedSeconds("2025:05:10 08:30:15");
+  assert.ok(ts1 !== null && ts2 !== null && ts2 - ts1 === 3);
+
+  const items = [
+    { name: "IMG_2.ARW", path: "/a/IMG_2.ARW", is_dir: false, size: 100, modified: 10, extension: "ARW" },
+    { name: "IMG_1.ARW", path: "/a/IMG_1.ARW", is_dir: false, size: 100, modified: 99, extension: "ARW" },
+    { name: "IMG_3.ARW", path: "/a/IMG_3.ARW", is_dir: false, size: 100, modified: 50, extension: "ARW" },
+  ];
+  const captured = new Map([
+    ["/a/IMG_1.ARW", "2025:05:10 08:30:10"],
+    ["/a/IMG_2.ARW", "2025:05:10 08:30:20"],
+    ["/a/IMG_3.ARW", "2025:05:10 08:30:15"],
+  ]);
+  const sorted = sortFileEntries(items, "captured", "asc", (entry) => captured.get(entry.path));
+  assert.deepEqual(
+    sorted.map((e) => e.name),
+    ["IMG_1.ARW", "IMG_3.ARW", "IMG_2.ARW"]
   );
 });

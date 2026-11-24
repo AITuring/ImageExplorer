@@ -266,9 +266,36 @@ async fn get_photo_culling_states(
         return Ok(Vec::new());
     };
     let store = PhotoCacheStore::new(db.read_connection(), db.connection());
-    tauri::async_runtime::spawn_blocking(move || store.get_culling_states(&paths))
-        .await
-        .map_err(|error| error.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut records = store.get_culling_states(&paths)?;
+        let existing: std::collections::HashSet<String> =
+            records.iter().map(|r| r.path.clone()).collect();
+
+        // Bidirectional Lightroom / Photo Mechanic sync: import ratings/rejects
+        // from existing `.xmp` sidecars for files not yet stored in SQLite.
+        let mut imported = Vec::new();
+        for path in &paths {
+            if existing.contains(path) {
+                continue;
+            }
+            if let Some((rating, flag)) =
+                xmp_sidecar::read_xmp_culling_state(std::path::Path::new(path))
+            {
+                imported.push(PhotoCullingRecord {
+                    path: path.clone(),
+                    rating,
+                    flag: flag.to_string(),
+                });
+            }
+        }
+        if !imported.is_empty() {
+            let _ = store.set_culling_states(&imported);
+            records.extend(imported);
+        }
+        Ok(records)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]

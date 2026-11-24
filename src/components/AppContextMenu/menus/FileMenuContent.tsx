@@ -197,7 +197,7 @@ export function FileMenuContent({ entry, selectedEntries, actions }: FileMenuCon
             <MenuItem
               fallbackIcon={Columns2}
               label={t("context_menu.compare_photos")}
-              onClick={() => actions.onCompare?.([photos[0], photos[1]])}
+              onClick={() => actions.onCompare?.(photos.slice(0, 4))}
             />
           );
         })()}

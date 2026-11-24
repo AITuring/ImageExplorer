@@ -130,7 +130,14 @@ function makeDragHandlers(
 
 export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProps) {
   const { t } = useTranslation();
-  const { viewMode, iconSize, listColumnWidths, listColumnVisibility } = useViewMode();
+  const {
+    viewMode,
+    iconSize,
+    listColumnWidths,
+    listColumnVisibility,
+    cullAutoAdvance,
+    toggleCullAutoAdvance,
+  } = useViewMode();
   // Photo details and analysis are available automatically in every view.
   const photoAnalysisEnabled = true;
   const { addTab, activeTab, goBack, goForward, canGoBack, canGoForward } = useTabs();
@@ -144,7 +151,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   const [folderFilter, setFolderFilter] = useState<FolderFilterState>(DEFAULT_FOLDER_FILTER);
   const [filterBarDismissed, setFilterBarDismissed] = useState(false);
   const [filterBarForcedOpen, setFilterBarForcedOpen] = useState(false);
-  const [comparePair, setComparePair] = useState<[FileEntry, FileEntry] | null>(null);
+  const [compareEntries, setCompareEntries] = useState<FileEntry[] | null>(null);
 
   // 1. 数据加载
   const { entries, showHiddenFiles, loading, error, loadEntries } = useFileEntries(currentPath);
@@ -242,9 +249,17 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     );
   }, [cullingMap, displayBaseEntries, folderFilter, metadataTick, visibleSharpness]);
 
-  // 2. 排序
-  const { sortField, sortDirection, handleSort, handleArrange, sortedEntries } =
-    useFileSort(filteredEntries);
+  // 2. 排序（支持按 EXIF 拍摄时间排序）
+  const getCapturedAt = useCallback(
+    (entry: FileEntry) => getCachedPhotoMetadata(entry)?.capturedAt,
+    []
+  );
+  const { sortField, sortDirection, handleSort, handleArrange, sortedEntries } = useFileSort(
+    filteredEntries,
+    getCapturedAt,
+    metadataTick
+  );
+  const allPhotosInView = useMemo(() => sortedEntries.filter(isAnalyzablePhoto), [sortedEntries]);
   const activeColumnContext =
     viewMode === "column" && columnSelectionContext?.rootPath === currentPath
       ? columnSelectionContext
@@ -428,6 +443,32 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     });
   }, []);
 
+  const handleSetRatingBatch = useCallback(
+    (targets: FileEntry[], rating: number) => {
+      const expanded = expandPairedEntries(targets, pairedCompanionsByPath);
+      void updatePhotoCullingStates(expanded.map((item) => ({ path: item.path, rating })));
+    },
+    [pairedCompanionsByPath]
+  );
+
+  const handleSetFlagBatch = useCallback(
+    (targets: FileEntry[], flag: PhotoFlag) => {
+      const expanded = expandPairedEntries(targets, pairedCompanionsByPath);
+      void updatePhotoCullingStates(expanded.map((item) => ({ path: item.path, flag })));
+    },
+    [pairedCompanionsByPath]
+  );
+
+  const handleSetRating = useCallback(
+    (target: FileEntry, rating: number) => handleSetRatingBatch([target], rating),
+    [handleSetRatingBatch]
+  );
+
+  const handleSetFlag = useCallback(
+    (target: FileEntry, flag: PhotoFlag) => handleSetFlagBatch([target], flag),
+    [handleSetFlagBatch]
+  );
+
   // 7. 键盘快捷键
   const fileCommands = useFileKeyboardShortcuts({
     selectedPath,
@@ -439,6 +480,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     gridColumns,
     canMutate,
     legacyTabNumberShortcuts,
+    cullAutoAdvance,
     openEntry: handleOpen,
     onOpenParent: handleOpenParent,
     onGoBack: goBack,
@@ -448,6 +490,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     onToggleHiddenFiles: handleToggleHiddenFiles,
     onFocusFilterBar: handleFocusFilterBar,
     onToggleTag: handleToggleTag,
+    onSetFlag: handleSetFlagBatch,
+    onSetRating: handleSetRatingBatch,
     onScrollToIndex: (index) => scrollToIndexRef.current(index),
     onColumnNavigateLeft: () => columnNavRef.current?.navigateLeft() ?? false,
     onColumnNavigateRight: () => columnNavRef.current?.navigateRight() ?? Promise.resolve(false),
@@ -946,7 +990,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       onShowPackageContents: handleShowPackageContents,
       onShowOriginal: handleShowOriginal,
       onToggleTag: handleToggleTag,
-      onCompare: (pair) => setComparePair(pair),
+      onCompare: (entriesToCompare) => setCompareEntries(entriesToCompare),
       onCopy: handleCopy,
       onCut: handleCut,
       onPaste: handlePaste,
@@ -1009,22 +1053,6 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     }
     return computeAutoPickBest(candidates);
   }, [photoAnalysis, visibleSharpness]);
-
-  const handleSetRating = useCallback(
-    (target: FileEntry, rating: number) => {
-      const targets = expandPairedEntries([target], pairedCompanionsByPath);
-      void updatePhotoCullingStates(targets.map((item) => ({ path: item.path, rating })));
-    },
-    [pairedCompanionsByPath]
-  );
-
-  const handleSetFlag = useCallback(
-    (target: FileEntry, flag: PhotoFlag) => {
-      const targets = expandPairedEntries([target], pairedCompanionsByPath);
-      void updatePhotoCullingStates(targets.map((item) => ({ path: item.path, flag })));
-    },
-    [pairedCompanionsByPath]
-  );
 
   const handleAutoPickBest = useCallback(() => {
     if (burstAutoPickPlan.groupCount === 0) return;
@@ -1209,6 +1237,10 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                 cameraOptions={cameraOptions}
                 lensOptions={lensOptions}
                 burstGroupCount={burstAutoPickPlan.groupCount}
+                autoAdvance={cullAutoAdvance}
+                onToggleAutoAdvance={toggleCullAutoAdvance}
+                sortByCaptured={sortField === "captured"}
+                onToggleSortByCaptured={() => handleSort("captured")}
                 onAutoPickBest={handleAutoPickBest}
                 onExportXmp={hasPhotosInFolder ? () => void handleExportXmp() : undefined}
                 onExportFiltered={() => void handleExportFiltered()}
@@ -1239,7 +1271,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
               onToggleTag={handleToggleTag}
               onSetRating={handleSetRating}
               onSetFlag={handleSetFlag}
-              onCompare={(pair) => setComparePair(pair)}
+              onCompare={(entriesToCompare) => setCompareEntries(entriesToCompare)}
             />
           ) : viewMode === "column" ? (
             <FileColumnView
@@ -1348,6 +1380,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                             onItemDoubleClick={handleOpen}
                             columnWidths={listColumnWidths}
                             columnVisibility={listColumnVisibility}
+                            cullingState={cullingMap.get(entry.path)}
                             pairedBadge={pairedCompanionsByPath.has(entry.path) ? "RAW+JPG" : null}
                           />
                         </AppContextMenu>
@@ -1446,6 +1479,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                                     visibleSharpness={visibleSharpness.get(entry.path)}
                                     photoAnalysisEnabled={photoAnalysisEnabled}
                                     iconSize={iconSize}
+                                    cullingState={cullingMap.get(entry.path)}
                                     pairedBadge={
                                       pairedCompanionsByPath.has(entry.path) ? "RAW+JPG" : null
                                     }
@@ -1474,6 +1508,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
           entries={sortedEntries}
           photoAnalysis={photoAnalysis}
           cullingState={quickLookEntry ? cullingMap.get(quickLookEntry.path) : undefined}
+          autoAdvance={cullAutoAdvance}
           onClose={() => setQuickLookEntry(null)}
           onToggleTag={(target, tag) => void handleToggleTag([target], tag)}
           onSetRating={handleSetRating}
@@ -1495,10 +1530,14 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       )}
 
       <PhotoCompareDialog
-        entries={comparePair}
+        entries={compareEntries}
+        allPhotos={allPhotosInView}
         visibleSharpness={visibleSharpness}
-        onClose={() => setComparePair(null)}
+        cullingMap={cullingMap}
+        onClose={() => setCompareEntries(null)}
         onToggleTag={(target, tag) => void handleToggleTag([target], tag)}
+        onSetRating={handleSetRating}
+        onSetFlag={handleSetFlag}
         onDelete={(target) => handleDelete([target])}
       />
 

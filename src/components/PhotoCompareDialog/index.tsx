@@ -1,5 +1,18 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { Minus, Plus, RotateCcw, Trash2, X } from "lucide-react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ArrowLeftRight,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Crown,
+  Minus,
+  Plus,
+  RotateCcw,
+  Star,
+  Trash2,
+  X,
+  XCircle,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { FileEntry } from "@/types";
 import { FileThumbnail } from "@/components/FileThumbnail";
@@ -8,36 +21,60 @@ import { SharpnessBadge } from "@/components/FileList/components/PhotoDetails";
 import { usePhotoMetadata } from "@/hooks/usePhotoMetadata";
 import { getPhotoMetadataSummary } from "@/lib/photoMetadata";
 import { FINDER_TAG_PRESETS, hasFinderTag } from "@/lib/finderTags";
+import { DEFAULT_CULLING_STATE, type PhotoCullingState, type PhotoFlag } from "@/lib/photoCulling";
 import type { VisibleSharpness } from "@/hooks/useVisibleSharpness";
 
 interface PhotoCompareDialogProps {
-  entries: [FileEntry, FileEntry] | null;
+  entries: FileEntry[] | null;
+  allPhotos?: FileEntry[];
   visibleSharpness: Map<string, VisibleSharpness>;
+  cullingMap?: ReadonlyMap<string, PhotoCullingState>;
   onClose: () => void;
   onToggleTag: (entry: FileEntry, tag: string) => void;
+  onSetRating?: (entry: FileEntry, rating: number) => void;
+  onSetFlag?: (entry: FileEntry, flag: PhotoFlag) => void;
   onDelete: (entry: FileEntry) => Promise<void>;
 }
 
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 6;
+const QUICK_ONE_TO_ONE_ZOOM = 3;
 
 const ComparePane = memo(function ComparePane({
   entry,
   verdict,
+  culling,
+  roleLabel,
+  isChampion,
+  canCycleChallenger,
+  onPrevChallenger,
+  onNextChallenger,
+  onPromoteToChampion,
   zoom,
   pan,
   onWheelZoom,
   onPanStart,
   onToggleTag,
+  onSetRating,
+  onSetFlag,
   onDelete,
 }: {
   entry: FileEntry;
   verdict?: VisibleSharpness;
+  culling: PhotoCullingState;
+  roleLabel?: string;
+  isChampion?: boolean;
+  canCycleChallenger?: boolean;
+  onPrevChallenger?: () => void;
+  onNextChallenger?: () => void;
+  onPromoteToChampion?: () => void;
   zoom: number;
   pan: { x: number; y: number };
   onWheelZoom: (event: React.WheelEvent<HTMLDivElement>) => void;
   onPanStart: (event: React.MouseEvent<HTMLDivElement>) => void;
   onToggleTag: (entry: FileEntry, tag: string) => void;
+  onSetRating?: (entry: FileEntry, rating: number) => void;
+  onSetFlag?: (entry: FileEntry, flag: PhotoFlag) => void;
   onDelete: (entry: FileEntry) => Promise<void>;
 }) {
   const { t } = useTranslation();
@@ -45,7 +82,11 @@ const ComparePane = memo(function ComparePane({
   const summary = getPhotoMetadataSummary(metadata);
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-black/90">
+    <div
+      className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-black/90 ${
+        culling.flag === "reject" ? "opacity-65" : ""
+      }`}
+    >
       <div
         onWheel={onWheelZoom}
         onMouseDown={onPanStart}
@@ -53,6 +94,52 @@ const ComparePane = memo(function ComparePane({
           zoom > 1 ? "cursor-grab active:cursor-grabbing" : "cursor-zoom-in"
         }`}
       >
+        {roleLabel && (
+          <div className="bg-background/85 border-border/60 absolute top-2 left-2 z-10 flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold backdrop-blur-sm">
+            {isChampion && <Crown className="h-3 w-3 text-amber-500" aria-hidden="true" />}
+            <span>{roleLabel}</span>
+          </div>
+        )}
+        {canCycleChallenger && (
+          <div className="absolute top-2 right-2 z-10 flex items-center gap-1">
+            {onPromoteToChampion && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onPromoteToChampion();
+                }}
+                title={t("file_list.culling.compare_promote")}
+                className="bg-background/85 hover:bg-background border-border/60 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium backdrop-blur-sm transition-colors"
+              >
+                <ArrowLeftRight className="h-3 w-3" aria-hidden="true" />
+                {t("file_list.culling.compare_promote")}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onPrevChallenger?.();
+              }}
+              aria-label={t("common.quick_look.previous")}
+              className="bg-background/85 hover:bg-background border-border/60 rounded-full border p-1 backdrop-blur-sm transition-colors"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onNextChallenger?.();
+              }}
+              aria-label={t("common.quick_look.next")}
+              className="bg-background/85 hover:bg-background border-border/60 rounded-full border p-1 backdrop-blur-sm transition-colors"
+            >
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
         <div
           style={{
             transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`,
@@ -82,44 +169,97 @@ const ComparePane = memo(function ComparePane({
             </span>
             <SharpnessBadge verdict={verdict} />
           </div>
-          {!entry.readonly && (
-            <button
-              type="button"
-              onClick={() => void onDelete(entry)}
-              title={t("context_menu.move_to_trash")}
-              aria-label={t("context_menu.move_to_trash")}
-              className="text-muted-foreground hover:bg-destructive/15 hover:text-destructive shrink-0 rounded p-1 transition-colors"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </button>
-          )}
+          <div className="flex items-center gap-1">
+            {onSetFlag && (
+              <>
+                <button
+                  type="button"
+                  aria-pressed={culling.flag === "pick"}
+                  title={t("file_list.culling.pick")}
+                  onClick={() => onSetFlag(entry, culling.flag === "pick" ? "none" : "pick")}
+                  className={`rounded p-1 transition-colors ${
+                    culling.flag === "pick"
+                      ? "bg-emerald-500/20 text-emerald-600 dark:text-emerald-300"
+                      : "text-muted-foreground hover:bg-accent"
+                  }`}
+                >
+                  <Check className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={culling.flag === "reject"}
+                  title={t("file_list.culling.reject")}
+                  onClick={() => onSetFlag(entry, culling.flag === "reject" ? "none" : "reject")}
+                  className={`rounded p-1 transition-colors ${
+                    culling.flag === "reject"
+                      ? "bg-destructive/20 text-destructive"
+                      : "text-muted-foreground hover:bg-accent"
+                  }`}
+                >
+                  <XCircle className="h-3.5 w-3.5" />
+                </button>
+              </>
+            )}
+            {!entry.readonly && (
+              <button
+                type="button"
+                onClick={() => void onDelete(entry)}
+                title={t("context_menu.move_to_trash")}
+                aria-label={t("context_menu.move_to_trash")}
+                className="text-muted-foreground hover:bg-destructive/15 hover:text-destructive shrink-0 rounded p-1 transition-colors"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="text-muted-foreground truncate text-[11px] tabular-nums">
             {[summary?.dimensions, ...(summary?.exposure ?? [])].filter(Boolean).join(" · ") || "—"}
           </div>
-          <div className="flex items-center gap-1">
-            {FINDER_TAG_PRESETS.map((preset) => {
-              const active = hasFinderTag(entry.tags, preset.id);
-              const label = t(preset.labelKey);
-              return (
-                <button
-                  key={preset.id}
-                  type="button"
-                  title={label}
-                  aria-label={label}
-                  aria-pressed={active}
-                  onClick={() => onToggleTag(entry, preset.id)}
-                  className={`flex h-4 w-4 items-center justify-center rounded-full transition-transform hover:scale-110 ${
-                    active
-                      ? "ring-foreground ring-offset-background ring-2 ring-offset-1"
-                      : "opacity-75 ring-1 ring-black/15 hover:opacity-100"
-                  }`}
-                  style={{ backgroundColor: preset.color }}
-                />
-              );
-            })}
+          <div className="flex items-center gap-2">
+            {onSetRating && (
+              <div className="flex items-center gap-0.5">
+                {[1, 2, 3, 4, 5].map((star) => (
+                  <button
+                    key={star}
+                    type="button"
+                    aria-label={`${star}★`}
+                    onClick={() => onSetRating(entry, culling.rating === star ? 0 : star)}
+                    className="text-muted-foreground hover:text-amber-500"
+                  >
+                    <Star
+                      className={`h-3 w-3 ${
+                        star <= culling.rating ? "fill-amber-400 text-amber-400" : ""
+                      }`}
+                    />
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="flex items-center gap-1">
+              {FINDER_TAG_PRESETS.map((preset) => {
+                const active = hasFinderTag(entry.tags, preset.id);
+                const label = t(preset.labelKey);
+                return (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    title={label}
+                    aria-label={label}
+                    aria-pressed={active}
+                    onClick={() => onToggleTag(entry, preset.id)}
+                    className={`flex h-3.5 w-3.5 items-center justify-center rounded-full transition-transform hover:scale-110 ${
+                      active
+                        ? "ring-foreground ring-offset-background ring-2 ring-offset-1"
+                        : "opacity-75 ring-1 ring-black/15 hover:opacity-100"
+                    }`}
+                    style={{ backgroundColor: preset.color }}
+                  />
+                );
+              })}
+            </div>
           </div>
         </div>
       </div>
@@ -129,14 +269,25 @@ const ComparePane = memo(function ComparePane({
 
 export function PhotoCompareDialog({
   entries,
+  allPhotos = [],
   visibleSharpness,
+  cullingMap,
   onClose,
   onToggleTag,
+  onSetRating,
+  onSetFlag,
   onDelete,
 }: PhotoCompareDialogProps) {
   const { t } = useTranslation();
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  // PK Challenger override state keyed by the initial session entry paths
+  const sessionKey = entries ? entries.map((e) => e.path).join("\0") : "";
+  const [pkState, setPkState] = useState<{
+    sessionKey: string;
+    champion: FileEntry;
+    challenger: FileEntry;
+  } | null>(null);
   const draggingRef = useRef<{
     startX: number;
     startY: number;
@@ -144,17 +295,67 @@ export function PhotoCompareDialog({
     originY: number;
   } | null>(null);
 
+  const isPkMode = Boolean(entries && entries.length === 2);
+  const activeEntries = useMemo(() => {
+    if (!entries || entries.length < 2) return null;
+    if (isPkMode && pkState && pkState.sessionKey === sessionKey) {
+      return [pkState.champion, pkState.challenger];
+    }
+    return entries.slice(0, 4);
+  }, [entries, isPkMode, pkState, sessionKey]);
+
+  const cycleChallenger = useCallback(
+    (delta: 1 | -1) => {
+      if (!isPkMode || !activeEntries || allPhotos.length < 2) return;
+      const [champion, currentChallenger] = activeEntries;
+      const candidates = allPhotos.filter((photo) => photo.path !== champion.path);
+      if (candidates.length === 0) return;
+      const currentIdx = candidates.findIndex((photo) => photo.path === currentChallenger.path);
+      const nextIdx =
+        currentIdx < 0 ? 0 : (currentIdx + delta + candidates.length) % candidates.length;
+      setPkState({
+        sessionKey,
+        champion,
+        challenger: candidates[nextIdx],
+      });
+    },
+    [activeEntries, allPhotos, isPkMode, sessionKey]
+  );
+
+  const promoteChallenger = useCallback(() => {
+    if (!isPkMode || !activeEntries) return;
+    const [champion, challenger] = activeEntries;
+    setPkState({
+      sessionKey,
+      champion: challenger,
+      challenger: champion,
+    });
+  }, [activeEntries, isPkMode, sessionKey]);
+
   const resetView = useCallback(() => {
     setZoom(1);
     setPan({ x: 0, y: 0 });
   }, []);
 
+  const toggleOneToOne = useCallback(() => {
+    setZoom((current) => {
+      if (current > 1.05) {
+        setPan({ x: 0, y: 0 });
+        return 1;
+      }
+      return QUICK_ONE_TO_ONE_ZOOM;
+    });
+  }, []);
+
   useEffect(() => {
-    if (!entries) return;
+    if (!activeEntries) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
         onClose();
+      } else if (event.key === "z" || event.key === "Z") {
+        event.preventDefault();
+        toggleOneToOne();
       } else if (event.key === "0") {
         event.preventDefault();
         resetView();
@@ -168,11 +369,17 @@ export function PhotoCompareDialog({
           if (next <= 1) setPan({ x: 0, y: 0 });
           return next;
         });
+      } else if (isPkMode && event.key === "ArrowRight") {
+        event.preventDefault();
+        cycleChallenger(1);
+      } else if (isPkMode && event.key === "ArrowLeft") {
+        event.preventDefault();
+        cycleChallenger(-1);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [entries, onClose, resetView]);
+  }, [activeEntries, cycleChallenger, isPkMode, onClose, resetView, toggleOneToOne]);
 
   const handleWheelZoom = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -213,8 +420,7 @@ export function PhotoCompareDialog({
     [pan.x, pan.y, zoom]
   );
 
-  if (!entries) return null;
-  const [left, right] = entries;
+  if (!activeEntries) return null;
 
   return (
     <div
@@ -225,8 +431,14 @@ export function PhotoCompareDialog({
     >
       <div className="mb-3 flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold">{t("file_list.compare_title")}</h2>
-          <p className="text-muted-foreground text-xs">{t("file_list.compare_hint")}</p>
+          <h2 className="text-sm font-semibold">
+            {activeEntries.length > 2
+              ? t("file_list.culling.compare_survey_title", { count: activeEntries.length })
+              : t("file_list.compare_title")}
+          </h2>
+          <p className="text-muted-foreground text-xs">
+            {isPkMode ? t("file_list.culling.compare_pk_hint") : t("file_list.compare_hint")}
+          </p>
         </div>
 
         <div className="flex items-center gap-1.5">
@@ -259,10 +471,10 @@ export function PhotoCompareDialog({
           </button>
           <button
             type="button"
-            onClick={() => setZoom(2)}
+            onClick={toggleOneToOne}
             className="hover:bg-accent border-border/60 rounded border px-2 py-1 text-xs"
           >
-            200%
+            1:1 (Z)
           </button>
           <button
             type="button"
@@ -283,33 +495,46 @@ export function PhotoCompareDialog({
         </div>
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-2 gap-3">
-        <ComparePane
-          entry={left}
-          verdict={visibleSharpness.get(left.path)}
-          zoom={zoom}
-          pan={pan}
-          onWheelZoom={handleWheelZoom}
-          onPanStart={handlePanStart}
-          onToggleTag={onToggleTag}
-          onDelete={async (target) => {
-            await onDelete(target);
-            onClose();
-          }}
-        />
-        <ComparePane
-          entry={right}
-          verdict={visibleSharpness.get(right.path)}
-          zoom={zoom}
-          pan={pan}
-          onWheelZoom={handleWheelZoom}
-          onPanStart={handlePanStart}
-          onToggleTag={onToggleTag}
-          onDelete={async (target) => {
-            await onDelete(target);
-            onClose();
-          }}
-        />
+      <div
+        className={`grid min-h-0 flex-1 gap-3 ${
+          activeEntries.length > 2 ? "grid-cols-2 grid-rows-2" : "grid-cols-2"
+        }`}
+      >
+        {activeEntries.map((item, idx) => (
+          <ComparePane
+            key={`${idx}:${item.path}`}
+            entry={item}
+            verdict={visibleSharpness.get(item.path)}
+            culling={cullingMap?.get(item.path) ?? DEFAULT_CULLING_STATE}
+            roleLabel={
+              isPkMode
+                ? idx === 0
+                  ? t("file_list.culling.compare_champion")
+                  : t("file_list.culling.compare_challenger")
+                : `#${idx + 1}`
+            }
+            isChampion={isPkMode && idx === 0}
+            canCycleChallenger={isPkMode && idx === 1 && allPhotos.length > 2}
+            onPrevChallenger={() => cycleChallenger(-1)}
+            onNextChallenger={() => cycleChallenger(1)}
+            onPromoteToChampion={promoteChallenger}
+            zoom={zoom}
+            pan={pan}
+            onWheelZoom={handleWheelZoom}
+            onPanStart={handlePanStart}
+            onToggleTag={onToggleTag}
+            onSetRating={onSetRating}
+            onSetFlag={onSetFlag}
+            onDelete={async (target) => {
+              await onDelete(target);
+              if (isPkMode && idx === 1 && allPhotos.length > 2) {
+                cycleChallenger(1);
+              } else {
+                onClose();
+              }
+            }}
+          />
+        ))}
       </div>
     </div>
   );

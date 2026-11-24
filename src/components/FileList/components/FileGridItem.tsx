@@ -1,7 +1,9 @@
 import { SharpnessBadge } from "./PhotoDetails";
 import { memo, useEffect, useRef } from "react";
+import { Check, Star, XCircle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { FileEntry } from "@/types/index";
+import type { PhotoCullingState } from "@/lib/photoCulling";
 import { FileThumbnail } from "@/components/FileThumbnail";
 import { FocusRegionOverlay } from "@/components/FocusRegionOverlay";
 import { getContainedFocusRegionPosition } from "@/lib/focusPoint";
@@ -37,6 +39,7 @@ interface FileGridItemProps {
   photoAnalysisEnabled?: boolean;
   iconSize?: number;
   pairedBadge?: string | null;
+  cullingState?: PhotoCullingState;
   isScrolling?: boolean;
   isInViewport?: boolean;
 }
@@ -63,6 +66,7 @@ export const FileGridItem = memo(function FileGridItem({
   photoAnalysisEnabled = false,
   iconSize = 160,
   pairedBadge = null,
+  cullingState,
   isScrolling = false,
   isInViewport = true,
 }: FileGridItemProps) {
@@ -108,7 +112,9 @@ export const FileGridItem = memo(function FileGridItem({
         isSelected
           ? "bg-accent/80 ring-primary/20 ring-1"
           : "hover:bg-accent/60 hover:ring-border/60 ring-1 ring-transparent"
-      } ${isFocused ? "outline-primary outline outline-1 outline-offset-[-1px]" : ""}`}
+      } ${isFocused ? "outline-primary outline outline-1 outline-offset-[-1px]" : ""} ${
+        cullingState?.flag === "reject" ? "opacity-55" : ""
+      }`}
       style={!isSelected && photoGroupColor ? { backgroundColor: photoGroupColor } : undefined}
       onClick={(e) => {
         if (onItemClick) onItemClick(entry, index, e);
@@ -136,6 +142,32 @@ export const FileGridItem = memo(function FileGridItem({
         {pairedBadge && (
           <span className="bg-background/85 text-foreground border-border/60 pointer-events-none absolute top-1 right-1 rounded border px-1 py-0.5 text-[9px] font-semibold backdrop-blur-sm">
             {pairedBadge}
+          </span>
+        )}
+        {cullingState?.flag === "pick" && (
+          <span
+            className="pointer-events-none absolute top-1 left-1 inline-flex items-center rounded bg-emerald-600/90 p-0.5 text-white shadow-sm"
+            title={t("file_list.culling.pick")}
+          >
+            <Check className="h-3 w-3" aria-hidden="true" />
+          </span>
+        )}
+        {cullingState?.flag === "reject" && (
+          <span
+            className="pointer-events-none absolute top-1 left-1 inline-flex items-center rounded bg-red-600/90 p-0.5 text-white shadow-sm"
+            title={t("file_list.culling.reject")}
+          >
+            <XCircle className="h-3 w-3" aria-hidden="true" />
+          </span>
+        )}
+        {cullingState && cullingState.rating > 0 && (
+          <span
+            className="pointer-events-none absolute bottom-1 left-1 inline-flex items-center gap-0.5 rounded bg-black/65 px-1 py-0.5 text-[9px] text-amber-400 backdrop-blur-sm"
+            title={`${cullingState.rating}★`}
+          >
+            {Array.from({ length: cullingState.rating }).map((_, idx) => (
+              <Star key={idx} className="h-2.5 w-2.5 fill-amber-400 text-amber-400" />
+            ))}
           </span>
         )}
         {photoAnalysis &&

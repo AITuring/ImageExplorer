@@ -39,11 +39,13 @@ interface ViewModeState {
   viewMode: ViewMode;
   iconSize: number;
   columnViewWidth: number;
+  cullAutoAdvance: boolean;
   listColumnWidths: ListColumnWidths;
   listColumnVisibility: ListColumnVisibility;
   setViewMode: (mode: ViewMode) => void;
   setIconSize: (size: number) => void;
   setColumnViewWidth: (width: number) => void;
+  toggleCullAutoAdvance: () => void;
   setListColumnWidth: (column: keyof ListColumnWidths, width: number) => void;
   toggleListColumn: (column: keyof ListColumnVisibility) => void;
 }
@@ -69,11 +71,13 @@ export const useViewMode = create<ViewModeState>()(
       viewMode: "list",
       iconSize: ICON_SIZE_DEFAULT,
       columnViewWidth: COLUMN_VIEW_WIDTH_DEFAULT,
+      cullAutoAdvance: false,
       listColumnWidths: DEFAULT_LIST_COLUMN_WIDTHS,
       listColumnVisibility: DEFAULT_LIST_COLUMN_VISIBILITY,
       setViewMode: (mode) => set({ viewMode: mode }),
       setIconSize: (size) => set({ iconSize: clampIconSize(size) }),
       setColumnViewWidth: (width) => set({ columnViewWidth: clampColumnViewWidth(width) }),
+      toggleCullAutoAdvance: () => set((state) => ({ cullAutoAdvance: !state.cullAutoAdvance })),
       setListColumnWidth: (column, width) =>
         set((state) => ({
           listColumnWidths: {
@@ -106,6 +110,10 @@ export const useViewMode = create<ViewModeState>()(
             typeof saved?.columnViewWidth === "number"
               ? clampColumnViewWidth(saved.columnViewWidth)
               : current.columnViewWidth,
+          cullAutoAdvance:
+            typeof saved?.cullAutoAdvance === "boolean"
+              ? saved.cullAutoAdvance
+              : current.cullAutoAdvance,
           listColumnWidths: {
             ...DEFAULT_LIST_COLUMN_WIDTHS,
             ...(saved?.listColumnWidths ?? {}),

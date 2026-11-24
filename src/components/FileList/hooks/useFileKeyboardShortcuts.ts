@@ -7,6 +7,8 @@ import { registerKeyboardCommands } from "@/lib/keyboardShortcuts";
 import { isCommandEnabled, registerAppCommands, runCommand } from "@/lib/commands";
 import { viewModeCommands } from "@/lib/viewModeCommands";
 import { FINDER_TAG_PRESETS } from "@/lib/finderTags";
+import { isAnalyzablePhoto } from "@/lib/photoAnalysis";
+import type { PhotoFlag } from "@/lib/photoCulling";
 import { findTypeAheadMatch } from "./finderListModel";
 
 const TYPE_AHEAD_RESET_MS = 750;
@@ -31,6 +33,9 @@ interface UseFileKeyboardShortcutsOptions {
   onToggleHiddenFiles?: () => void;
   onFocusFilterBar?: () => void;
   onToggleTag?: (entries: FileEntry[], tag: string) => void;
+  onSetFlag?: (entries: FileEntry[], flag: PhotoFlag) => void;
+  onSetRating?: (entries: FileEntry[], rating: number) => void;
+  cullAutoAdvance?: boolean;
   onScrollToIndex?: (index: number) => void;
   onColumnNavigateLeft?: () => boolean;
   onColumnNavigateRight?: () => Promise<boolean>;
@@ -377,7 +382,8 @@ export function useFileKeyboardShortcuts(
           scope: "file-view",
           priority: 2,
           matches: (event) =>
-            optionsRef.current.viewMode === "gallery" &&
+            (optionsRef.current.viewMode === "gallery" ||
+              Boolean(optionsRef.current.cullAutoAdvance)) &&
             !isModifierPressed(event) &&
             !event.altKey &&
             !event.shiftKey &&
@@ -396,6 +402,85 @@ export function useFileKeyboardShortcuts(
             const targets = current.entries.filter((entry) => selectedSet.has(entry.path));
             if (targets.length > 0) {
               current.onToggleTag?.(targets, preset.id);
+              if (current.cullAutoAdvance && current.selectedPath) {
+                const idx = current.sortedEntries.findIndex((e) => e.path === current.selectedPath);
+                if (idx >= 0 && idx + 1 < current.sortedEntries.length) {
+                  current.selectSingle(current.sortedEntries[idx + 1].path, idx + 1);
+                  current.onScrollToIndex?.(idx + 1);
+                }
+              }
+            }
+          },
+        },
+        {
+          id: "file.cull-flag",
+          scope: "file-view",
+          priority: 2,
+          matches: (event) => {
+            if (isModifierPressed(event) || event.altKey || event.shiftKey) return false;
+            const lower = event.key.toLowerCase();
+            if (lower !== "p" && lower !== "x" && lower !== "u") return false;
+            const current = optionsRef.current;
+            if (current.viewMode === "gallery" || current.cullAutoAdvance) return true;
+            // In list/icon views without auto-advance, only intercept P/X/U when
+            // not mid-type-ahead and the selection consists of photos.
+            const now = Date.now();
+            if (now - typeAheadRef.current.lastTime <= TYPE_AHEAD_RESET_MS) return false;
+            const selectedSet = new Set(current.selectedPaths);
+            const targets = current.entries.filter((entry) => selectedSet.has(entry.path));
+            return targets.length > 0 && targets.every(isAnalyzablePhoto);
+          },
+          enabled: () =>
+            Boolean(
+              optionsRef.current.onSetFlag &&
+              !optionsRef.current.editingPath &&
+              optionsRef.current.selectedPaths.length > 0
+            ),
+          run: (event) => {
+            const current = optionsRef.current;
+            const selectedSet = new Set(current.selectedPaths);
+            const targets = current.entries.filter((entry) => selectedSet.has(entry.path));
+            if (targets.length === 0) return;
+            const lower = event.key.toLowerCase();
+            const flag: PhotoFlag = lower === "p" ? "pick" : lower === "x" ? "reject" : "none";
+            current.onSetFlag?.(targets, flag);
+            if (current.cullAutoAdvance && current.selectedPath) {
+              const idx = current.sortedEntries.findIndex((e) => e.path === current.selectedPath);
+              if (idx >= 0 && idx + 1 < current.sortedEntries.length) {
+                current.selectSingle(current.sortedEntries[idx + 1].path, idx + 1);
+                current.onScrollToIndex?.(idx + 1);
+              }
+            }
+          },
+        },
+        {
+          id: "file.cull-rating",
+          scope: "file-view",
+          priority: 2,
+          matches: (event) =>
+            event.shiftKey &&
+            !isModifierPressed(event) &&
+            !event.altKey &&
+            /^Digit[0-5]$/.test(event.code),
+          enabled: () =>
+            Boolean(
+              optionsRef.current.onSetRating &&
+              !optionsRef.current.editingPath &&
+              optionsRef.current.selectedPaths.length > 0
+            ),
+          run: (event) => {
+            const current = optionsRef.current;
+            const selectedSet = new Set(current.selectedPaths);
+            const targets = current.entries.filter((entry) => selectedSet.has(entry.path));
+            if (targets.length === 0) return;
+            const rating = Number(event.code.slice(5));
+            current.onSetRating?.(targets, rating);
+            if (current.cullAutoAdvance && current.selectedPath) {
+              const idx = current.sortedEntries.findIndex((e) => e.path === current.selectedPath);
+              if (idx >= 0 && idx + 1 < current.sortedEntries.length) {
+                current.selectSingle(current.sortedEntries[idx + 1].path, idx + 1);
+                current.onScrollToIndex?.(idx + 1);
+              }
             }
           },
         },
