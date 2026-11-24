@@ -1,4 +1,4 @@
-import { CircleCheck, Scan } from "lucide-react";
+import { Scan } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { PhotoAnalysisProgress } from "@/lib/photoAnalysis";
 
@@ -8,23 +8,8 @@ interface PhotoAnalysisProgressIndicatorProps {
 
 export function PhotoAnalysisProgressIndicator({ progress }: PhotoAnalysisProgressIndicatorProps) {
   const { t } = useTranslation();
-  if (progress.total <= 0) return null;
-
-  if (!progress.isAnalyzing) {
-    const doneLabel = t("common.photo_analysis_progress_done", { total: progress.total });
-    return (
-      <div
-        className="text-muted-foreground border-border/40 flex shrink-0 items-center gap-1.5 border-b px-3 py-1 text-xs"
-        role="status"
-        aria-live="polite"
-        aria-label={doneLabel}
-        title={doneLabel}
-      >
-        <CircleCheck className="h-4 w-4 shrink-0 text-emerald-500" aria-hidden="true" />
-        <span className="truncate">{doneLabel}</span>
-      </div>
-    );
-  }
+  // 整理完成后自动收起顶部状态条，把垂直空间完全留给文件浏览区域。
+  if (progress.total <= 0 || !progress.isAnalyzing) return null;
 
   const stageFraction =
     progress.stageTotal > 0 ? Math.min(1, progress.stageCompleted / progress.stageTotal) : 1;

@@ -32,12 +32,12 @@ interface CachedSourceImage {
 }
 
 const FULL_IMAGE_SELECTION: NormalizedRect = { x: 0, y: 0, width: 1, height: 1 };
-const SHARPNESS_ANALYSIS_VERSION = 7;
+const SHARPNESS_ANALYSIS_VERSION = 8;
 const MAX_CACHED_FULL_IMAGE_RESULTS = 5;
 const MIN_REUSABLE_PREVIEW_EDGE = 1024;
 const MAX_INTERACTIVE_SOURCE_REQUEST_SIZE = 2048;
-const INTERACTIVE_FULL_ANALYSIS_EDGE = 1280;
-const INTERACTIVE_REGION_ANALYSIS_EDGE = 1024;
+const INTERACTIVE_FULL_ANALYSIS_EDGE = 1600;
+const INTERACTIVE_REGION_ANALYSIS_EDGE = 1280;
 const fullImageResultCache = new Map<string, SharpnessMaskResult>();
 
 function getFullImageResultCacheKey(entry: FileEntry) {

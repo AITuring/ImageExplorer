@@ -17,8 +17,8 @@ import type { FileEntry } from "@/types";
 export type VisibleSharpness = "sharp" | "soft" | "unavailable";
 
 const IMAGE_TYPES = new Set(IMAGE_EXTENSIONS.filter((type) => type !== "svg" && type !== "psd"));
-const SOURCE_SIZE = 1024;
-const SHARPNESS_CACHE_VERSION = 2;
+const SOURCE_SIZE = 1600;
+const SHARPNESS_CACHE_VERSION = 3;
 const SHARPNESS_CONCURRENCY = 3;
 const PUBLISH_INTERVAL_MS = 160;
 const PUBLISH_BATCH_SIZE = 12;
@@ -154,7 +154,11 @@ async function measure(
     return "unavailable";
   }
   if (signal.aborted) return "unavailable";
-  const region = extractSharpnessRegionPixels(image, { x: 0, y: 0, width: 1, height: 1 }, 1024);
+  const region = extractSharpnessRegionPixels(
+    image,
+    { x: 0, y: 0, width: 1, height: 1 },
+    SOURCE_SIZE
+  );
   const isSharp = await computeSharpnessVerdictOffThread(
     region.pixels,
     region.width,

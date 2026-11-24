@@ -26,7 +26,12 @@ export const FULL_IMAGE_SHARPNESS_SOURCE_SIZE = 2048;
 const MIN_SOURCE_REQUEST_SIZE = 2048;
 const MAX_SOURCE_REQUEST_SIZE = 6144;
 const SOURCE_SIZE_STEPS = [2048, 3072, 4096, 6144];
-const MIN_ABSOLUTE_SHARPNESS = 12;
+const MIN_ABSOLUTE_SHARPNESS = 14;
+const MIN_EDGE_ACUTANCE = 0.48;
+const MIN_EDGE_LAPLACIAN = 8;
+const MIN_EDGE_LAPLACIAN_RATIO = 0.21;
+const MIN_TILE_RAW_LAPLACIAN_RATIO = 0.68;
+const MIN_TILE_EDGE_LAPLACIAN_RATIO = 0.22;
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(maximum, Math.max(minimum, value));
@@ -156,6 +161,8 @@ export function computeSharpnessMask(
   const tileRows = Math.ceil(height / FOCUS_TILE_EDGE);
   const tileLaplacian = new Float64Array(tileColumns * tileRows);
   const tileGradient = new Float64Array(tileColumns * tileRows);
+  const tileEdgeLaplacian = new Float64Array(tileColumns * tileRows);
+  const tileEdgeContrast = new Float64Array(tileColumns * tileRows);
   const histogram = new Uint32Array(1024);
   let validPixels = 0;
   let scoreSum = 0;
@@ -207,21 +214,28 @@ export function computeSharpnessMask(
         filtered[bottomRight];
       const gradient = Math.sqrt(horizontal * horizontal + vertical * vertical) / 8;
       // A soft, high-contrast silhouette can have a large gradient while its
-      // transition spans several pixels. Compare the central slope with the
-      // contrast across the same edge at a wider scale.
+      // transition spans several pixels. Compare both central slope and 2nd-
+      // derivative Laplacian against the broader ±3px contrast across the edge.
       const stepX = Math.abs(horizontal) >= Math.abs(vertical) ? 1 : 0;
       const stepY = stepX ? 0 : 1;
       const offset = stepY * width + stepX;
       const broadContrast = Math.abs(filtered[index + offset * 3] - filtered[index - offset * 3]);
-      const acutance = (gradient * 2) / Math.max(broadContrast, 1);
+      const denom = Math.max(broadContrast, 1);
+      const acutance = (gradient * 2) / denom;
       const laplacian = Math.abs(
         filtered[index] * 4 - filtered[left] - filtered[right] - filtered[top] - filtered[bottom]
       );
-      const score = acutance >= 0.38 ? laplacian * 0.68 + gradient * 0.32 : 0;
+      const laplacianRatio = laplacian / denom;
+      const score =
+        acutance >= MIN_EDGE_ACUTANCE &&
+        laplacian >= MIN_EDGE_LAPLACIAN &&
+        laplacianRatio >= MIN_EDGE_LAPLACIAN_RATIO
+          ? laplacian * 0.8 + gradient * 0.2
+          : 0;
 
       // Compare fine detail with the broader edge energy in each local area.
-      // A blurred silhouette may still have high contrast at a few pixels,
-      // but its surrounding surface has less fine detail than a focused one.
+      // Tracking filtered Laplacian vs ±3px broad contrast on real edges keeps
+      // out-of-focus high-ISO grain and soft silhouettes from passing as sharp.
       const rawLaplacian = Math.abs(
         luma[index] * 4 - luma[left] - luma[right] - luma[top] - luma[bottom]
       );
@@ -229,6 +243,10 @@ export function computeSharpnessMask(
       const tile = tileRow + (x >> FOCUS_TILE_SHIFT);
       tileLaplacian[tile] += rawLaplacian;
       tileGradient[tile] += rawGradient;
+      if (gradient >= 6 && broadContrast >= 12) {
+        tileEdgeLaplacian[tile] += laplacian;
+        tileEdgeContrast[tile] += broadContrast;
+      }
 
       scores[index] = score;
       maximumScore = Math.max(maximumScore, score);
@@ -251,11 +269,16 @@ export function computeSharpnessMask(
   const supportThreshold = Math.max(MIN_ABSOLUTE_SHARPNESS * 0.55, threshold * 0.55);
   const rgba = verdictOnly ? new Uint8ClampedArray(0) : new Uint8ClampedArray(pixelCount * 4);
   const intensityRange = Math.max(8, percentile98 - threshold, maximumScore - threshold);
-  const minimumUsefulPixels = Math.max(6, Math.floor(validPixels * 0.00005));
+  const minimumUsefulPixels = Math.max(12, Math.floor(validPixels * 0.00018));
   const tileFocus = new Uint8Array(tileLaplacian.length);
   for (let tile = 0; tile < tileFocus.length; tile += 1) {
-    tileFocus[tile] =
-      tileGradient[tile] > 0 && tileLaplacian[tile] / tileGradient[tile] >= 0.66 ? 1 : 0;
+    const rawDetailOk =
+      tileGradient[tile] > 0 &&
+      tileLaplacian[tile] / tileGradient[tile] >= MIN_TILE_RAW_LAPLACIAN_RATIO;
+    const edgeCrispnessOk =
+      tileEdgeContrast[tile] > 0 &&
+      tileEdgeLaplacian[tile] / tileEdgeContrast[tile] >= MIN_TILE_EDGE_LAPLACIAN_RATIO;
+    tileFocus[tile] = rawDetailOk && edgeCrispnessOk ? 1 : 0;
   }
   let highlightedPixels = 0;
 
