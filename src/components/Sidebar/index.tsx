@@ -99,7 +99,7 @@ function SidebarLocationRow({
   return (
     <AppContextMenu type="sidebar-item" sidebarItemActions={sidebarItemActions} asChild>
       <div
-        className={`finder-sidebar-row group flex min-w-0 items-center rounded-md transition-colors ${
+        className={`finder-sidebar-row group flex min-w-0 items-center ${
           isDropTarget ? SIDEBAR_DROP_HIGHLIGHT_CLASS : ""
         }`}
         data-active={active}
@@ -108,22 +108,25 @@ function SidebarLocationRow({
         onDrop={(e) => dropProps.onDropOnTarget(e, path)}
       >
         <button
-          className="flex min-h-8 min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm"
+          className="flex min-h-[29px] min-w-0 flex-1 items-center gap-2.5 px-2.5 py-1 text-left text-[13px]"
           aria-current={active ? "page" : undefined}
           onClick={() => onNavigate(path)}
           title={path}
         >
-          <Icon className="text-muted-foreground h-4 w-4 shrink-0" aria-hidden="true" />
+          <Icon
+            className="finder-sidebar-icon h-[15px] w-[15px] shrink-0 opacity-90"
+            aria-hidden="true"
+          />
           <span className="truncate">{label}</span>
         </button>
         {onRemove && (
           <button
-            className="text-muted-foreground hover:text-foreground mr-1 rounded p-1 opacity-0 group-hover:opacity-100 focus:opacity-100"
+            className="text-muted-foreground hover:text-foreground mr-1.5 rounded-full p-1 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
             onClick={onRemove}
             aria-label={t("sidebar.remove_item", { name: label })}
             title={t("sidebar.remove_item", { name: label })}
           >
-            <X className="h-3.5 w-3.5" aria-hidden="true" />
+            <X className="h-3 w-3" aria-hidden="true" />
           </button>
         )}
       </div>
@@ -291,7 +294,7 @@ function FolderTreeItem({
     <div>
       <AppContextMenu type="sidebar-item" sidebarItemActions={sidebarItemActions}>
         <button
-          className={`finder-sidebar-row flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors ${
+          className={`finder-sidebar-row flex w-full items-center gap-2 px-2.5 py-1 text-[13px] ${
             isDropTarget ? SIDEBAR_DROP_HIGHLIGHT_CLASS : ""
           }`}
           aria-current={currentPath === item.path ? "page" : undefined}
@@ -649,12 +652,12 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
       style={{ width: `${sidebarWidth}px` }}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <div className="finder-sidebar-scroll flex h-full min-h-0 min-w-0 flex-col overflow-x-hidden overflow-y-auto">
+      <div className="finder-sidebar-header" data-tauri-drag-region />
+
+      <div className="finder-sidebar-scroll flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-x-hidden overflow-y-auto">
         {/* 快速访问 */}
-        <div className="border-border/50 border-b p-3">
-          <h3 className="text-muted-foreground mb-2 px-2 text-xs font-medium">
-            {t("sidebar.quick_access")}
-          </h3>
+        <section>
+          <h3 className="finder-sidebar-section-title">{t("sidebar.quick_access")}</h3>
           <div className="space-y-0.5">
             {quickAccess
               .filter((item) => !hiddenSidebarPaths.includes(item.path))
@@ -673,7 +676,7 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
                     sidebarItemActions={sidebarItemActions}
                   >
                     <button
-                      className={`finder-sidebar-row flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors ${
+                      className={`finder-sidebar-row flex w-full items-center gap-2.5 px-2.5 py-1 text-[13px] ${
                         dropTargetPath === item.path ? SIDEBAR_DROP_HIGHLIGHT_CLASS : ""
                       }`}
                       aria-current={currentPath === item.path ? "page" : undefined}
@@ -684,80 +687,65 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
                       onDrop={(e) => handleDropOnTarget(e, item.path)}
                     >
                       <item.icon
-                        className="finder-sidebar-icon h-4 w-4 shrink-0"
+                        className="finder-sidebar-icon h-[15px] w-[15px] shrink-0"
                         aria-hidden="true"
                       />
-                      <span>{item.name}</span>
+                      <span className="truncate">{item.name}</span>
                     </button>
                   </AppContextMenu>
                 );
               })}
           </div>
-        </div>
+        </section>
 
-        {(visibleFavorites.length > 0 || visibleRecentLocations.length > 0) && (
-          <div className="border-border/50 border-b p-3">
-            {visibleFavorites.length > 0 && (
-              <section aria-labelledby="sidebar-favorites-heading">
-                <h3
-                  id="sidebar-favorites-heading"
-                  className="text-muted-foreground mb-2 px-2 text-xs font-medium"
-                >
-                  {t("sidebar.favorites")}
-                </h3>
-                <div className="space-y-0.5">
-                  {visibleFavorites.map((path) => (
-                    <SidebarLocationRow
-                      key={`favorite:${path}`}
-                      path={path}
-                      active={currentPath === path}
-                      icon={Star}
-                      onNavigate={onNavigate}
-                      isFavorite
-                      onToggleFavorite={() => void toggleFavorite(path)}
-                      onRemove={() => void toggleFavorite(path)}
-                      dropProps={folderDropProps}
-                    />
-                  ))}
-                </div>
-              </section>
-            )}
+        {visibleFavorites.length > 0 && (
+          <section aria-labelledby="sidebar-favorites-heading">
+            <h3 id="sidebar-favorites-heading" className="finder-sidebar-section-title">
+              {t("sidebar.favorites")}
+            </h3>
+            <div className="space-y-0.5">
+              {visibleFavorites.map((path) => (
+                <SidebarLocationRow
+                  key={`favorite:${path}`}
+                  path={path}
+                  active={currentPath === path}
+                  icon={Star}
+                  onNavigate={onNavigate}
+                  isFavorite
+                  onToggleFavorite={() => void toggleFavorite(path)}
+                  onRemove={() => void toggleFavorite(path)}
+                  dropProps={folderDropProps}
+                />
+              ))}
+            </div>
+          </section>
+        )}
 
-            {visibleRecentLocations.length > 0 && (
-              <section
-                aria-labelledby="sidebar-recent-heading"
-                className={visibleFavorites.length > 0 ? "mt-4 border-t pt-3" : ""}
-              >
-                <h3
-                  id="sidebar-recent-heading"
-                  className="text-muted-foreground mb-2 px-2 text-xs font-medium"
-                >
-                  {t("sidebar.recent")}
-                </h3>
-                <div className="space-y-0.5">
-                  {visibleRecentLocations.map((path) => (
-                    <SidebarLocationRow
-                      key={`recent:${path}`}
-                      path={path}
-                      active={currentPath === path}
-                      icon={Clock3}
-                      onNavigate={onNavigate}
-                      onRemoveRecent={() => void removeRecentLocation(path)}
-                      onRemove={() => void removeRecentLocation(path)}
-                      dropProps={folderDropProps}
-                    />
-                  ))}
-                </div>
-              </section>
-            )}
-          </div>
+        {visibleRecentLocations.length > 0 && (
+          <section aria-labelledby="sidebar-recent-heading">
+            <h3 id="sidebar-recent-heading" className="finder-sidebar-section-title">
+              {t("sidebar.recent")}
+            </h3>
+            <div className="space-y-0.5">
+              {visibleRecentLocations.map((path) => (
+                <SidebarLocationRow
+                  key={`recent:${path}`}
+                  path={path}
+                  active={currentPath === path}
+                  icon={Clock3}
+                  onNavigate={onNavigate}
+                  onRemoveRecent={() => void removeRecentLocation(path)}
+                  onRemove={() => void removeRecentLocation(path)}
+                  dropProps={folderDropProps}
+                />
+              ))}
+            </div>
+          </section>
         )}
 
         {/* 文件夹树 */}
-        <div className="p-3">
-          <h3 className="text-muted-foreground mb-2 px-2 text-xs font-medium">
-            {t("sidebar.folders")}
-          </h3>
+        <section>
+          <h3 className="finder-sidebar-section-title">{t("sidebar.folders")}</h3>
           <div className="w-max min-w-full space-y-0.5">
             {folderTree
               .filter((item) => !hiddenSidebarPaths.includes(item.path))
@@ -773,136 +761,134 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
                   dropProps={folderDropProps}
                 />
               ))}
+          </div>
+        </section>
 
-            {mountedVolumes.length > 0 && (
-              <div className="border-border/50 mt-4 border-t pt-3">
-                <h3 className="text-muted-foreground mb-2 px-2 text-xs font-medium">
-                  {t("sidebar.locations")}
-                </h3>
-                <div className="space-y-0.5">
-                  {mountedVolumes
-                    .filter((volume) => !hiddenSidebarPaths.includes(volume.path))
-                    .map((volume) => {
-                      const isEjecting = ejectingVolumePath === volume.path;
-                      const sidebarItemActions: SidebarItemActions = {
-                        onOpen: () => onNavigate(volume.path),
-                        onOpenInTerminal: () => invoke("open_in_terminal", { path: volume.path }),
-                        path: volume.path,
-                        name: volume.name,
-                        onEject: () => void handleEjectVolume(volume),
-                        onRemoveFromSidebar: () => void hideSidebarPath(volume.path),
-                      };
+        {mountedVolumes.length > 0 && (
+          <section>
+            <h3 className="finder-sidebar-section-title">{t("sidebar.locations")}</h3>
+            <div className="space-y-0.5">
+              {mountedVolumes
+                .filter((volume) => !hiddenSidebarPaths.includes(volume.path))
+                .map((volume) => {
+                  const isEjecting = ejectingVolumePath === volume.path;
+                  const sidebarItemActions: SidebarItemActions = {
+                    onOpen: () => onNavigate(volume.path),
+                    onOpenInTerminal: () => invoke("open_in_terminal", { path: volume.path }),
+                    path: volume.path,
+                    name: volume.name,
+                    onEject: () => void handleEjectVolume(volume),
+                    onRemoveFromSidebar: () => void hideSidebarPath(volume.path),
+                  };
 
-                      return (
-                        <AppContextMenu
-                          key={volume.path}
-                          type="sidebar-item"
-                          sidebarItemActions={sidebarItemActions}
-                        >
-                          <div
-                            className={`group flex items-center gap-0.5 rounded-md transition-colors ${
-                              dropTargetPath === volume.path ? SIDEBAR_DROP_HIGHLIGHT_CLASS : ""
-                            }`}
-                            onDragOver={(e) => handleDragOverTarget(e, volume.path)}
-                            onDragLeave={(e) => handleDragLeaveTarget(e, volume.path)}
-                            onDrop={(e) => handleDropOnTarget(e, volume.path)}
-                          >
-                            <button
-                              className="finder-sidebar-row flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
-                              aria-current={currentPath === volume.path ? "page" : undefined}
-                              data-active={currentPath === volume.path}
-                              onClick={() => onNavigate(volume.path)}
-                              title={volume.path}
-                            >
-                              <SmartIcon
-                                icon={HardDrive}
-                                className="text-muted-foreground h-4 w-4 shrink-0"
-                                sysIcon={{ type: "path", value: volume.path }}
-                              />
-                              <span className="truncate">{volume.name}</span>
-                            </button>
-                            <button
-                              type="button"
-                              disabled={isEjecting}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                void handleEjectVolume(volume);
-                              }}
-                              title={t("sidebar.eject_volume", { name: volume.name })}
-                              aria-label={t("sidebar.eject_volume", { name: volume.name })}
-                              className="text-muted-foreground hover:bg-accent hover:text-foreground shrink-0 rounded p-1 opacity-60 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 disabled:opacity-40"
-                            >
-                              {isEjecting ? (
-                                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                              ) : (
-                                <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
-                              )}
-                            </button>
-                          </div>
-                        </AppContextMenu>
-                      );
-                    })}
-                </div>
-              </div>
-            )}
-
-            {/* Finder 颜色标签 */}
-            <div className="border-border/50 mt-4 border-t pt-3">
-              <h3 className="text-muted-foreground mb-2 px-2 text-xs font-medium">
-                {t("tags.section")}
-              </h3>
-              <div className="space-y-0.5">
-                {FINDER_TAG_PRESETS.map((preset) => {
-                  const tagPath = `${SMART_FOLDER_PREFIX}tag:${preset.id}`;
-                  const label = t(preset.labelKey);
                   return (
-                    <button
-                      key={preset.id}
-                      type="button"
-                      className="finder-sidebar-row flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-sm transition-colors"
-                      aria-current={currentPath === tagPath ? "page" : undefined}
-                      data-active={currentPath === tagPath}
-                      onClick={() => onNavigate(tagPath)}
-                      title={label}
+                    <AppContextMenu
+                      key={volume.path}
+                      type="sidebar-item"
+                      sidebarItemActions={sidebarItemActions}
                     >
-                      <span
-                        className="h-2.5 w-2.5 shrink-0 rounded-full ring-1 ring-black/15 dark:ring-white/20"
-                        style={{ backgroundColor: preset.color }}
-                        aria-hidden="true"
-                      />
-                      <span className="truncate">{label}</span>
-                    </button>
+                      <div
+                        className={`finder-sidebar-row group flex items-center gap-0.5 ${
+                          dropTargetPath === volume.path ? SIDEBAR_DROP_HIGHLIGHT_CLASS : ""
+                        }`}
+                        data-active={currentPath === volume.path}
+                        onDragOver={(e) => handleDragOverTarget(e, volume.path)}
+                        onDragLeave={(e) => handleDragLeaveTarget(e, volume.path)}
+                        onDrop={(e) => handleDropOnTarget(e, volume.path)}
+                      >
+                        <button
+                          className="flex min-h-[29px] min-w-0 flex-1 items-center gap-2.5 px-2.5 py-1 text-left text-[13px]"
+                          aria-current={currentPath === volume.path ? "page" : undefined}
+                          onClick={() => onNavigate(volume.path)}
+                          title={volume.path}
+                        >
+                          <SmartIcon
+                            icon={HardDrive}
+                            className="text-muted-foreground h-[15px] w-[15px] shrink-0"
+                            sysIcon={{ type: "path", value: volume.path }}
+                          />
+                          <span className="truncate">{volume.name}</span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isEjecting}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void handleEjectVolume(volume);
+                          }}
+                          title={t("sidebar.eject_volume", { name: volume.name })}
+                          aria-label={t("sidebar.eject_volume", { name: volume.name })}
+                          className="text-muted-foreground hover:text-foreground mr-1.5 shrink-0 rounded-full p-1 opacity-55 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 disabled:opacity-40"
+                        >
+                          {isEjecting ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                          ) : (
+                            <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
+                          )}
+                        </button>
+                      </div>
+                    </AppContextMenu>
                   );
                 })}
-              </div>
             </div>
+          </section>
+        )}
+
+        {/* Finder 颜色标签 */}
+        <section>
+          <h3 className="finder-sidebar-section-title">{t("tags.section")}</h3>
+          <div className="space-y-0.5">
+            {FINDER_TAG_PRESETS.map((preset) => {
+              const tagPath = `${SMART_FOLDER_PREFIX}tag:${preset.id}`;
+              const label = t(preset.labelKey);
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  className="finder-sidebar-row flex w-full items-center gap-2.5 px-2.5 py-1 text-[13px]"
+                  aria-current={currentPath === tagPath ? "page" : undefined}
+                  data-active={currentPath === tagPath}
+                  onClick={() => onNavigate(tagPath)}
+                  title={label}
+                >
+                  <span
+                    className="h-2.5 w-2.5 shrink-0 rounded-full shadow-xs ring-1 ring-black/15 dark:ring-white/25"
+                    style={{ backgroundColor: preset.color }}
+                    aria-hidden="true"
+                  />
+                  <span className="truncate">{label}</span>
+                </button>
+              );
+            })}
           </div>
-        </div>
+        </section>
 
         {hiddenSidebarPaths.length > 0 && (
-          <div className="border-border/50 border-t p-3">
+          <section>
             <button
-              className="text-muted-foreground hover:bg-accent hover:text-foreground flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs"
+              className="finder-sidebar-row text-muted-foreground hover:text-foreground flex w-full items-center gap-2 px-2.5 py-1 text-left text-xs"
               onClick={() => void restoreSidebarPaths()}
             >
               <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
               {t("sidebar.restore_items")}
             </button>
-          </div>
+          </section>
         )}
+      </div>
 
-        {/* 设置按钮 */}
-        <div className="border-border/50 mt-auto border-t p-3">
+      {/* 底部液态玻璃功能坞：废纸篓 & 设置 */}
+      <div className="finder-sidebar-footer shrink-0">
+        <div className="grid grid-cols-2 gap-1.5">
           <button
-            className="hover:bg-accent flex min-h-8 w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
+            className="finder-sidebar-footer-btn text-muted-foreground hover:text-foreground flex h-8 items-center justify-center gap-1.5 px-2 text-xs font-medium"
             onClick={() => setTrashOpen(true)}
             aria-label={t("trash.title")}
           >
-            <Trash2 className="text-muted-foreground h-4 w-4" aria-hidden="true" />
-            <span>{t("trash.title")}</span>
+            <Trash2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span className="truncate">{t("trash.title")}</span>
           </button>
           <button
-            className="hover:bg-accent mt-0.5 flex min-h-8 w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors"
+            className="finder-sidebar-footer-btn text-muted-foreground hover:text-foreground flex h-8 items-center justify-center gap-1.5 px-2 text-xs font-medium"
             onClick={(e) => {
               e.stopPropagation();
               setIsSettingsOpen(true);
@@ -910,10 +896,10 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
           >
             <SmartIcon
               icon={Settings}
-              className="text-muted-foreground h-4 w-4"
+              className="h-3.5 w-3.5 shrink-0"
               sysIcon={{ type: "path" as const, value: "/System/Applications/System Settings.app" }}
             />
-            <span>{t("settings.title")}</span>
+            <span className="truncate">{t("settings.title")}</span>
           </button>
         </div>
       </div>
@@ -929,19 +915,19 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
         aria-valuemax={SIDEBAR_MAX_WIDTH}
         aria-valuenow={Math.round(isSidebarCollapsed ? 0 : sidebarWidth)}
         title={t(isSidebarCollapsed ? "sidebar.show" : "sidebar.resize")}
-        className={`group absolute inset-y-0 -right-1.5 z-50 flex w-3 cursor-col-resize items-center justify-center outline-none ${
+        className={`group absolute inset-y-3 -right-1.5 z-50 flex w-3 cursor-col-resize items-center justify-center outline-none ${
           isSidebarCollapsed ? "pointer-events-auto" : ""
         }`}
         onPointerDown={handleResizeStart}
         onKeyDown={handleResizeKeyDown}
       >
         <div
-          className={`h-full w-px transition-colors ${
+          className={`h-full w-px rounded-full transition-colors ${
             isResizing
               ? "bg-primary/70"
               : isSidebarCollapsed
                 ? "bg-primary/50 group-hover:bg-primary group-focus-visible:bg-primary w-0.5"
-                : "bg-border/40 group-hover:bg-primary/50 group-focus-visible:bg-primary/70"
+                : "group-hover:bg-primary/50 group-focus-visible:bg-primary/70 bg-transparent"
           }`}
         />
         {isSidebarCollapsed && (

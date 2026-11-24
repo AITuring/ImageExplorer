@@ -84,118 +84,257 @@ button:focus-visible,
   outline-offset: 2px;
 }
 .finder-window {
-  background: rgb(var(--finder-chrome) / 78%);
-  box-shadow: inset 0 1px rgb(var(--finder-highlight) / 44%);
+  background: rgb(243 245 250 / 88%);
+  color: hsl(var(--foreground));
+  box-shadow: inset 0 1px rgb(var(--finder-highlight) / 50%);
+}
+.dark .finder-window {
+  background: rgb(20 21 25 / 92%);
+  color: hsl(var(--foreground));
+  box-shadow: inset 0 1px rgb(255 255 255 / 8%);
 }
 .finder-traffic-region {
   position: absolute;
-  top: 2px;
-  left: 0;
+  top: 10px;
+  left: 10px;
   width: 84px;
-  height: 36px;
+  height: 38px;
   z-index: 60;
 }
 .finder-workspace {
   container-type: inline-size;
 }
 .finder-content {
-  background: hsl(var(--background));
+  background: transparent;
 }
 .finder-sidebar {
-  padding-top: 48px;
-  background:
-    linear-gradient(132deg, rgb(var(--finder-highlight) / 32%), transparent 48%),
-    rgb(var(--finder-sidebar) / 72%);
-  border-right: 1px solid rgb(var(--finder-shadow) / 10%);
-  box-shadow: inset -1px 0 rgb(var(--finder-highlight) / 8%);
-  -webkit-backdrop-filter: blur(36px) saturate(1.55);
-  backdrop-filter: blur(36px) saturate(1.55);
+  position: relative;
+  margin: 10px 4px 10px 10px;
+  height: calc(100% - 20px);
+  border-radius: 18px;
+  overflow: hidden;
+  background: linear-gradient(
+    180deg,
+    rgb(255 255 255 / 82%) 0%,
+    rgb(246 248 252 / 72%) 55%,
+    rgb(241 244 250 / 78%) 100%
+  );
+  border: 1px solid rgb(15 23 42 / 7.5%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 98%),
+    inset 0 0 0 0.5px rgb(255 255 255 / 80%),
+    inset 0 -1px 0 rgb(15 23 42 / 5%),
+    0 12px 32px rgb(15 23 42 / 10%),
+    0 2px 6px rgb(15 23 42 / 5%);
+  -webkit-backdrop-filter: blur(44px) saturate(1.9);
+  backdrop-filter: blur(44px) saturate(1.9);
+}
+.dark .finder-sidebar {
+  background: linear-gradient(
+    180deg,
+    rgb(58 60 68 / 50%) 0%,
+    rgb(36 37 43 / 58%) 34%,
+    rgb(28 29 35 / 66%) 100%
+  );
+  border: 1px solid rgb(255 255 255 / 13%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 24%),
+    inset 0 0 0 0.5px rgb(255 255 255 / 6%),
+    inset 0 -1px 0 rgb(0 0 0 / 28%),
+    0 16px 40px rgb(0 0 0 / 46%),
+    0 2px 10px rgb(0 0 0 / 26%);
+  -webkit-backdrop-filter: blur(48px) saturate(1.95) brightness(1.06);
+  backdrop-filter: blur(48px) saturate(1.95) brightness(1.06);
+}
+/* Signature Liquid Glass top specular light refraction rim */
+.finder-sidebar::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 14px;
+  right: 14px;
+  height: 1px;
+  pointer-events: none;
+  z-index: 20;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgb(255 255 255 / 95%) 25%,
+    rgb(255 255 255 / 100%) 50%,
+    rgb(255 255 255 / 95%) 75%,
+    transparent
+  );
+}
+.dark .finder-sidebar::before {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgb(255 255 255 / 32%) 22%,
+    rgb(255 255 255 / 46%) 50%,
+    rgb(255 255 255 / 32%) 78%,
+    transparent
+  );
+}
+.finder-sidebar-header {
+  height: 40px;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 10;
 }
 .finder-sidebar-scroll {
-  padding: 2px 8px 0;
+  padding: 4px 10px 12px;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    black 10px,
+    black calc(100% - 12px),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    black 10px,
+    black calc(100% - 12px),
+    transparent 100%
+  );
 }
-.finder-sidebar-scroll > .p-3 {
-  padding: 9px 2px;
-  border-bottom: 0;
+.finder-sidebar-scroll::-webkit-scrollbar {
+  display: none;
 }
-.finder-sidebar-scroll > .mt-auto {
-  border-top: 1px solid hsl(var(--border) / 45%);
-}
-.finder-sidebar-scroll section.mt-4 {
-  border-top: 0;
-  padding-top: 2px;
-}
-.finder-sidebar h3 {
+.finder-sidebar-section-title {
   font-size: 11px;
   font-weight: 600;
-  margin-bottom: 5px;
-  padding-left: 10px;
+  letter-spacing: 0.02em;
+  color: rgb(15 23 42 / 46%);
+  margin-bottom: 4px;
+  padding: 0 10px;
+}
+.dark .finder-sidebar-section-title {
+  color: rgb(255 255 255 / 42%);
 }
 .finder-sidebar button {
   font-size: 13px;
 }
 .finder-sidebar-row {
-  min-height: 30px;
-  border-radius: 7px;
+  min-height: 29px;
+  border-radius: 9999px;
   text-align: left;
+  transition:
+    background-color 140ms ease,
+    box-shadow 140ms ease,
+    color 140ms ease,
+    transform 100ms ease;
 }
 .finder-sidebar-row:hover {
-  background: rgb(var(--finder-highlight) / 26%);
+  background: rgb(15 23 42 / 5%);
+}
+.dark .finder-sidebar-row:hover {
+  background: rgb(255 255 255 / 7.5%);
+}
+.finder-sidebar-row:active {
+  transform: scale(0.985);
 }
 .finder-sidebar-row[data-active="true"] {
-  background:
-    linear-gradient(rgb(var(--finder-highlight) / 15%), transparent),
-    var(--finder-sidebar-selection);
-  font-weight: 600;
-  box-shadow: inset 0 1px rgb(var(--finder-highlight) / 22%);
+  background: rgb(255 255 255 / 86%);
+  color: hsl(var(--foreground));
+  font-weight: 500;
+  box-shadow:
+    inset 0 0.5px 0 rgb(255 255 255 / 100%),
+    0 1px 4px rgb(15 23 42 / 9%),
+    0 0 0 0.5px rgb(15 23 42 / 6%);
+}
+.dark .finder-sidebar-row[data-active="true"] {
+  background: linear-gradient(180deg, rgb(255 255 255 / 16%) 0%, rgb(255 255 255 / 11%) 100%);
+  color: #ffffff;
+  font-weight: 500;
+  box-shadow:
+    inset 0 0.5px 0 rgb(255 255 255 / 28%),
+    0 2px 8px rgb(0 0 0 / 24%),
+    0 0 0 0.5px rgb(255 255 255 / 10%);
 }
 .finder-sidebar-row > button {
   font-size: 13px;
 }
 .finder-sidebar-icon {
   color: hsl(var(--primary));
-  stroke-width: 1.7;
+  stroke-width: 1.75;
+}
+.finder-sidebar-footer {
+  padding: 8px 10px 10px;
+  border-top: 1px solid rgb(15 23 42 / 6%);
+  background: linear-gradient(180deg, transparent, rgb(255 255 255 / 24%));
+}
+.dark .finder-sidebar-footer {
+  border-top: 1px solid rgb(255 255 255 / 8%);
+  background: linear-gradient(180deg, transparent, rgb(0 0 0 / 14%));
+}
+.finder-sidebar-footer-btn {
+  border-radius: 10px;
+  background: rgb(15 23 42 / 4%);
+  box-shadow: inset 0 0.5px 0 rgb(255 255 255 / 60%);
+  transition:
+    background-color 140ms ease,
+    transform 100ms ease;
+}
+.finder-sidebar-footer-btn:hover {
+  background: rgb(15 23 42 / 8%);
+}
+.dark .finder-sidebar-footer-btn {
+  background: rgb(255 255 255 / 6%);
+  box-shadow: inset 0 0.5px 0 rgb(255 255 255 / 12%);
+}
+.dark .finder-sidebar-footer-btn:hover {
+  background: rgb(255 255 255 / 11%);
+}
+.finder-sidebar-footer-btn:active {
+  transform: scale(0.975);
 }
 .finder-sidebar[data-collapsed="true"] {
+  margin: 0;
+  height: 100%;
+  border-radius: 0;
   border: 0;
+  overflow: visible;
   box-shadow: none;
+  background: transparent;
+}
+.finder-sidebar[data-collapsed="true"]::before {
+  display: none;
 }
 .finder-window:has(.finder-sidebar[data-collapsed="true"]) .finder-toolbar {
   padding-left: 88px;
 }
 .finder-toolbar {
-  height: 52px;
+  height: 54px;
   gap: 12px;
-  padding: 0 16px 0 12px;
-  background:
-    linear-gradient(rgb(var(--finder-highlight) / 24%), transparent 70%),
-    rgb(var(--finder-chrome) / 75%);
-  box-shadow:
-    inset 0 1px rgb(var(--finder-highlight) / 34%),
-    inset 0 -1px rgb(var(--finder-shadow) / 9%);
-  -webkit-backdrop-filter: blur(30px) saturate(1.45);
-  backdrop-filter: blur(30px) saturate(1.45);
+  padding: 4px 16px 0 12px;
+  background: transparent;
+  box-shadow: none;
 }
 .dark .finder-toolbar {
-  background: rgb(var(--finder-chrome) / 94%);
-  box-shadow: inset 0 -1px rgb(255 255 255 / 5%);
+  background: transparent;
+  box-shadow: none;
 }
 .finder-control-group {
-  border-radius: 16px;
-  padding: 2px;
-  background: linear-gradient(
-    rgb(var(--finder-highlight) / 32%),
-    rgb(var(--finder-highlight) / 8%)
-  );
-  border: 1px solid rgb(var(--finder-shadow) / 9%);
+  border-radius: 9999px;
+  padding: 3px;
+  background: linear-gradient(180deg, rgb(255 255 255 / 72%) 0%, rgb(245 246 250 / 56%) 100%);
+  border: 1px solid rgb(255 255 255 / 78%);
   box-shadow:
-    inset 0 1px rgb(var(--finder-highlight) / 42%),
-    0 2px 5px rgb(var(--finder-shadow) / 7%);
+    inset 0 1px 0 rgb(255 255 255 / 92%),
+    0 2px 10px rgb(15 23 42 / 8%);
+  -webkit-backdrop-filter: blur(28px) saturate(1.8);
+  backdrop-filter: blur(28px) saturate(1.8);
 }
 .dark .finder-control-group {
-  background: rgb(255 255 255 / 8%);
-  border-color: transparent;
-  box-shadow: none;
+  background: linear-gradient(180deg, rgb(255 255 255 / 10%) 0%, rgb(255 255 255 / 5.5%) 100%);
+  border: 1px solid rgb(255 255 255 / 13%);
+  box-shadow:
+    inset 0 0.5px 0 rgb(255 255 255 / 22%),
+    0 4px 14px rgb(0 0 0 / 28%);
+  -webkit-backdrop-filter: blur(28px) saturate(1.8);
+  backdrop-filter: blur(28px) saturate(1.8);
 }
 .finder-navigation-group > button:first-child {
   position: relative;
@@ -207,40 +346,45 @@ button:focus-visible,
   right: -1px;
   bottom: 7px;
   width: 1px;
-  background: rgb(var(--finder-shadow) / 13%);
+  background: rgb(var(--finder-shadow) / 11%);
   content: "";
 }
 .dark .finder-navigation-group > button:first-child::after {
   background: rgb(255 255 255 / 13%);
 }
 .finder-control-group > button {
-  width: 29px;
+  width: 30px;
   height: 28px;
   padding: 5px;
-  border-radius: 13px;
+  border-radius: 9999px;
   display: grid;
   place-items: center;
   flex-shrink: 0;
   transition:
-    background-color 120ms ease,
-    color 120ms ease;
+    background-color 140ms ease,
+    box-shadow 140ms ease,
+    color 140ms ease,
+    transform 100ms ease;
 }
 .finder-control-group > button[aria-pressed="true"] {
   color: hsl(var(--foreground));
-  background: rgb(var(--finder-highlight) / 65%);
+  background: rgb(255 255 255 / 92%);
   box-shadow:
-    inset 0 1px rgb(var(--finder-highlight) / 60%),
-    0 1px 4px rgb(var(--finder-shadow) / 13%);
+    inset 0 0.5px 0 rgb(255 255 255 / 100%),
+    0 1px 4px rgb(15 23 42 / 12%);
 }
 .dark .finder-control-group > button[aria-pressed="true"] {
-  background: rgb(255 255 255 / 11%);
-  box-shadow: inset 0 1px rgb(255 255 255 / 8%);
+  color: #ffffff;
+  background: linear-gradient(180deg, rgb(255 255 255 / 20%) 0%, rgb(255 255 255 / 13%) 100%);
+  box-shadow:
+    inset 0 0.5px 0 rgb(255 255 255 / 32%),
+    0 1px 4px rgb(0 0 0 / 24%);
 }
 .dark .finder-control-group > button:hover:not(:disabled) {
-  background: rgb(255 255 255 / 10%);
+  background: rgb(255 255 255 / 11%);
 }
 .finder-control-group > button:active:not(:disabled) {
-  background: hsl(var(--accent));
+  transform: scale(0.95);
 }
 .finder-location {
   min-width: 52px;
@@ -268,29 +412,40 @@ button:focus-visible,
 .finder-search-trigger {
   border-radius: 50%;
   color: hsl(var(--muted-foreground));
-  background: rgb(var(--finder-highlight) / 28%);
+  background: linear-gradient(180deg, rgb(255 255 255 / 72%) 0%, rgb(245 246 250 / 56%) 100%);
+  border: 1px solid rgb(255 255 255 / 78%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 92%),
+    0 2px 10px rgb(15 23 42 / 8%);
   transition:
-    background-color 120ms ease,
-    color 120ms ease;
+    background-color 140ms ease,
+    color 140ms ease,
+    transform 100ms ease;
 }
 .finder-search-trigger:hover {
   color: hsl(var(--foreground));
-  background: rgb(var(--finder-highlight) / 44%);
+  background: rgb(255 255 255 / 88%);
 }
 .dark .finder-search-trigger {
-  background: rgb(255 255 255 / 8%);
+  background: linear-gradient(180deg, rgb(255 255 255 / 10%) 0%, rgb(255 255 255 / 5.5%) 100%);
+  border: 1px solid rgb(255 255 255 / 13%);
+  box-shadow:
+    inset 0 0.5px 0 rgb(255 255 255 / 22%),
+    0 4px 14px rgb(0 0 0 / 28%);
 }
 .dark .finder-search-trigger:hover {
-  background: rgb(255 255 255 / 13%);
+  background: rgb(255 255 255 / 15%);
 }
 .finder-search-input {
   font-size: 12px;
-  border-radius: 18px;
-  border: 1px solid rgb(var(--finder-shadow) / 12%);
-  background: rgb(var(--finder-highlight) / 30%);
+  border-radius: 9999px;
+  border: 1px solid rgb(255 255 255 / 76%);
+  background: rgb(255 255 255 / 66%);
   box-shadow:
-    inset 0 1px 2px rgb(var(--finder-shadow) / 5%),
-    0 1px rgb(var(--finder-highlight) / 20%);
+    inset 0 1px 2px rgb(15 23 42 / 6%),
+    0 2px 10px rgb(15 23 42 / 6%);
+  -webkit-backdrop-filter: blur(28px) saturate(1.8);
+  backdrop-filter: blur(28px) saturate(1.8);
 }
 .finder-search-input:focus {
   outline: 2px solid hsl(var(--ring) / 65%);
@@ -298,34 +453,40 @@ button:focus-visible,
 }
 .dark .finder-search-input {
   background: rgb(255 255 255 / 8%);
-  border-color: rgb(255 255 255 / 5%);
-  box-shadow: inset 0 1px 2px rgb(0 0 0 / 12%);
+  border-color: rgb(255 255 255 / 13%);
+  box-shadow:
+    inset 0 1px 2px rgb(0 0 0 / 20%),
+    0 4px 14px rgb(0 0 0 / 24%);
 }
 .finder-tabs {
   min-height: 36px;
-  background: rgb(var(--finder-chrome) / 78%);
-  border-bottom: 1px solid hsl(var(--border) / 55%);
-  -webkit-backdrop-filter: blur(28px) saturate(1.35);
-  backdrop-filter: blur(28px) saturate(1.35);
+  background: transparent;
+  border-bottom: 1px solid rgb(15 23 42 / 6%);
+}
+.dark .finder-tabs {
+  border-bottom: 1px solid rgb(255 255 255 / 6%);
 }
 .finder-tab {
   border: 1px solid transparent;
   flex: 1 1 160px;
   max-width: 240px;
   height: 27px;
-  border-radius: 7px;
+  border-radius: 9999px;
   text-align: center;
 }
 .finder-tab[data-active="true"] {
-  background: linear-gradient(
-    rgb(var(--finder-highlight) / 80%),
-    rgb(var(--finder-highlight) / 42%)
-  );
-  border-color: rgb(var(--finder-shadow) / 7%);
-  box-shadow: 0 1px 3px rgb(var(--finder-shadow) / 8%);
+  background: rgb(255 255 255 / 80%);
+  border-color: rgb(255 255 255 / 86%);
+  box-shadow:
+    inset 0 0.5px 0 rgb(255 255 255 / 100%),
+    0 1px 4px rgb(15 23 42 / 8%);
 }
 .dark .finder-tab[data-active="true"] {
-  background: rgb(255 255 255 / 12%);
+  background: linear-gradient(180deg, rgb(255 255 255 / 13%) 0%, rgb(255 255 255 / 8.5%) 100%);
+  border-color: rgb(255 255 255 / 12%);
+  box-shadow:
+    inset 0 0.5px 0 rgb(255 255 255 / 22%),
+    0 2px 6px rgb(0 0 0 / 22%);
 }
 .finder-tab button:focus-visible {
   opacity: 1;
@@ -339,12 +500,13 @@ button:focus-visible,
   height: 29px;
   padding: 0 12px;
   overflow: hidden;
-  border-top: 1px solid hsl(var(--border) / 55%);
-  background: rgb(var(--finder-chrome) / 78%);
-  -webkit-backdrop-filter: blur(24px) saturate(1.3);
-  backdrop-filter: blur(24px) saturate(1.3);
+  border-top: 1px solid rgb(15 23 42 / 6%);
+  background: transparent;
   color: hsl(var(--muted-foreground));
   font-size: 11px;
+}
+.dark .finder-pathbar {
+  border-top: 1px solid rgb(255 255 255 / 6%);
 }
 .finder-pathbar-breadcrumbs {
   scrollbar-width: none;
