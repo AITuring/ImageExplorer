@@ -8,10 +8,10 @@ use std::sync::OnceLock;
 use tauri::http::{header, Method, Request, Response, StatusCode};
 use tauri::{UriSchemeContext, UriSchemeResponder};
 
-/// 限制同时运行的原生缩略图解码数量，防止海量 `<img>` 并发打满外部磁盘或阻塞线程池
-const MAX_CONCURRENT_THUMB_DECODES: usize = 6;
-/// 后台分析（清晰度/特征提取）最多占用 2 个并发解码槽，始终为当前可见缩略图与 Quick Look 预留至少 4 个槽位
-const MAX_CONCURRENT_BG_THUMB_DECODES: usize = 2;
+/// 限制同时运行的原生缩略图解码数量，充分利用多核同时避免无限并发打满外置盘
+const MAX_CONCURRENT_THUMB_DECODES: usize = 10;
+/// 后台分析（清晰度/特征提取）最多占用 6 个并发解码槽，始终为当前可见缩略图与 Quick Look 预留至少 4 个专用槽位
+const MAX_CONCURRENT_BG_THUMB_DECODES: usize = 6;
 
 struct AsyncPermitPool {
     tx: tauri::async_runtime::Sender<()>,

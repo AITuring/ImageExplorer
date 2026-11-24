@@ -141,6 +141,12 @@ export function usePhotoAnalysis(
       return () => controller.abort();
     }
 
+    // Buffer partial records locally so TopBar progress updates every ~180ms
+    // without re-rendering the entire 2,000-line FileList component 5x/sec.
+    const bufferedRecords = new Map<string, PhotoAnalysisRecord>();
+    let lastReactStateCommitAt = performance.now();
+    const REACT_STATE_COMMIT_INTERVAL_MS = 1500;
+
     const publishProgress = (
       progress: PhotoAnalysisProgress,
       partialRecords: Map<string, PhotoAnalysisRecord>
@@ -166,17 +172,30 @@ export function usePhotoAnalysis(
       };
 
       // Update the TopBar progress banner immediately so heavy grid rendering
-      // inside startTransition can never starve or freeze the visible progress bar.
+      // can never starve or freeze the visible progress bar.
       if (scopePath) {
         usePhotoAnalysisProgress.getState().setProgress(scopePath, nextProgress);
       }
 
+      partialRecords.forEach((record, path) => bufferedRecords.set(path, record));
+      const now = performance.now();
+      const shouldCommitRecords =
+        progress.stage !== "extracting-features" ||
+        now - lastReactStateCommitAt >= REACT_STATE_COMMIT_INTERVAL_MS;
+
+      if (!shouldCommitRecords) {
+        return;
+      }
+
+      lastReactStateCommitAt = now;
+      const batch = new Map(bufferedRecords);
+      bufferedRecords.clear();
       startTransition(() => {
         setState((current) => {
           const records = new Map(
             current.signature === analysisSignature ? current.records : EMPTY_RECORDS
           );
-          partialRecords.forEach((record, path) => records.set(path, record));
+          batch.forEach((record, path) => records.set(path, record));
           return {
             signature: analysisSignature,
             records,
@@ -186,7 +205,7 @@ export function usePhotoAnalysis(
       });
     };
 
-    const startDelayMs = entriesToProcess.length > 40 ? 550 : 180;
+    const startDelayMs = 200;
     const startTimer = window.setTimeout(() => {
       void analyzePhotoEntries(
         entriesToProcess,

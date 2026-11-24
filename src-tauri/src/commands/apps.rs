@@ -268,6 +268,61 @@ fn resize_jpeg_bytes_in_process(jpeg: &[u8], max_pixel_size: u32) -> Option<Vec<
     Some(resized)
 }
 
+#[cfg(target_os = "macos")]
+struct RawExtractedJpegCache {
+    entries: std::collections::VecDeque<(String, std::sync::Arc<Vec<u8>>)>,
+    total_bytes: usize,
+}
+
+#[cfg(target_os = "macos")]
+impl RawExtractedJpegCache {
+    const MAX_ENTRIES: usize = 20;
+    const MAX_BYTES: usize = 32 * 1024 * 1024;
+
+    fn new() -> Self {
+        Self {
+            entries: std::collections::VecDeque::with_capacity(Self::MAX_ENTRIES),
+            total_bytes: 0,
+        }
+    }
+
+    fn get(&mut self, key: &str) -> Option<std::sync::Arc<Vec<u8>>> {
+        let pos = self.entries.iter().position(|(k, _)| k == key)?;
+        let (k, bytes) = self.entries.remove(pos)?;
+        let cloned = std::sync::Arc::clone(&bytes);
+        self.entries.push_back((k, bytes));
+        Some(cloned)
+    }
+
+    fn insert(&mut self, key: String, bytes: Vec<u8>) -> std::sync::Arc<Vec<u8>> {
+        let arc = std::sync::Arc::new(bytes);
+        let len = arc.len();
+        if len > Self::MAX_BYTES / 2 {
+            return arc;
+        }
+        if let Some(pos) = self.entries.iter().position(|(k, _)| k == &key) {
+            if let Some((_, old)) = self.entries.remove(pos) {
+                self.total_bytes = self.total_bytes.saturating_sub(old.len());
+            }
+        }
+        self.total_bytes += len;
+        self.entries.push_back((key, std::sync::Arc::clone(&arc)));
+        while self.entries.len() > Self::MAX_ENTRIES || self.total_bytes > Self::MAX_BYTES {
+            let Some((_, oldest)) = self.entries.pop_front() else {
+                break;
+            };
+            self.total_bytes = self.total_bytes.saturating_sub(oldest.len());
+        }
+        arc
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn raw_extracted_jpeg_cache() -> &'static Mutex<RawExtractedJpegCache> {
+    static CACHE: OnceLock<Mutex<RawExtractedJpegCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(RawExtractedJpegCache::new()))
+}
+
 /// Extract (and optionally orientation-correct/downscale) the embedded full-size
 /// JPEG preview from any supported camera RAW format (ARW, CR2, CR3, NEF, NRW,
 /// RAF, ORF, RW2, PEF, SRW, DNG, ...) using zero-copy mmap parsing.
@@ -295,9 +350,34 @@ pub fn get_raw_embedded_jpeg_bytes_blocking(
         return Some(cached);
     }
 
-    if let Some(extracted) = crate::raw_preview::extract_embedded_jpeg_from_path(path_obj) {
-        let final_bytes =
-            resize_jpeg_bytes_in_process(&extracted, max_pixel_size).unwrap_or(extracted);
+    // Reuse the recently extracted embedded JPEG in RAM so grid thumbnail (240px)
+    // and sharpness detection (1024px) never read the same RAW file off USB twice.
+    let source_key = format!("{}:{}:{}", path, metadata.len(), modified);
+    let cached_source = raw_extracted_jpeg_cache()
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.get(&source_key));
+    let extracted = match cached_source {
+        Some(bytes) => Some(bytes),
+        None => crate::raw_preview::extract_embedded_jpeg_from_path(path_obj).map(|bytes| {
+            raw_extracted_jpeg_cache()
+                .lock()
+                .map(|mut guard| guard.insert(source_key, bytes))
+                .unwrap_or_else(|err| {
+                    std::sync::Arc::new(
+                        err.into_inner()
+                            .entries
+                            .pop_back()
+                            .map(|(_, v)| (*v).clone())
+                            .unwrap_or_default(),
+                    )
+                })
+        }),
+    };
+
+    if let Some(extracted) = extracted.filter(|bytes| !bytes.is_empty()) {
+        let final_bytes = resize_jpeg_bytes_in_process(&extracted, max_pixel_size)
+            .unwrap_or_else(|| (*extracted).clone());
         return Some(crate::cache::set_thumb_bytes_cache(cache_key, final_bytes));
     }
 

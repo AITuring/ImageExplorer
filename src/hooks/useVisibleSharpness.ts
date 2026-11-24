@@ -11,6 +11,7 @@ export type VisibleSharpness = "sharp" | "soft" | "unavailable";
 const IMAGE_TYPES = new Set(IMAGE_EXTENSIONS.filter((type) => type !== "svg" && type !== "psd"));
 const SOURCE_SIZE = 1024;
 const SHARPNESS_CACHE_VERSION = 2;
+const SHARPNESS_CONCURRENCY = 3;
 const PUBLISH_INTERVAL_MS = 160;
 const PUBLISH_BATCH_SIZE = 12;
 const SQLITE_PERSIST_BATCH_SIZE = 16;
@@ -46,7 +47,11 @@ export function isSharpnessAnalyzable(entry: FileEntry) {
   return !entry.is_dir && IMAGE_TYPES.has((entry.extension ?? "").toLowerCase());
 }
 
-async function measure(entry: FileEntry, signal: AbortSignal): Promise<VisibleSharpness> {
+async function measure(
+  entry: FileEntry,
+  signal: AbortSignal,
+  lowPriority: boolean
+): Promise<VisibleSharpness> {
   const url = buildFileThumbnailUrl(
     entry.path,
     entry.modified,
@@ -54,7 +59,7 @@ async function measure(entry: FileEntry, signal: AbortSignal): Promise<VisibleSh
     SOURCE_SIZE,
     true,
     false,
-    true
+    lowPriority
   );
   let image: HTMLImageElement;
   try {
@@ -163,11 +168,9 @@ export function useVisibleSharpness(
 
       if (controller.signal.aborted || pending.length === 0) return;
 
-      // Let the first visible screen of grid thumbnails decode and paint before
-      // starting heavy 1024px sharpness analysis on large folders.
+      // Brief yield so the initial viewport render commits before sharpness workers start.
       await new Promise<void>((resolve) => {
-        const delayMs = pending.length > 40 ? 850 : 250;
-        const timer = window.setTimeout(resolve, delayMs);
+        const timer = window.setTimeout(resolve, 80);
         controller.signal.addEventListener(
           "abort",
           () => {
@@ -182,56 +185,63 @@ export function useVisibleSharpness(
       const pendingByPath = new Map(pending.map((entry) => [entry.path, entry]));
       let next = 0;
 
-      while (!controller.signal.aborted) {
-        let entry: FileEntry | undefined;
-        for (const path of priorityPathsRef.current) {
-          entry = pendingByPath.get(path);
-          if (entry) break;
-        }
-        while (!entry && next < pending.length) {
-          const candidate = pending[next++];
-          entry = pendingByPath.get(candidate.path);
-        }
-        if (!entry) break;
-        pendingByPath.delete(entry.path);
+      const worker = async () => {
+        while (!controller.signal.aborted) {
+          let entry: FileEntry | undefined;
+          let isViewportPriority = false;
+          for (const path of priorityPathsRef.current) {
+            entry = pendingByPath.get(path);
+            if (entry) {
+              isViewportPriority = true;
+              break;
+            }
+          }
+          while (!entry && next < pending.length) {
+            const candidate = pending[next++];
+            entry = pendingByPath.get(candidate.path);
+          }
+          if (!entry) break;
+          pendingByPath.delete(entry.path);
 
-        let verdict: VisibleSharpness;
-        try {
-          verdict = await measure(entry, controller.signal);
-        } catch {
+          let verdict: VisibleSharpness;
+          try {
+            verdict = await measure(entry, controller.signal, !isViewportPriority);
+          } catch {
+            if (controller.signal.aborted) return;
+            verdict = "unavailable";
+          }
           if (controller.signal.aborted) return;
-          verdict = "unavailable";
-        }
-        if (controller.signal.aborted) return;
-        const key = keyFor(entry);
-        results.delete(key);
-        results.set(key, verdict);
-        while (results.size > MAX_RESULTS) results.delete(results.keys().next().value!);
-        verdicts.set(entry.path, verdict);
-        if (verdict === "sharp" || verdict === "soft") {
-          pendingPersist.push({
-            path: entry.path,
-            modified: entry.modified ?? 0,
-            fileSize: entry.size,
-            verdict,
-          });
-          if (pendingPersist.length >= SQLITE_PERSIST_BATCH_SIZE) {
-            persistSharpnessBatch(pendingPersist.splice(0, pendingPersist.length));
+          const key = keyFor(entry);
+          results.delete(key);
+          results.set(key, verdict);
+          while (results.size > MAX_RESULTS) results.delete(results.keys().next().value!);
+          verdicts.set(entry.path, verdict);
+          if (verdict === "sharp" || verdict === "soft") {
+            pendingPersist.push({
+              path: entry.path,
+              modified: entry.modified ?? 0,
+              fileSize: entry.size,
+              verdict,
+            });
+            if (pendingPersist.length >= SQLITE_PERSIST_BATCH_SIZE) {
+              persistSharpnessBatch(pendingPersist.splice(0, pendingPersist.length));
+            }
+          }
+          unpublishedCount += 1;
+          if (unpublishedCount === 1 && verdicts.size === 1) {
+            flush();
+          } else if (
+            isViewportPriority ||
+            unpublishedCount >= PUBLISH_BATCH_SIZE ||
+            performance.now() - lastPublishedAt >= PUBLISH_INTERVAL_MS
+          ) {
+            flush();
           }
         }
-        unpublishedCount += 1;
-        if (unpublishedCount === 1 && verdicts.size === 1) {
-          flush();
-        } else if (
-          unpublishedCount >= PUBLISH_BATCH_SIZE ||
-          performance.now() - lastPublishedAt >= PUBLISH_INTERVAL_MS
-        ) {
-          flush();
-        }
+      };
 
-        // Yield cleanly to browser painting & scrolling between 1024px canvas readbacks.
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 20));
-      }
+      const workerCount = Math.min(SHARPNESS_CONCURRENCY, pending.length);
+      await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
       if (pendingPersist.length > 0) {
         persistSharpnessBatch(pendingPersist.splice(0, pendingPersist.length));

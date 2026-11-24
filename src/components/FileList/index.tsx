@@ -994,13 +994,13 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   });
   useEffect(() => {
     listVirtualizer.measure();
-  }, [listRows, listVirtualizer]);
+  }, [groupBy, listVirtualizer]);
   useEffect(() => {
     gridVirtualizer.measure();
   }, [
     folderGridRowHeight,
     gridColumns,
-    gridRows,
+    groupBy,
     photoAnalysisEnabled,
     photoGridRowHeight,
     gridVirtualizer,
@@ -1095,6 +1095,15 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   }, [currentPath, getScrollContainer, viewMode]);
 
   const restoredViewRef = useRef<string | null>(null);
+  const restoreSortedEntriesRef = useRef(sortedEntries);
+  const restoreSelectedPathRef = useRef(selectedPath);
+  const restoreGridColumnsRef = useRef(gridColumns);
+  useEffect(() => {
+    restoreSortedEntriesRef.current = sortedEntries;
+    restoreSelectedPathRef.current = selectedPath;
+    restoreGridColumnsRef.current = gridColumns;
+  }, [gridColumns, selectedPath, sortedEntries]);
+
   useEffect(() => {
     const locationKey = `${viewMode}:${currentPath}`;
     if (loading || restoredViewRef.current === locationKey) return;
@@ -1102,41 +1111,38 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       restoredViewRef.current = locationKey;
       return;
     }
-    // Wait until the new scroll element and grid width have been measured.
-    // A saved offset belongs to the old view; the shared selection takes priority.
-    let secondFrame = 0;
+    restoredViewRef.current = locationKey;
     const frame = requestAnimationFrame(() => {
-      secondFrame = requestAnimationFrame(() => {
-        const container = getScrollContainer(viewMode);
-        if (!container) return;
-        const index = sortedEntries.findIndex((entry) => entry.path === selectedPath);
-        if (index >= 0) {
-          if (viewMode === "list") {
-            listVirtualizer.scrollToIndex(index, { align: "center" });
-          } else {
-            gridVirtualizer.scrollToIndex(Math.floor(index / gridColumns), { align: "center" });
-          }
+      const container = getScrollContainer(viewMode);
+      if (!container) return;
+      // Never override scroll position if the user already started scrolling down.
+      if (container.scrollTop > 0) return;
+      const targetSelected = restoreSelectedPathRef.current;
+      const index = targetSelected
+        ? restoreSortedEntriesRef.current.findIndex((entry) => entry.path === targetSelected)
+        : -1;
+      if (index >= 0) {
+        if (viewMode === "list") {
+          listVirtualizer.scrollToIndex(index, { align: "center" });
         } else {
-          container.scrollTop = scrollPositionsRef.current[locationKey] ?? 0;
+          gridVirtualizer.scrollToIndex(
+            Math.floor(index / Math.max(1, restoreGridColumnsRef.current)),
+            {
+              align: "center",
+            }
+          );
         }
-        restoredViewRef.current = locationKey;
-      });
+      } else {
+        const saved = scrollPositionsRef.current[locationKey] ?? 0;
+        if (saved > 0) {
+          container.scrollTop = saved;
+        }
+      }
     });
     return () => {
       cancelAnimationFrame(frame);
-      cancelAnimationFrame(secondFrame);
     };
-  }, [
-    currentPath,
-    getScrollContainer,
-    loading,
-    viewMode,
-    selectedPath,
-    sortedEntries,
-    gridColumns,
-    listVirtualizer,
-    gridVirtualizer,
-  ]);
+  }, [currentPath, getScrollContainer, gridVirtualizer, listVirtualizer, loading, viewMode]);
 
   // 8. 自动选中和滚动
   const appliedFileSelection = useRef<string | null>(null);
@@ -1576,7 +1582,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       >
         <div
           data-view={viewMode}
-          className={`finder-files relative h-full overflow-hidden transition-colors ${
+          className={`finder-files relative flex h-full flex-col overflow-hidden transition-colors ${
             isFileDragOver ? "ring-primary/30 ring-2 ring-inset" : ""
           }`}
           tabIndex={0}
@@ -1605,7 +1611,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
           {(filterBarForcedOpen ||
             hasActiveFolderFilter(folderFilter) ||
             (hasPhotosInFolder && !filterBarDismissed && viewMode !== "column")) && (
-            <div className={viewMode === "gallery" ? "px-3 pt-2" : ""}>
+            <div className={viewMode === "gallery" ? "shrink-0 px-3 pt-2" : "shrink-0"}>
               <FolderFilterBar
                 filter={folderFilter}
                 onChange={setFolderFilter}
@@ -1644,46 +1650,50 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
             </div>
           )}
           {viewMode === "gallery" ? (
-            <FileGalleryView
-              entries={sortedEntries}
-              selectedPath={selectedPath}
-              selectedPaths={selectedPaths}
-              selectedFileEntries={selectedFileEntries}
-              fileActions={fileActions}
-              visibleSharpness={visibleSharpness}
-              cullingMap={cullingMap}
-              onSelect={(entry, index, event) => handleClick(entry, index, event)}
-              onSelectSingle={selectSingle}
-              onDoubleClick={handleOpen}
-              onToggleTag={handleToggleTag}
-              onSetRating={handleSetRating}
-              onSetFlag={handleSetFlag}
-              onCompare={(entriesToCompare) => setCompareEntries(entriesToCompare)}
-            />
+            <div className="min-h-0 flex-1 overflow-hidden">
+              <FileGalleryView
+                entries={sortedEntries}
+                selectedPath={selectedPath}
+                selectedPaths={selectedPaths}
+                selectedFileEntries={selectedFileEntries}
+                fileActions={fileActions}
+                visibleSharpness={visibleSharpness}
+                cullingMap={cullingMap}
+                onSelect={(entry, index, event) => handleClick(entry, index, event)}
+                onSelectSingle={selectSingle}
+                onDoubleClick={handleOpen}
+                onToggleTag={handleToggleTag}
+                onSetRating={handleSetRating}
+                onSetFlag={handleSetFlag}
+                onCompare={(entriesToCompare) => setCompareEntries(entriesToCompare)}
+              />
+            </div>
           ) : viewMode === "column" ? (
-            <FileColumnView
-              currentPath={currentPath}
-              selectedPaths={selectedPaths}
-              focusedPath={selectedPath}
-              selectedFileEntries={selectedFileEntries}
-              fileActions={fileActions}
-              editingPath={editingPath}
-              editValue={editValue}
-              onEditValueChange={setEditValue}
-              onSubmitRename={handleSubmitRename}
-              onCancelRename={handleCancelRename}
-              onContextChange={setColumnSelectionContext}
-              navigationRef={columnNavRef}
-              onSelectSingle={selectSingle}
-              onClick={(entry, index, columnEntries, e) =>
-                handleClick(entry, index, e, columnEntries)
-              }
-              onDoubleClick={handleOpen}
-              onNavigate={(path) => onNavigate(path)}
-              handleMove={handleMove}
-              handleCopyTo={handleCopyTo}
-              showHiddenFiles={showHiddenFiles}
-            />
+            <div className="min-h-0 flex-1 overflow-hidden">
+              <FileColumnView
+                currentPath={currentPath}
+                selectedPaths={selectedPaths}
+                focusedPath={selectedPath}
+                selectedFileEntries={selectedFileEntries}
+                fileActions={fileActions}
+                editingPath={editingPath}
+                editValue={editValue}
+                onEditValueChange={setEditValue}
+                onSubmitRename={handleSubmitRename}
+                onCancelRename={handleCancelRename}
+                onContextChange={setColumnSelectionContext}
+                navigationRef={columnNavRef}
+                onSelectSingle={selectSingle}
+                onClick={(entry, index, columnEntries, e) =>
+                  handleClick(entry, index, e, columnEntries)
+                }
+                onDoubleClick={handleOpen}
+                onNavigate={(path) => onNavigate(path)}
+                handleMove={handleMove}
+                handleCopyTo={handleCopyTo}
+                showHiddenFiles={showHiddenFiles}
+              />
+            </div>
           ) : viewMode === "list" ? (
             <>
               <FileListHeader
@@ -1695,7 +1705,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
               <div
                 ref={listScrollRef}
                 onMouseDown={handleListMarqueeMouseDown}
-                className="finder-list-scroll relative h-[calc(100%-2.5rem)] overflow-y-auto select-none"
+                className="finder-list-scroll relative min-h-0 flex-1 overflow-y-auto select-none"
               >
                 <div
                   style={{
@@ -1829,7 +1839,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
               <div
                 ref={gridScrollRef}
                 onMouseDown={handleGridMarqueeMouseDown}
-                className="file-grid-scrollbar relative h-full overflow-y-scroll select-none"
+                className="file-grid-scrollbar relative min-h-0 flex-1 overflow-y-scroll select-none"
               >
                 <div
                   style={{

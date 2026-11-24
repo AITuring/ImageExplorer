@@ -1,4 +1,4 @@
-import { startTransition, useCallback, useDeferredValue, useMemo, useState } from "react";
+import { startTransition, useCallback, useMemo, useState } from "react";
 import { FileEntry } from "@/types";
 import type { SortDirection, SortField } from "@/types";
 import { compareFileNames, sortFileEntries } from "./finderListModel";
@@ -12,7 +12,6 @@ export function useFileSort(
 ) {
   const [sortField, setSortField] = useState<SortField>("name");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
-  const deferredEntries = useDeferredValue(entries);
 
   const handleSort = useCallback(
     (field: SortField) => {
@@ -41,8 +40,8 @@ export function useFileSort(
   const effectiveCapturedVersion = sortField === "captured" ? capturedVersion : 0;
   const sortedEntries = useMemo(() => {
     void effectiveCapturedVersion;
-    return sortFileEntries(deferredEntries, sortField, sortDirection, capturedLookup);
-  }, [capturedLookup, effectiveCapturedVersion, deferredEntries, sortField, sortDirection]);
+    return sortFileEntries(entries, sortField, sortDirection, capturedLookup);
+  }, [capturedLookup, effectiveCapturedVersion, entries, sortField, sortDirection]);
 
   return {
     sortField,
