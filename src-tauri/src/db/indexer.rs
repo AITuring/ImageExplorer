@@ -269,6 +269,15 @@ impl IndexBuilder {
                         let entry = match result {
                             Ok(entry) => entry,
                             Err(error) => {
+                                // Skip macOS TCC / permission-denied subdirectories (e.g.
+                                // ~/Library/DoNotDisturb) without aborting the entire index.
+                                let is_non_root_permission_denied = error.depth().unwrap_or(0) > 0
+                                    && error.io_error().is_some_and(|io| {
+                                        io.kind() == std::io::ErrorKind::PermissionDenied
+                                    });
+                                if is_non_root_permission_denied {
+                                    return WalkState::Continue;
+                                }
                                 let _ =
                                     tx.send(Err(format!("index scan traversal failed: {error}")));
                                 cancelled.store(true, Ordering::Relaxed);

@@ -35,8 +35,7 @@ pub const INDEX_THROTTLE_MS: u64 = 5;
 
 /// 索引时排除的目录模式
 pub const INDEX_EXCLUDE_PATTERNS: &[&str] = &[
-    "/Library/Caches/",
-    "/Library/Logs/",
+    "/Library/",
     "/.Trash/",
     "/node_modules/",
     "/.git/",
