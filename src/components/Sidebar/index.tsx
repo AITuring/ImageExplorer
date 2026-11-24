@@ -650,6 +650,11 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
         isResizing ? "" : "transition-[width] duration-150 ease-out"
       }`}
       style={{ width: `${sidebarWidth}px` }}
+      onMouseDown={(event) => {
+        if ((event.target as Element | null)?.closest("button")) {
+          event.preventDefault();
+        }
+      }}
       onContextMenu={(e) => e.preventDefault()}
     >
       <div className="finder-sidebar-header" data-tauri-drag-region />

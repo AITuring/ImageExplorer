@@ -84,17 +84,39 @@ export function TopBar({ onNavigate }: TopBarProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(currentPath);
 
-  const { viewMode, groupBy, setGroupBy } = useViewMode();
+  const viewMode = useViewMode((state) => state.viewMode);
+  const groupBy = useViewMode((state) => state.groupBy);
+  const setGroupBy = useViewMode((state) => state.setGroupBy);
   const [groupMenuOpen, setGroupMenuOpen] = useState(false);
+  const groupMenuRef = useRef<HTMLDivElement>(null);
   const splitViewEnabled = useSplitView((state) => state.enabled);
   const toggleSplitView = useSplitView((state) => state.toggleSplitView);
   const openStorageAnalyzer = useStorageAnalyzerDialog((state) => state.open);
   const openSdIngest = useSdIngestDialog((state) => state.open);
   const [showHiddenFiles] = useSetting<boolean>("show_hidden_files", false);
-  const clipboard = useClipboard();
   const openFileInfo = useFileInfoDialog((state) => state.open);
   const favorites = useLocations((state) => state.favorites);
   const toggleFavorite = useLocations((state) => state.toggleFavorite);
+
+  useEffect(() => {
+    if (!groupMenuOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (groupMenuRef.current && !groupMenuRef.current.contains(event.target as Node)) {
+        setGroupMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setGroupMenuOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [groupMenuOpen]);
 
   // 搜索状态
   const [searchQuery, setSearchQuery] = useState("");
@@ -551,10 +573,11 @@ export function TopBar({ onNavigate }: TopBarProps) {
           closeSearchResults();
         }
       },
-      onCopy: (entries) => void clipboard.copy(entries.map((entry) => entry.path)),
-      onCut: (entries) => void clipboard.cut(entries.map((entry) => entry.path)),
+      onCopy: (entries) => void useClipboard.getState().copy(entries.map((entry) => entry.path)),
+      onCut: (entries) => void useClipboard.getState().cut(entries.map((entry) => entry.path)),
       onPaste: async () => {
-        const pending = await clipboard.getForPaste();
+        const clipboardState = useClipboard.getState();
+        const pending = await clipboardState.getForPaste();
         if (!pending) return;
         try {
           if (pending.operation === "copy") {
@@ -569,7 +592,7 @@ export function TopBar({ onNavigate }: TopBarProps) {
               paths: pending.paths,
               destDir: currentPath,
             });
-            if (operationId) await clipboard.consumeCut(pending.changeCount);
+            if (operationId) await clipboardState.consumeCut(pending.changeCount);
           }
         } catch (error) {
           console.error("Failed to paste from search results:", error);
@@ -627,7 +650,6 @@ export function TopBar({ onNavigate }: TopBarProps) {
     }),
     [
       addTab,
-      clipboard,
       closeSearchResults,
       currentPath,
       handleSearchRename,
@@ -904,7 +926,14 @@ export function TopBar({ onNavigate }: TopBarProps) {
         </div>
 
         {/* 视图切换 */}
-        <div className="finder-control-group finder-view-modes flex shrink-0 items-center">
+        <div
+          onMouseDown={(event) => {
+            if ((event.target as Element | null)?.closest("button")) {
+              event.preventDefault();
+            }
+          }}
+          className="finder-control-group finder-view-modes flex shrink-0 items-center"
+        >
           <button
             className={`rounded-sm p-1 transition-colors ${
               viewMode === "icon"
@@ -959,7 +988,7 @@ export function TopBar({ onNavigate }: TopBarProps) {
           </button>
           <span className="bg-border/60 mx-0.5 h-3.5 w-[1px]" aria-hidden="true" />
           {(viewMode === "list" || viewMode === "icon") && (
-            <div className="relative">
+            <div ref={groupMenuRef} className="relative">
               <button
                 type="button"
                 className={`rounded-sm p-1 transition-colors ${
@@ -968,7 +997,6 @@ export function TopBar({ onNavigate }: TopBarProps) {
                     : "text-muted-foreground hover:text-foreground"
                 }`}
                 onClick={() => setGroupMenuOpen((open) => !open)}
-                onBlur={() => window.setTimeout(() => setGroupMenuOpen(false), 150)}
                 aria-expanded={groupMenuOpen}
                 aria-label={t("file_list.group.label")}
                 title={t("file_list.group.label")}

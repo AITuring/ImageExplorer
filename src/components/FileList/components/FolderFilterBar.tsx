@@ -82,7 +82,14 @@ export const FolderFilterBar = memo(function FolderFilterBar({
     onChange({ ...filter, tagId: filter.tagId === tagId ? null : tagId });
 
   return (
-    <div className="border-border/50 bg-muted/25 mb-2 flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs">
+    <div
+      onMouseDown={(event) => {
+        if ((event.target as Element | null)?.closest("button")) {
+          event.preventDefault();
+        }
+      }}
+      className="border-border/50 bg-muted/25 mb-2 flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs"
+    >
       <div className="relative flex min-w-32 flex-1 items-center sm:max-w-44">
         <Filter className="text-muted-foreground pointer-events-none absolute left-2 h-3.5 w-3.5" />
         <input
@@ -277,7 +284,10 @@ export const FolderFilterBar = memo(function FolderFilterBar({
       {cameraOptions.length > 1 && (
         <select
           value={filter.cameraModel ?? ""}
-          onChange={(event) => onChange({ ...filter, cameraModel: event.target.value || null })}
+          onChange={(event) => {
+            onChange({ ...filter, cameraModel: event.target.value || null });
+            event.currentTarget.blur();
+          }}
           aria-label={t("file_list.details.model")}
           className="bg-background/80 border-border/60 h-6 max-w-36 rounded border px-1.5 text-[11px] outline-none"
         >
@@ -292,7 +302,10 @@ export const FolderFilterBar = memo(function FolderFilterBar({
       {lensOptions.length > 1 && (
         <select
           value={filter.lensModel ?? ""}
-          onChange={(event) => onChange({ ...filter, lensModel: event.target.value || null })}
+          onChange={(event) => {
+            onChange({ ...filter, lensModel: event.target.value || null });
+            event.currentTarget.blur();
+          }}
           aria-label={t("file_list.details.lens")}
           className="bg-background/80 border-border/60 h-6 max-w-40 rounded border px-1.5 text-[11px] outline-none"
         >

@@ -728,7 +728,7 @@ export function FileList({
     selectedPath,
     editingPath,
     entries: keyboardEntries,
-    forceCustomImagePreview: viewMode === "icon" && photoAnalysisEnabled,
+    forceCustomImagePreview: photoAnalysisEnabled,
   });
 
   const scrollToIndexRef = useRef<(index: number) => void>(() => undefined);

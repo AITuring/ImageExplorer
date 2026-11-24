@@ -40,6 +40,10 @@ const MIN_ZOOM = 1;
 const MAX_ZOOM = 6;
 const QUICK_ONE_TO_ONE_ZOOM = 3;
 
+interface SafariGestureEvent extends UIEvent {
+  scale: number;
+}
+
 const ComparePane = memo(function ComparePane({
   entry,
   verdict,
@@ -52,8 +56,9 @@ const ComparePane = memo(function ComparePane({
   onPromoteToChampion,
   zoom,
   pan,
-  onWheelZoom,
+  onRegisterViewport,
   onPanStart,
+  onDoubleClick,
   onToggleTag,
   onSetRating,
   onSetFlag,
@@ -70,8 +75,9 @@ const ComparePane = memo(function ComparePane({
   onPromoteToChampion?: () => void;
   zoom: number;
   pan: { x: number; y: number };
-  onWheelZoom: (event: React.WheelEvent<HTMLDivElement>) => void;
+  onRegisterViewport: (el: HTMLDivElement | null) => void;
   onPanStart: (event: React.MouseEvent<HTMLDivElement>) => void;
+  onDoubleClick: () => void;
   onToggleTag: (entry: FileEntry, tag: string) => void;
   onSetRating?: (entry: FileEntry, rating: number) => void;
   onSetFlag?: (entry: FileEntry, flag: PhotoFlag) => void;
@@ -88,8 +94,10 @@ const ComparePane = memo(function ComparePane({
       }`}
     >
       <div
-        onWheel={onWheelZoom}
+        ref={onRegisterViewport}
         onMouseDown={onPanStart}
+        onDoubleClick={onDoubleClick}
+        style={{ touchAction: "none", overscrollBehavior: "none" }}
         className={`relative flex min-h-0 flex-1 items-center justify-center overflow-hidden select-none ${
           zoom > 1 ? "cursor-grab active:cursor-grabbing" : "cursor-zoom-in"
         }`}
@@ -281,6 +289,14 @@ export function PhotoCompareDialog({
   const { t } = useTranslation();
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [deletedPaths, setDeletedPaths] = useState<Set<string>>(() => new Set());
+  const zoomRef = useRef(zoom);
+  const panRef = useRef(pan);
+  const panRafRef = useRef<number | null>(null);
+  const pendingPanRef = useRef<{ x: number; y: number } | null>(null);
+  const viewportNodesRef = useRef<Set<HTMLDivElement>>(new Set());
+  const nativeGestureActiveRef = useRef(false);
+  const nativeGestureBaseZoomRef = useRef(1);
   // PK Challenger override state keyed by the initial session entry paths
   const sessionKey = entries ? entries.map((e) => e.path).join("\0") : "";
   const [pkState, setPkState] = useState<{
@@ -295,6 +311,39 @@ export function PhotoCompareDialog({
     originY: number;
   } | null>(null);
 
+  useEffect(() => {
+    zoomRef.current = zoom;
+  }, [zoom]);
+
+  useEffect(() => {
+    panRef.current = pan;
+  }, [pan]);
+
+  useEffect(() => {
+    return () => {
+      if (panRafRef.current !== null) {
+        window.cancelAnimationFrame(panRafRef.current);
+      }
+    };
+  }, []);
+
+  const schedulePanUpdate = useCallback((nextPan: { x: number; y: number }) => {
+    panRef.current = nextPan;
+    pendingPanRef.current = nextPan;
+    if (panRafRef.current !== null) return;
+    panRafRef.current = window.requestAnimationFrame(() => {
+      panRafRef.current = null;
+      if (pendingPanRef.current) {
+        setPan(pendingPanRef.current);
+      }
+    });
+  }, []);
+
+  const availablePhotos = useMemo(
+    () => allPhotos.filter((photo) => !deletedPaths.has(photo.path)),
+    [allPhotos, deletedPaths]
+  );
+
   const isPkMode = Boolean(entries && entries.length === 2);
   const activeEntries = useMemo(() => {
     if (!entries || entries.length < 2) return null;
@@ -305,11 +354,13 @@ export function PhotoCompareDialog({
   }, [entries, isPkMode, pkState, sessionKey]);
 
   const cycleChallenger = useCallback(
-    (delta: 1 | -1) => {
-      if (!isPkMode || !activeEntries || allPhotos.length < 2) return;
+    (delta: 1 | -1, excludePaths?: ReadonlySet<string>) => {
+      if (!isPkMode || !activeEntries || availablePhotos.length < 2) return false;
       const [champion, currentChallenger] = activeEntries;
-      const candidates = allPhotos.filter((photo) => photo.path !== champion.path);
-      if (candidates.length === 0) return;
+      const candidates = availablePhotos.filter(
+        (photo) => photo.path !== champion.path && !excludePaths?.has(photo.path)
+      );
+      if (candidates.length === 0) return false;
       const currentIdx = candidates.findIndex((photo) => photo.path === currentChallenger.path);
       const nextIdx =
         currentIdx < 0 ? 0 : (currentIdx + delta + candidates.length) % candidates.length;
@@ -318,8 +369,9 @@ export function PhotoCompareDialog({
         champion,
         challenger: candidates[nextIdx],
       });
+      return true;
     },
-    [activeEntries, allPhotos, isPkMode, sessionKey]
+    [activeEntries, availablePhotos, isPkMode, sessionKey]
   );
 
   const promoteChallenger = useCallback(() => {
@@ -333,6 +385,8 @@ export function PhotoCompareDialog({
   }, [activeEntries, isPkMode, sessionKey]);
 
   const resetView = useCallback(() => {
+    zoomRef.current = 1;
+    panRef.current = { x: 0, y: 0 };
     setZoom(1);
     setPan({ x: 0, y: 0 });
   }, []);
@@ -340,9 +394,12 @@ export function PhotoCompareDialog({
   const toggleOneToOne = useCallback(() => {
     setZoom((current) => {
       if (current > 1.05) {
+        zoomRef.current = 1;
+        panRef.current = { x: 0, y: 0 };
         setPan({ x: 0, y: 0 });
         return 1;
       }
+      zoomRef.current = QUICK_ONE_TO_ONE_ZOOM;
       return QUICK_ONE_TO_ONE_ZOOM;
     });
   }, []);
@@ -350,8 +407,9 @@ export function PhotoCompareDialog({
   useEffect(() => {
     if (!activeEntries) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" || event.code === "Space") {
         event.preventDefault();
+        event.stopPropagation();
         onClose();
       } else if (event.key === "z" || event.key === "Z") {
         event.preventDefault();
@@ -369,6 +427,9 @@ export function PhotoCompareDialog({
           if (next <= 1) setPan({ x: 0, y: 0 });
           return next;
         });
+      } else if (isPkMode && event.key === "Enter") {
+        event.preventDefault();
+        promoteChallenger();
       } else if (isPkMode && event.key === "ArrowRight") {
         event.preventDefault();
         cycleChallenger(1);
@@ -379,32 +440,128 @@ export function PhotoCompareDialog({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [activeEntries, cycleChallenger, isPkMode, onClose, resetView, toggleOneToOne]);
+  }, [
+    activeEntries,
+    cycleChallenger,
+    isPkMode,
+    onClose,
+    promoteChallenger,
+    resetView,
+    toggleOneToOne,
+  ]);
 
-  const handleWheelZoom = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const factor = event.deltaY < 0 ? 1.15 : 1 / 1.15;
-    setZoom((current) => {
-      const next = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Number((current * factor).toFixed(2))));
-      if (next <= 1) setPan({ x: 0, y: 0 });
-      return next;
-    });
+  const viewportCleanupMapRef = useRef<Map<HTMLDivElement, () => void>>(new Map());
+  const registerViewport = useCallback(
+    (node: HTMLDivElement | null) => {
+      // Clean up any detached viewport nodes.
+      for (const [el, cleanup] of viewportCleanupMapRef.current) {
+        if (!el.isConnected) {
+          cleanup();
+          viewportCleanupMapRef.current.delete(el);
+          viewportNodesRef.current.delete(el);
+        }
+      }
+      if (!node || viewportCleanupMapRef.current.has(node)) return;
+      viewportNodesRef.current.add(node);
+
+      const onGestureStart = (event: Event) => {
+        event.preventDefault();
+        nativeGestureActiveRef.current = true;
+        nativeGestureBaseZoomRef.current = zoomRef.current;
+      };
+      const onGestureChange = (event: Event) => {
+        const gesture = event as SafariGestureEvent;
+        gesture.preventDefault();
+        const next = Math.max(
+          MIN_ZOOM,
+          Math.min(MAX_ZOOM, Number((nativeGestureBaseZoomRef.current * gesture.scale).toFixed(3)))
+        );
+        zoomRef.current = next;
+        setZoom(next);
+        if (next <= 1.005) {
+          schedulePanUpdate({ x: 0, y: 0 });
+        }
+      };
+      const onGestureEnd = (event: Event) => {
+        event.preventDefault();
+        nativeGestureActiveRef.current = false;
+      };
+      const onWheel = (event: WheelEvent) => {
+        event.preventDefault();
+        if (event.ctrlKey || event.metaKey) {
+          if (nativeGestureActiveRef.current) return;
+          const clampedDelta = Math.max(-120, Math.min(120, event.deltaY));
+          const sensitivity = event.ctrlKey ? 0.012 : 0.0045;
+          const next = Math.max(
+            MIN_ZOOM,
+            Math.min(
+              MAX_ZOOM,
+              Number((zoomRef.current * Math.exp(-clampedDelta * sensitivity)).toFixed(3))
+            )
+          );
+          zoomRef.current = next;
+          setZoom(next);
+          if (next <= 1.005) {
+            schedulePanUpdate({ x: 0, y: 0 });
+          }
+          return;
+        }
+        if (zoomRef.current > 1.005) {
+          schedulePanUpdate({
+            x: panRef.current.x - event.deltaX,
+            y: panRef.current.y - event.deltaY,
+          });
+          return;
+        }
+        // Standard mouse wheel zoom when at 1x fit.
+        const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
+        const next = Math.max(
+          MIN_ZOOM,
+          Math.min(MAX_ZOOM, Number((zoomRef.current * factor).toFixed(2)))
+        );
+        zoomRef.current = next;
+        setZoom(next);
+      };
+
+      node.addEventListener("gesturestart", onGestureStart, { passive: false });
+      node.addEventListener("gesturechange", onGestureChange, { passive: false });
+      node.addEventListener("gestureend", onGestureEnd, { passive: false });
+      node.addEventListener("wheel", onWheel, { passive: false });
+
+      viewportCleanupMapRef.current.set(node, () => {
+        node.removeEventListener("gesturestart", onGestureStart);
+        node.removeEventListener("gesturechange", onGestureChange);
+        node.removeEventListener("gestureend", onGestureEnd);
+        node.removeEventListener("wheel", onWheel);
+      });
+    },
+    [schedulePanUpdate]
+  );
+
+  useEffect(() => {
+    const cleanups = viewportCleanupMapRef.current;
+    const nodes = viewportNodesRef.current;
+    return () => {
+      for (const cleanup of cleanups.values()) cleanup();
+      cleanups.clear();
+      nodes.clear();
+    };
   }, []);
 
   const handlePanStart = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
-      if (event.button !== 0 || zoom <= 1) return;
+      if (event.button !== 0 || zoomRef.current <= 1) return;
       event.preventDefault();
       draggingRef.current = {
         startX: event.clientX,
         startY: event.clientY,
-        originX: pan.x,
-        originY: pan.y,
+        originX: panRef.current.x,
+        originY: panRef.current.y,
       };
       const handleMove = (moveEvent: MouseEvent) => {
         const drag = draggingRef.current;
         if (!drag) return;
-        setPan({
+        schedulePanUpdate({
           x: drag.originX + (moveEvent.clientX - drag.startX),
           y: drag.originY + (moveEvent.clientY - drag.startY),
         });
@@ -417,7 +574,7 @@ export function PhotoCompareDialog({
       window.addEventListener("mousemove", handleMove);
       window.addEventListener("mouseup", handleUp);
     },
-    [pan.x, pan.y, zoom]
+    [schedulePanUpdate]
   );
 
   if (!activeEntries) return null;
@@ -427,6 +584,11 @@ export function PhotoCompareDialog({
       role="dialog"
       aria-modal="true"
       aria-label={t("file_list.compare_title")}
+      onMouseDown={(event) => {
+        if ((event.target as Element | null)?.closest("button")) {
+          event.preventDefault();
+        }
+      }}
       className="bg-background/95 fixed inset-0 z-50 flex flex-col p-4 backdrop-blur-md"
     >
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -514,21 +676,41 @@ export function PhotoCompareDialog({
                 : `#${idx + 1}`
             }
             isChampion={isPkMode && idx === 0}
-            canCycleChallenger={isPkMode && idx === 1 && allPhotos.length > 2}
+            canCycleChallenger={isPkMode && idx === 1 && availablePhotos.length > 2}
             onPrevChallenger={() => cycleChallenger(-1)}
             onNextChallenger={() => cycleChallenger(1)}
             onPromoteToChampion={promoteChallenger}
             zoom={zoom}
             pan={pan}
-            onWheelZoom={handleWheelZoom}
+            onRegisterViewport={registerViewport}
             onPanStart={handlePanStart}
+            onDoubleClick={toggleOneToOne}
             onToggleTag={onToggleTag}
             onSetRating={onSetRating}
             onSetFlag={onSetFlag}
             onDelete={async (target) => {
               await onDelete(target);
-              if (isPkMode && idx === 1 && allPhotos.length > 2) {
-                cycleChallenger(1);
+              const nextDeleted = new Set(deletedPaths);
+              nextDeleted.add(target.path);
+              setDeletedPaths(nextDeleted);
+              if (isPkMode) {
+                if (idx === 1) {
+                  if (!cycleChallenger(1, nextDeleted)) onClose();
+                } else {
+                  // Champion deleted: promote current challenger and load next candidate.
+                  const remaining = availablePhotos.filter(
+                    (photo) => !nextDeleted.has(photo.path) && photo.path !== activeEntries[1]?.path
+                  );
+                  if (activeEntries[1] && remaining.length > 0) {
+                    setPkState({
+                      sessionKey,
+                      champion: activeEntries[1],
+                      challenger: remaining[0],
+                    });
+                  } else {
+                    onClose();
+                  }
+                }
               } else {
                 onClose();
               }

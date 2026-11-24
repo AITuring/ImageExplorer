@@ -26,8 +26,14 @@ export function PathBar({ path, onNavigate }: PathBarProps) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLElement>(null);
   const segments = path.split("/").filter(Boolean);
-  const { path: statusPath, totalCount, selectedCount, selectedBytes, loading } = useStatusBar();
-  const { viewMode, iconSize, setIconSize } = useViewMode();
+  const statusPath = useStatusBar((s) => s.path);
+  const totalCount = useStatusBar((s) => s.totalCount);
+  const selectedCount = useStatusBar((s) => s.selectedCount);
+  const selectedBytes = useStatusBar((s) => s.selectedBytes);
+  const loading = useStatusBar((s) => s.loading);
+  const viewMode = useViewMode((s) => s.viewMode);
+  const iconSize = useViewMode((s) => s.iconSize);
+  const setIconSize = useViewMode((s) => s.setIconSize);
   const [availableBytes, setAvailableBytes] = useState<number | null>(null);
   const isSmartFolder = path.startsWith(SMART_FOLDER_PREFIX);
   const tagSmartPrefix = `${SMART_FOLDER_PREFIX}tag:`;
@@ -118,6 +124,7 @@ export function PathBar({ path, onNavigate }: PathBarProps) {
       >
         <button
           type="button"
+          onMouseDown={(event) => event.preventDefault()}
           onClick={() => onNavigate("/")}
           title="/"
           aria-label={t("nav.computer")}
@@ -143,6 +150,7 @@ export function PathBar({ path, onNavigate }: PathBarProps) {
                 <ChevronRight size={11} className="opacity-40" aria-hidden="true" />
                 <button
                   type="button"
+                  onMouseDown={(event) => event.preventDefault()}
                   onClick={() => onNavigate(destination)}
                   title={destination}
                   aria-current={index === segments.length - 1 ? "location" : undefined}
@@ -164,6 +172,8 @@ export function PathBar({ path, onNavigate }: PathBarProps) {
               step={8}
               value={iconSize}
               onChange={(event) => setIconSize(Number(event.target.value))}
+              onPointerUp={(event) => event.currentTarget.blur()}
+              onMouseUp={(event) => event.currentTarget.blur()}
               aria-label={t("common.icon_size")}
               className="accent-primary h-1 w-20 cursor-pointer"
             />

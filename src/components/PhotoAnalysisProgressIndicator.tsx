@@ -37,7 +37,7 @@ export function PhotoAnalysisProgressIndicator({ progress }: PhotoAnalysisProgre
 
   return (
     <div
-      className="text-muted-foreground border-border/60 bg-muted/50 flex h-6 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[11px] leading-none"
+      className="text-muted-foreground border-border/60 bg-muted/50 hidden h-6 max-w-44 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[11px] leading-none md:flex"
       role="status"
       aria-live="polite"
       aria-label={label}
