@@ -1552,6 +1552,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     <>
       <AppContextMenu
         type="empty-area"
+        asChild
         emptyAreaActions={{
           onPaste: handlePaste,
           onRefresh: () => loadEntries(false, true),
@@ -1582,7 +1583,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       >
         <div
           data-view={viewMode}
-          className={`finder-files relative flex h-full flex-col overflow-hidden transition-colors ${
+          className={`finder-files relative flex min-h-0 flex-1 flex-col overflow-hidden transition-colors ${
             isFileDragOver ? "ring-primary/30 ring-2 ring-inset" : ""
           }`}
           tabIndex={0}
