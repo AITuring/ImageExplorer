@@ -8,6 +8,7 @@
   "col_date": "修改日期",
   "col_created": "创建日期",
   "col_toggle": "显示/隐藏列",
+  "filter_toggle": "筛选",
   "filter_placeholder": "筛选当前目录...",
   "filter_format": "按格式筛选",
   "filter_clear": "清除筛选",

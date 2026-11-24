@@ -8,7 +8,8 @@ import {
   useCallback,
   useState,
 } from "react";
-import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
+import { createPortal } from "react-dom";
+import { ChevronDown, ChevronRight, Filter, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { AppContextMenu } from "@/components/AppContextMenu";
@@ -203,9 +204,21 @@ export function FileList({
   const columnNavRef = useRef<ColumnNavigationHandle | null>(null);
   const filterInputRef = useRef<HTMLInputElement | null>(null);
   const [folderFilter, setFolderFilter] = useState<FolderFilterState>(DEFAULT_FOLDER_FILTER);
-  const [filterBarDismissed, setFilterBarDismissed] = useState(false);
-  const [filterBarForcedOpen, setFilterBarForcedOpen] = useState(false);
+  const [filterBarOpen, setFilterBarOpen] = useState(false);
+  const [tabBarStatusSlot, setTabBarStatusSlot] = useState<HTMLElement | null>(() =>
+    isPrimaryPane && typeof document !== "undefined"
+      ? document.getElementById("tabbar-status-slot")
+      : null
+  );
   const [compareEntries, setCompareEntries] = useState<FileEntry[] | null>(null);
+
+  useEffect(() => {
+    if (!isPrimaryPane) return;
+    const el = document.getElementById("tabbar-status-slot");
+    if (el && el !== tabBarStatusSlot) {
+      queueMicrotask(() => setTabBarStatusSlot(el));
+    }
+  }, [isPrimaryPane, tabBarStatusSlot]);
 
   // 1. 数据加载
   const { entries, showHiddenFiles, loading, error, loadEntries } = useFileEntries(currentPath);
@@ -228,8 +241,7 @@ export function FileList({
         ...DEFAULT_FOLDER_FILTER,
         pairRawJpeg: current.pairRawJpeg,
       }));
-      setFilterBarDismissed(false);
-      setFilterBarForcedOpen(false);
+      setFilterBarOpen(false);
     }
   }, [currentPath]);
 
@@ -736,8 +748,7 @@ export function FileList({
   }, [showHiddenFiles]);
 
   const handleFocusFilterBar = useCallback(() => {
-    setFilterBarDismissed(false);
-    setFilterBarForcedOpen(true);
+    setFilterBarOpen(true);
     requestAnimationFrame(() => {
       filterInputRef.current?.focus();
       filterInputRef.current?.select();
@@ -1769,9 +1780,38 @@ export function FileList({
               }
             }}
           />
-          {(filterBarForcedOpen ||
-            hasActiveFolderFilter(folderFilter) ||
-            (hasPhotosInFolder && !filterBarDismissed && viewMode !== "column")) && (
+          {isPrimaryPane &&
+            tabBarStatusSlot &&
+            !loading &&
+            !error &&
+            displayBaseEntries.length > 0 &&
+            createPortal(
+              <button
+                type="button"
+                aria-pressed={filterBarOpen}
+                title={`${t("file_list.filter_toggle")} (⌘⌥F)`}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+                onClick={() => setFilterBarOpen((open) => !open)}
+                className={`flex h-6 shrink-0 items-center gap-1 rounded-full border px-2.5 text-[11px] leading-none transition-colors ${
+                  filterBarOpen || hasActiveFolderFilter(folderFilter)
+                    ? "border-primary/45 bg-primary/15 text-primary"
+                    : "border-border/60 bg-muted/55 text-muted-foreground hover:bg-accent/80 hover:text-foreground"
+                }`}
+              >
+                <Filter className="h-3 w-3 shrink-0" aria-hidden="true" />
+                <span>{t("file_list.filter_toggle")}</span>
+                {hasActiveFolderFilter(folderFilter) && (
+                  <span className="font-mono text-[10px] tabular-nums">
+                    {filteredEntries.length}/{displayBaseEntries.length}
+                  </span>
+                )}
+              </button>,
+              tabBarStatusSlot
+            )}
+          {filterBarOpen && (
             <div className={viewMode === "gallery" ? "shrink-0 px-3 pt-2" : "shrink-0"}>
               <FolderFilterBar
                 filter={folderFilter}
@@ -1799,14 +1839,7 @@ export function FileList({
                 }
                 onExportFiltered={() => void handleExportFiltered()}
                 inputRef={filterInputRef}
-                onClose={
-                  !hasActiveFolderFilter(folderFilter)
-                    ? () => {
-                        setFilterBarDismissed(true);
-                        setFilterBarForcedOpen(false);
-                      }
-                    : undefined
-                }
+                onClose={() => setFilterBarOpen(false)}
               />
             </div>
           )}
