@@ -1558,23 +1558,21 @@ export function QuickLook({
     if (!entry) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      const eventTarget = e.target instanceof Element ? e.target : null;
-      const activeElement =
-        document.activeElement instanceof Element ? document.activeElement : null;
-      const quickLookIsActive = [eventTarget, activeElement].some((element) =>
-        element?.closest('[data-keyboard-scope="quick-look"]')
-      );
       if (
         e.defaultPrevented ||
         shouldIgnoreKeyboardCommand(e, {
           allowOverlaySelector: '[data-keyboard-scope="quick-look"]',
-        }) ||
-        !quickLookIsActive ||
-        isInteractiveKeyboardTarget(eventTarget) ||
-        isInteractiveKeyboardTarget(activeElement)
+        })
       ) {
         return;
       }
+
+      const eventTarget = e.target instanceof Element ? e.target : null;
+      const activeElement =
+        document.activeElement instanceof Element ? document.activeElement : null;
+      const isSliderOrListbox = [eventTarget, activeElement].some((element) =>
+        Boolean(element?.closest('[role="slider"], input[type="range"], [role="listbox"]'))
+      );
 
       if (e.key === "Tab") {
         const dialog = dialogRef.current;
@@ -1589,7 +1587,6 @@ export function QuickLook({
 
         const firstFocusable = focusableElements[0];
         const lastFocusable = focusableElements[focusableElements.length - 1];
-        const activeElement = document.activeElement;
         if (!dialog.contains(activeElement)) {
           e.preventDefault();
           firstFocusable.focus();
@@ -1609,8 +1606,48 @@ export function QuickLook({
 
       if (e.key === "Escape") {
         e.preventDefault();
+        e.stopPropagation();
         onClose();
         return;
+      }
+
+      // Close Quick Look on Space (macOS Finder parity) unless a button/link has focus.
+      if (
+        e.code === "Space" &&
+        !e.repeat &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey &&
+        !isInteractiveKeyboardTarget(eventTarget) &&
+        !isInteractiveKeyboardTarget(activeElement)
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        onClose();
+        return;
+      }
+
+      if (
+        !isSliderOrListbox &&
+        canNavigate &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+          e.preventDefault();
+          e.stopPropagation();
+          if (previousEntry) onNavigate(previousEntry);
+          return;
+        }
+        if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+          e.preventDefault();
+          e.stopPropagation();
+          if (nextEntry) onNavigate(nextEntry);
+          return;
+        }
       }
 
       if (
@@ -1712,22 +1749,6 @@ export function QuickLook({
           if (fallbackNext) onNavigate(fallbackNext);
           else onClose();
         });
-        return;
-      }
-
-      if (!canNavigate) {
-        return;
-      }
-
-      if ((e.key === "ArrowLeft" || e.key === "ArrowUp") && previousEntry) {
-        e.preventDefault();
-        onNavigate(previousEntry);
-        return;
-      }
-
-      if ((e.key === "ArrowRight" || e.key === "ArrowDown") && nextEntry) {
-        e.preventDefault();
-        onNavigate(nextEntry);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
