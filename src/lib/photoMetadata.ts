@@ -75,17 +75,19 @@ function queueMetadataPersist(
 }
 
 const anyMetadataSubscribers = new Set<() => void>();
-let anyMetadataNotifyScheduled = false;
+let anyMetadataNotifyTimer: ReturnType<typeof setTimeout> | null = null;
+const ANY_METADATA_NOTIFY_THROTTLE_MS = 240;
 
 function scheduleAnyMetadataNotify() {
-  if (anyMetadataSubscribers.size === 0 || anyMetadataNotifyScheduled) return;
-  anyMetadataNotifyScheduled = true;
-  queueMicrotask(() => {
-    anyMetadataNotifyScheduled = false;
+  if (anyMetadataSubscribers.size === 0 || anyMetadataNotifyTimer !== null) return;
+  // Batch rapid per-card EXIF arrivals so large folders (3,000+ photos) do not
+  // trigger dozens of synchronous whole-folder filter/sort passes per second.
+  anyMetadataNotifyTimer = setTimeout(() => {
+    anyMetadataNotifyTimer = null;
     for (const listener of anyMetadataSubscribers) {
       listener();
     }
-  });
+  }, ANY_METADATA_NOTIFY_THROTTLE_MS);
 }
 
 function notifyMetadataSubscribers(key: string, metadata: PhotoMetadata | null) {

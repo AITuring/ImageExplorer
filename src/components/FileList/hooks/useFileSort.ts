@@ -38,10 +38,11 @@ export function useFileSort(
     [sortField]
   );
 
+  const effectiveCapturedVersion = sortField === "captured" ? capturedVersion : 0;
   const sortedEntries = useMemo(() => {
-    void capturedVersion;
+    void effectiveCapturedVersion;
     return sortFileEntries(deferredEntries, sortField, sortDirection, capturedLookup);
-  }, [capturedLookup, capturedVersion, deferredEntries, sortField, sortDirection]);
+  }, [capturedLookup, effectiveCapturedVersion, deferredEntries, sortField, sortDirection]);
 
   return {
     sortField,

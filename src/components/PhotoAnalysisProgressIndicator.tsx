@@ -6,8 +6,6 @@ interface PhotoAnalysisProgressIndicatorProps {
   progress: PhotoAnalysisProgress;
 }
 
-const STAGE_ORDER = ["extracting-features", "estimating-focus", "grouping-views"] as const;
-
 export function PhotoAnalysisProgressIndicator({ progress }: PhotoAnalysisProgressIndicatorProps) {
   const { t } = useTranslation();
   if (progress.total <= 0) return null;
@@ -28,15 +26,19 @@ export function PhotoAnalysisProgressIndicator({ progress }: PhotoAnalysisProgre
     );
   }
 
-  const stageIndex = Math.max(
-    0,
-    STAGE_ORDER.indexOf(progress.stage as (typeof STAGE_ORDER)[number])
-  );
   const stageFraction =
     progress.stageTotal > 0 ? Math.min(1, progress.stageCompleted / progress.stageTotal) : 1;
-  const percentage = Math.round(
-    ((Math.min(stageIndex, STAGE_ORDER.length - 1) + stageFraction) / STAGE_ORDER.length) * 100
-  );
+  // Feature extraction accounts for ~92% of real wall-clock work; weight stages
+  // accordingly so the top progress bar reflects true completion smoothly.
+  const exactPercent =
+    progress.stage === "extracting-features"
+      ? stageFraction * 92
+      : progress.stage === "estimating-focus"
+        ? 92 + stageFraction * 3
+        : progress.stage === "grouping-views"
+          ? 95 + stageFraction * 5
+          : 100;
+  const percentage = Math.min(100, Math.round(exactPercent));
   const stageLabel = t(`common.photo_analysis_stage_${progress.stage}`);
   const stageDetail = t(`common.photo_analysis_stage_${progress.stage}_detail`, {
     completed: progress.stageCompleted,
@@ -67,7 +69,7 @@ export function PhotoAnalysisProgressIndicator({ progress }: PhotoAnalysisProgre
           <span className="ml-1">{stageDetail}</span>
         </div>
         <div
-          className="bg-muted ml-auto h-1.5 w-20 shrink-0 overflow-hidden rounded-full"
+          className="bg-muted ml-auto h-1.5 w-24 shrink-0 overflow-hidden rounded-full"
           role="progressbar"
           aria-valuemin={0}
           aria-valuemax={100}
@@ -76,7 +78,7 @@ export function PhotoAnalysisProgressIndicator({ progress }: PhotoAnalysisProgre
         >
           <div
             className="bg-primary h-full rounded-full transition-[width] duration-200 ease-out"
-            style={{ width: `${percentage}%` }}
+            style={{ width: `${Math.max(exactPercent > 0 ? 2 : 0, exactPercent).toFixed(1)}%` }}
           />
         </div>
       </div>

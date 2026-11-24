@@ -53,7 +53,8 @@ async function measure(entry: FileEntry, signal: AbortSignal): Promise<VisibleSh
     entry.size,
     SOURCE_SIZE,
     true,
-    false
+    false,
+    true
   );
   let image: HTMLImageElement;
   try {
@@ -162,6 +163,22 @@ export function useVisibleSharpness(
 
       if (controller.signal.aborted || pending.length === 0) return;
 
+      // Let the first visible screen of grid thumbnails decode and paint before
+      // starting heavy 1024px sharpness analysis on large folders.
+      await new Promise<void>((resolve) => {
+        const delayMs = pending.length > 40 ? 850 : 250;
+        const timer = window.setTimeout(resolve, delayMs);
+        controller.signal.addEventListener(
+          "abort",
+          () => {
+            window.clearTimeout(timer);
+            resolve();
+          },
+          { once: true }
+        );
+      });
+      if (controller.signal.aborted) return;
+
       const pendingByPath = new Map(pending.map((entry) => [entry.path, entry]));
       let next = 0;
 
@@ -211,6 +228,9 @@ export function useVisibleSharpness(
         ) {
           flush();
         }
+
+        // Yield cleanly to browser painting & scrolling between 1024px canvas readbacks.
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 20));
       }
 
       if (pendingPersist.length > 0) {

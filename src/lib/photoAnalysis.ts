@@ -178,10 +178,6 @@ function yieldToBrowser(): Promise<void> {
   });
 }
 
-function getProgressBatchSize(total: number, minimum: number) {
-  return Math.max(minimum, Math.ceil(total / 40));
-}
-
 function unavailableFocusAnalysis(): FocusAnalysis {
   return { kind: "unavailable", source: "sharpness-estimate", regions: [], confidence: 0 };
 }
@@ -553,7 +549,8 @@ async function analyzeEntry(entry: FileEntry, key: string, signal: AbortSignal) 
       entry.size,
       thumbnailRequestSize,
       true,
-      false
+      false,
+      true
     );
 
   let image: HTMLImageElement;
@@ -742,7 +739,10 @@ export async function analyzePhotoEntries(
 
   const pendingByPath = new Map(remainingEntries.map((item) => [item.entry.path, item]));
   let nextIndex = 0;
-  const extractionProgressBatch = getProgressBatchSize(entries.length, 12);
+  let lastProgressEmitAt = performance.now();
+  let itemsSinceProgressEmit = 0;
+  const PROGRESS_EMIT_INTERVAL_MS = 180;
+  const PROGRESS_EMIT_MAX_ITEMS = 8;
 
   const worker = async () => {
     let lastBrowserYieldAt = performance.now();
@@ -780,11 +780,16 @@ export async function analyzePhotoEntries(
         console.warn(`Failed to analyze photo: ${item.entry.path}`, error);
       } finally {
         extractedCompleted += 1;
+        itemsSinceProgressEmit += 1;
+        const now = performance.now();
         if (
           extractedCompleted === 1 ||
-          extractedCompleted % extractionProgressBatch === 0 ||
+          itemsSinceProgressEmit >= PROGRESS_EMIT_MAX_ITEMS ||
+          now - lastProgressEmitAt >= PROGRESS_EMIT_INTERVAL_MS ||
           extractedCompleted === entries.length
         ) {
+          lastProgressEmitAt = now;
+          itemsSinceProgressEmit = 0;
           const partialRecords = new Map<string, PhotoAnalysisRecord>();
           for (const features of unpublishedFeatures.values()) {
             partialRecords.set(features.path, { ...features, groupId: null });

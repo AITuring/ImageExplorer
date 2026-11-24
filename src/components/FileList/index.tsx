@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useCallback, useState } from "react";
+import { startTransition, useEffect, useMemo, useRef, useCallback, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -32,7 +32,12 @@ import {
   subscribeAnyPhotoMetadataUpdate,
 } from "@/lib/photoMetadata";
 import { usePhotoCulling } from "@/hooks/usePhotoCulling";
-import { exportXmpSidecars, updatePhotoCullingStates, type PhotoFlag } from "@/lib/photoCulling";
+import {
+  exportXmpSidecars,
+  updatePhotoCullingStates,
+  type PhotoCullingState,
+  type PhotoFlag,
+} from "@/lib/photoCulling";
 import { computeAutoPickBest } from "@/lib/autoPickBest";
 import { enqueueFileOperation } from "@/lib/fileOperations";
 import {
@@ -154,6 +159,9 @@ function makeDragHandlers(
   };
 }
 
+const EMPTY_SHARPNESS_MAP: ReadonlyMap<string, "sharp" | "soft" | "unavailable"> = new Map();
+const EMPTY_CULLING_MAP: ReadonlyMap<string, PhotoCullingState> = new Map();
+
 export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProps) {
   const { t } = useTranslation();
   const {
@@ -249,9 +257,14 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   const [metadataTick, setMetadataTick] = useState(0);
   useEffect(() => {
     return subscribeAnyPhotoMetadataUpdate(() => {
-      setMetadataTick((tick) => tick + 1);
+      startTransition(() => {
+        setMetadataTick((tick) => tick + 1);
+      });
     });
   }, []);
+
+  const hasExifFilterActive = folderFilter.cameraModel !== null || folderFilter.lensModel !== null;
+  const exifFilterTick = hasExifFilterActive ? metadataTick : 0;
 
   const { cameraOptions, lensOptions } = useMemo(() => {
     void metadataTick;
@@ -269,18 +282,23 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     };
   }, [displayBaseEntries, metadataTick]);
 
+  const hasSharpnessFilterActive = folderFilter.sharpness !== "all";
+  const hasCullingFilterActive = folderFilter.flag !== "all" || folderFilter.minRating > 0;
+  const sharpnessForFilter = hasSharpnessFilterActive ? visibleSharpness : EMPTY_SHARPNESS_MAP;
+  const cullingForFilter = hasCullingFilterActive ? cullingMap : EMPTY_CULLING_MAP;
+
   const filteredEntries = useMemo(() => {
-    void metadataTick;
+    void exifFilterTick;
     return filterFolderEntries(
       displayBaseEntries,
       folderFilter,
-      visibleSharpness,
-      cullingMap,
+      sharpnessForFilter,
+      cullingForFilter,
       getCachedPhotoMetadata
     );
-  }, [cullingMap, displayBaseEntries, folderFilter, metadataTick, visibleSharpness]);
+  }, [cullingForFilter, displayBaseEntries, exifFilterTick, folderFilter, sharpnessForFilter]);
 
-  // 2. 排序（支持按 EXIF 拍摄时间排序）
+  // 2. 排序（仅在按 EXIF 拍摄时间排序时才因元数据到达而重排，避免大目录反复全量重排）
   const getCapturedAt = useCallback(
     (entry: FileEntry) => getCachedPhotoMetadata(entry)?.capturedAt,
     []

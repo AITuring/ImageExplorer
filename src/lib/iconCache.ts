@@ -194,7 +194,8 @@ export function buildFileThumbnailUrl(
   fileSize: number,
   size: number,
   preferEmbedded = false,
-  allowIconFallback = false
+  allowIconFallback = false,
+  lowPriority = false
 ): string {
   const params = new URLSearchParams({
     path,
@@ -203,6 +204,9 @@ export function buildFileThumbnailUrl(
     fallback: allowIconFallback ? "1" : "0",
     v: `${modified ?? 0}-${fileSize}`,
   });
+  if (lowPriority) {
+    params.set("bg", "1");
+  }
   return `thumb://localhost/file?${params.toString()}`;
 }
 

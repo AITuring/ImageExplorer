@@ -10,6 +10,8 @@ use tauri::{UriSchemeContext, UriSchemeResponder};
 
 /// 限制同时运行的原生缩略图解码数量，防止海量 `<img>` 并发打满外部磁盘或阻塞线程池
 const MAX_CONCURRENT_THUMB_DECODES: usize = 6;
+/// 后台分析（清晰度/特征提取）最多占用 2 个并发解码槽，始终为当前可见缩略图与 Quick Look 预留至少 4 个槽位
+const MAX_CONCURRENT_BG_THUMB_DECODES: usize = 2;
 
 struct AsyncPermitPool {
     tx: tauri::async_runtime::Sender<()>,
@@ -50,6 +52,11 @@ impl AsyncPermitPool {
 fn decode_pool() -> &'static AsyncPermitPool {
     static POOL: OnceLock<AsyncPermitPool> = OnceLock::new();
     POOL.get_or_init(|| AsyncPermitPool::new(MAX_CONCURRENT_THUMB_DECODES))
+}
+
+fn bg_decode_pool() -> &'static AsyncPermitPool {
+    static BG_POOL: OnceLock<AsyncPermitPool> = OnceLock::new();
+    BG_POOL.get_or_init(|| AsyncPermitPool::new(MAX_CONCURRENT_BG_THUMB_DECODES))
 }
 
 fn percent_decode(input: &str) -> String {
@@ -149,8 +156,25 @@ pub fn handle_thumb_protocol<R: tauri::Runtime>(
                 .get("embedded")
                 .map(|value| value == "1" || value == "true")
                 .unwrap_or(false);
+            let is_background = params
+                .get("bg")
+                .map(|value| value == "1" || value == "true")
+                .unwrap_or(false);
 
             tauri::async_runtime::spawn(async move {
+                // Background analysis requests acquire a bounded 2-slot permit first so they
+                // can never crowd out visible grid thumbnails or Quick Look previews.
+                let _bg_permit = if is_background {
+                    match bg_decode_pool().acquire().await {
+                        Some(permit) => Some(permit),
+                        None => {
+                            responder.respond(empty_response(StatusCode::SERVICE_UNAVAILABLE));
+                            return;
+                        }
+                    }
+                } else {
+                    None
+                };
                 let Some(_permit) = decode_pool().acquire().await else {
                     responder.respond(empty_response(StatusCode::SERVICE_UNAVAILABLE));
                     return;
@@ -246,7 +270,7 @@ mod tests {
     #[test]
     fn parse_query_params_extracts_all_fields() {
         let params = parse_query_params(
-            "path=%2Ftmp%2Fmy%20photo.jpg&size=288&embedded=1&fallback=0&v=1700-42",
+            "path=%2Ftmp%2Fmy%20photo.jpg&size=288&embedded=1&fallback=0&bg=1&v=1700-42",
         );
         assert_eq!(
             params.get("path").map(String::as_str),
@@ -255,5 +279,6 @@ mod tests {
         assert_eq!(params.get("size").map(String::as_str), Some("288"));
         assert_eq!(params.get("embedded").map(String::as_str), Some("1"));
         assert_eq!(params.get("fallback").map(String::as_str), Some("0"));
+        assert_eq!(params.get("bg").map(String::as_str), Some("1"));
     }
 }
