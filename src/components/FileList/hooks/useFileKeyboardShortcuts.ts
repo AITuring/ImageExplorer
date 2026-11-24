@@ -40,6 +40,8 @@ interface UseFileKeyboardShortcutsOptions {
   onColumnNavigateLeft?: () => boolean;
   onColumnNavigateRight?: () => Promise<boolean>;
   onColumnFocusEntry?: (entry: FileEntry) => Promise<void>;
+  onListExpandDir?: (entry: FileEntry) => void;
+  onListCollapseDir?: (entry: FileEntry) => void;
   // 选择操作
   selectAll: (entries: FileEntry[]) => void;
   selectSingle: (path: string, index: number) => void;
@@ -51,7 +53,7 @@ interface UseFileKeyboardShortcutsOptions {
   handlePaste: () => Promise<void>;
   handlePasteAsMove: () => Promise<void>;
   handleDuplicate: (entries: FileEntry[]) => Promise<void>;
-  handleGetInfo: (entry: FileEntry) => void;
+  handleGetInfo: (entry: FileEntry | FileEntry[]) => void;
   handleDelete: (entries: FileEntry[]) => Promise<void>;
   handleNewFile: () => Promise<void>;
   handleNewFolder: () => Promise<void>;
@@ -155,8 +157,16 @@ export function useFileKeyboardShortcuts(
         shortcut: "⌘I",
         enabled: (entry) => Boolean(entry ?? getSelectedEntry()),
         run: (entry) => {
-          const target = entry ?? getSelectedEntry();
-          if (target) optionsRef.current.handleGetInfo(target);
+          if (entry) {
+            optionsRef.current.handleGetInfo(entry);
+            return;
+          }
+          const selected = getSelectedEntries();
+          if (selected.length > 1) {
+            optionsRef.current.handleGetInfo(selected);
+          } else if (selected.length === 1) {
+            optionsRef.current.handleGetInfo(selected[0]);
+          }
         },
       },
       delete: {
@@ -271,7 +281,9 @@ export function useFileKeyboardShortcuts(
         {
           id: "file.get-info",
           scope: "file-view",
-          matches: (event) => matchesModifiedKey(event, "i"),
+          matches: (event) =>
+            matchesModifiedKey(event, "i") ||
+            (isModifierPressed(event) && event.altKey && !event.shiftKey && event.code === "KeyI"),
           enabled: () => isCommandEnabled(commands.getInfo),
           run: () => {
             runCommand(commands.getInfo);
@@ -532,6 +544,34 @@ export function useFileKeyboardShortcuts(
               optionsRef.current.onColumnNavigateLeft?.();
             } else {
               await optionsRef.current.onColumnNavigateRight?.();
+            }
+          },
+        },
+        {
+          id: "file.list-expand-toggle",
+          scope: "file-view",
+          matches: (event) =>
+            optionsRef.current.viewMode === "list" &&
+            !isModifierPressed(event) &&
+            !event.altKey &&
+            !event.shiftKey &&
+            (event.key === "ArrowLeft" || event.key === "ArrowRight"),
+          enabled: () =>
+            Boolean(
+              optionsRef.current.onListExpandDir &&
+              optionsRef.current.onListCollapseDir &&
+              optionsRef.current.selectedPath
+            ),
+          run: (event) => {
+            const current = optionsRef.current;
+            const selected = current.selectedPath
+              ? current.entries.find((item) => item.path === current.selectedPath)
+              : null;
+            if (!selected) return;
+            if (event.key === "ArrowRight") {
+              current.onListExpandDir?.(selected);
+            } else {
+              current.onListCollapseDir?.(selected);
             }
           },
         },

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useCallback, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { AppContextMenu } from "@/components/AppContextMenu";
@@ -42,6 +42,9 @@ import {
   type FolderFilterState,
 } from "@/lib/folderFilter";
 import { expandPairedEntries, pairRawAndJpegEntries } from "@/lib/rawJpegPairing";
+import { groupFileEntries, type EntryGroup } from "@/lib/finderGrouping";
+import { sortFileEntries } from "./hooks/finderListModel";
+import { filterHiddenEntries } from "@/utils/file";
 import { FileListHeader } from "./components/FileListHeader";
 import { FileListItem } from "./components/FileListItem";
 import { FileGridItem } from "./components/FileGridItem";
@@ -63,8 +66,27 @@ import { useBatchExportDialog } from "@/stores/batchExportDialog";
 
 /** 列表视图固定行高 */
 const LIST_ITEM_HEIGHT = 32;
+/** 分组标题行高 */
+const GROUP_HEADER_HEIGHT = 28;
 /** 文件夹行保持 Finder 式紧凑间距 */
 const GRID_ROW_HEIGHT = 116;
+
+type ListRenderRow =
+  | { kind: "group"; group: EntryGroup }
+  | {
+      kind: "entry";
+      entry: FileEntry;
+      flatIndex: number;
+      depth: number;
+      parentPath: string | null;
+      canExpand: boolean;
+      isExpanded: boolean;
+      isLoadingChildren: boolean;
+    };
+
+type GridRenderRow =
+  | { kind: "group"; group: EntryGroup }
+  | { kind: "entries"; entries: FileEntry[]; startFlatIndex: number };
 /** 网格项最小宽度 */
 const GRID_ITEM_MIN_WIDTH = 132;
 /** 网格间距 */
@@ -133,6 +155,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   const { t } = useTranslation();
   const {
     viewMode,
+    groupBy,
     iconSize,
     listColumnWidths,
     listColumnVisibility,
@@ -262,6 +285,229 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     metadataTick
   );
   const allPhotosInView = useMemo(() => sortedEntries.filter(isAnalyzablePhoto), [sortedEntries]);
+
+  // 2b. 分组折叠状态 + 列表视图内联展开子文件夹状态
+  const groupCollapseKey = `${currentPath}:${groupBy}`;
+  const [collapsedGroupsState, setCollapsedGroupsState] = useState<{
+    key: string;
+    ids: string[];
+  }>({ key: "", ids: [] });
+  const collapsedGroupSet = useMemo(
+    () =>
+      collapsedGroupsState.key === groupCollapseKey
+        ? new Set(collapsedGroupsState.ids)
+        : new Set<string>(),
+    [collapsedGroupsState, groupCollapseKey]
+  );
+  const toggleGroupCollapsed = useCallback(
+    (groupId: string) => {
+      setCollapsedGroupsState((prev) => {
+        const currentIds = prev.key === groupCollapseKey ? prev.ids : [];
+        const exists = currentIds.includes(groupId);
+        return {
+          key: groupCollapseKey,
+          ids: exists ? currentIds.filter((id) => id !== groupId) : [...currentIds, groupId],
+        };
+      });
+    },
+    [groupCollapseKey]
+  );
+
+  const [listTreeState, setListTreeState] = useState<{
+    rootPath: string;
+    expanded: Record<string, boolean>;
+    children: Record<string, FileEntry[]>;
+    loading: Record<string, boolean>;
+  }>({ rootPath: "", expanded: {}, children: {}, loading: {} });
+
+  const activeListTree = useMemo(
+    () =>
+      listTreeState.rootPath === currentPath
+        ? listTreeState
+        : { rootPath: currentPath, expanded: {}, children: {}, loading: {} },
+    [currentPath, listTreeState]
+  );
+
+  const handleToggleExpandDir = useCallback(
+    (entry: FileEntry) => {
+      if (!entry.is_dir || (entry.is_package && entry.package_type === "app")) return;
+      const dirPath = entry.path;
+      const currentlyExpanded = Boolean(activeListTree.expanded[dirPath]);
+      if (currentlyExpanded) {
+        setListTreeState((prev) => ({
+          rootPath: currentPath,
+          expanded: { ...(prev.rootPath === currentPath ? prev.expanded : {}), [dirPath]: false },
+          children: prev.rootPath === currentPath ? prev.children : {},
+          loading: prev.rootPath === currentPath ? prev.loading : {},
+        }));
+        return;
+      }
+
+      const alreadyLoaded = Boolean(activeListTree.children[dirPath]);
+      setListTreeState((prev) => ({
+        rootPath: currentPath,
+        expanded: { ...(prev.rootPath === currentPath ? prev.expanded : {}), [dirPath]: true },
+        children: prev.rootPath === currentPath ? prev.children : {},
+        loading: {
+          ...(prev.rootPath === currentPath ? prev.loading : {}),
+          [dirPath]: !alreadyLoaded,
+        },
+      }));
+
+      if (!alreadyLoaded) {
+        void invoke<FileEntry[]>("get_entries", { path: dirPath, forceRefresh: false })
+          .then((rawChildren) => {
+            const visible = filterHiddenEntries(rawChildren, showHiddenFiles);
+            setListTreeState((prev) => {
+              if (prev.rootPath !== currentPath) return prev;
+              return {
+                ...prev,
+                children: { ...prev.children, [dirPath]: visible },
+                loading: { ...prev.loading, [dirPath]: false },
+              };
+            });
+          })
+          .catch(() => {
+            setListTreeState((prev) => {
+              if (prev.rootPath !== currentPath) return prev;
+              return {
+                ...prev,
+                expanded: { ...prev.expanded, [dirPath]: false },
+                loading: { ...prev.loading, [dirPath]: false },
+              };
+            });
+          });
+      }
+    },
+    [activeListTree.children, activeListTree.expanded, currentPath, showHiddenFiles]
+  );
+
+  const entryGroups = useMemo(
+    () => (groupBy === "none" ? [] : groupFileEntries(sortedEntries, groupBy)),
+    [groupBy, sortedEntries]
+  );
+
+  const { listRows, flatListEntries, listEntryRowIndexByPath, listParentPathByPath } =
+    useMemo(() => {
+      const rows: ListRenderRow[] = [];
+      const flat: FileEntry[] = [];
+      const rowIndexMap = new Map<string, number>();
+      const parentMap = new Map<string, string>();
+
+      if (groupBy !== "none") {
+        for (const group of entryGroups) {
+          rows.push({ kind: "group", group });
+          if (collapsedGroupSet.has(group.id)) continue;
+          for (const entry of group.entries) {
+            const flatIndex = flat.length;
+            flat.push(entry);
+            rowIndexMap.set(entry.path, rows.length);
+            rows.push({
+              kind: "entry",
+              entry,
+              flatIndex,
+              depth: 0,
+              parentPath: null,
+              canExpand: false,
+              isExpanded: false,
+              isLoadingChildren: false,
+            });
+          }
+        }
+      } else {
+        const allowTreeExpand = !currentPath.startsWith(SMART_FOLDER_PREFIX);
+        const visit = (items: FileEntry[], depth: number, parentPath: string | null) => {
+          for (const entry of items) {
+            const canExpand =
+              allowTreeExpand &&
+              entry.is_dir &&
+              !(entry.is_package && entry.package_type === "app");
+            const isExpanded = canExpand && Boolean(activeListTree.expanded[entry.path]);
+            const isLoadingChildren = canExpand && Boolean(activeListTree.loading[entry.path]);
+            const flatIndex = flat.length;
+            flat.push(entry);
+            if (parentPath) parentMap.set(entry.path, parentPath);
+            rowIndexMap.set(entry.path, rows.length);
+            rows.push({
+              kind: "entry",
+              entry,
+              flatIndex,
+              depth,
+              parentPath,
+              canExpand,
+              isExpanded,
+              isLoadingChildren,
+            });
+            if (isExpanded && depth < 6) {
+              const rawKids = activeListTree.children[entry.path];
+              if (rawKids && rawKids.length > 0) {
+                const sortedKids = sortFileEntries(
+                  rawKids,
+                  sortField,
+                  sortDirection,
+                  getCapturedAt
+                );
+                visit(sortedKids, depth + 1, entry.path);
+              }
+            }
+          }
+        };
+        visit(sortedEntries, 0, null);
+      }
+
+      return {
+        listRows: rows,
+        flatListEntries: flat,
+        listEntryRowIndexByPath: rowIndexMap,
+        listParentPathByPath: parentMap,
+      };
+    }, [
+      activeListTree.children,
+      activeListTree.expanded,
+      activeListTree.loading,
+      collapsedGroupSet,
+      currentPath,
+      entryGroups,
+      getCapturedAt,
+      groupBy,
+      sortDirection,
+      sortField,
+      sortedEntries,
+    ]);
+
+  const { gridRows, flatGridEntries, gridRowIndexByPath } = useMemo(() => {
+    const rows: GridRenderRow[] = [];
+    const flat: FileEntry[] = [];
+    const rowIndexMap = new Map<string, number>();
+    const cols = Math.max(1, gridColumns);
+
+    const pushChunked = (items: FileEntry[]) => {
+      for (let i = 0; i < items.length; i += cols) {
+        const slice = items.slice(i, i + cols);
+        const startFlatIndex = flat.length;
+        const rowIdx = rows.length;
+        for (const item of slice) {
+          flat.push(item);
+          rowIndexMap.set(item.path, rowIdx);
+        }
+        rows.push({ kind: "entries", entries: slice, startFlatIndex });
+      }
+    };
+
+    if (groupBy !== "none") {
+      for (const group of entryGroups) {
+        rows.push({ kind: "group", group });
+        if (!collapsedGroupSet.has(group.id)) {
+          pushChunked(group.entries);
+        }
+      }
+    } else {
+      pushChunked(sortedEntries);
+    }
+
+    return { gridRows: rows, flatGridEntries: flat, gridRowIndexByPath: rowIndexMap };
+  }, [collapsedGroupSet, entryGroups, gridColumns, groupBy, sortedEntries]);
+
   const activeColumnContext =
     viewMode === "column" && columnSelectionContext?.rootPath === currentPath
       ? columnSelectionContext
@@ -277,10 +523,16 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
               ])
             ).values()
           )
-        : sortedEntries,
-    [activeColumnContext, sortedEntries]
+        : viewMode === "list"
+          ? flatListEntries
+          : viewMode === "icon"
+            ? flatGridEntries
+            : sortedEntries,
+    [activeColumnContext, flatGridEntries, flatListEntries, sortedEntries, viewMode]
   );
-  const keyboardEntries = activeColumnContext?.activeEntries ?? sortedEntries;
+  const keyboardEntries =
+    activeColumnContext?.activeEntries ??
+    (viewMode === "list" ? flatListEntries : viewMode === "icon" ? flatGridEntries : sortedEntries);
   const operationPath = activeColumnContext?.locationPath ?? currentPath;
   const canMutate = !loading && !error && !operationPath.startsWith(SMART_FOLDER_PREFIX);
 
@@ -335,6 +587,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     handleCompress,
     handleExtract,
     handleGetInfo,
+    handleRotateImage,
+    handleShare,
     handleToggleFavorite,
     isFavorite,
     handleCopyPath,
@@ -498,6 +752,40 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     onColumnNavigateLeft: () => columnNavRef.current?.navigateLeft() ?? false,
     onColumnNavigateRight: () => columnNavRef.current?.navigateRight() ?? Promise.resolve(false),
     onColumnFocusEntry: (entry) => columnNavRef.current?.focusEntry(entry) ?? Promise.resolve(),
+    onListExpandDir: (entry) => {
+      if (
+        groupBy !== "none" ||
+        !entry.is_dir ||
+        (entry.is_package && entry.package_type === "app")
+      ) {
+        return;
+      }
+      if (!activeListTree.expanded[entry.path]) {
+        handleToggleExpandDir(entry);
+      } else {
+        const idx = flatListEntries.findIndex((item) => item.path === entry.path);
+        const next = idx >= 0 ? flatListEntries[idx + 1] : null;
+        if (next && listParentPathByPath.get(next.path) === entry.path) {
+          selectSingle(next.path, idx + 1);
+          scrollToIndexRef.current(idx + 1);
+        }
+      }
+    },
+    onListCollapseDir: (entry) => {
+      if (groupBy !== "none") return;
+      if (entry.is_dir && activeListTree.expanded[entry.path]) {
+        handleToggleExpandDir(entry);
+        return;
+      }
+      const parentPath = listParentPathByPath.get(entry.path);
+      if (parentPath) {
+        const parentIdx = flatListEntries.findIndex((item) => item.path === parentPath);
+        if (parentIdx >= 0) {
+          selectSingle(parentPath, parentIdx);
+          scrollToIndexRef.current(parentIdx);
+        }
+      }
+    },
     selectAll,
     selectSingle,
     selectRange,
@@ -653,31 +941,27 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     return () => observer.disconnect();
   }, [updateGridColumns, viewMode]);
 
-  // 网格行数
-  const gridRowCount = useMemo(
-    () => Math.ceil(sortedEntries.length / gridColumns),
-    [gridColumns, sortedEntries.length]
-  );
-
-  // 列表虚拟化
+  // 列表虚拟化（支持分组标题与内联展开树）
   const listVirtualizer = useVirtualizer({
-    count: sortedEntries.length,
+    count: listRows.length,
     getScrollElement: () => listScrollRef.current,
-    estimateSize: () => LIST_ITEM_HEIGHT,
+    estimateSize: (rowIndex) =>
+      listRows[rowIndex]?.kind === "group" ? GROUP_HEADER_HEIGHT : LIST_ITEM_HEIGHT,
     overscan: 6,
     useAnimationFrameWithResizeObserver: true,
   });
 
-  // 网格虚拟化（按行）
+  // 网格虚拟化（按行，支持分组标题）
   const gridVirtualizer = useVirtualizer({
-    count: gridRowCount,
+    count: gridRows.length,
     getScrollElement: () => gridScrollRef.current,
     estimateSize: (rowIndex) => {
+      const row = gridRows[rowIndex];
+      if (!row) return folderGridRowHeight;
+      if (row.kind === "group") return GROUP_HEADER_HEIGHT;
       if (!photoAnalysisEnabled) return folderGridRowHeight;
-      const start = rowIndex * gridColumns;
-      const end = Math.min(sortedEntries.length, start + gridColumns);
-      for (let i = start; i < end; i += 1) {
-        if (!sortedEntries[i].is_dir) return photoGridRowHeight;
+      for (const item of row.entries) {
+        if (!item.is_dir) return photoGridRowHeight;
       }
       return folderGridRowHeight;
     },
@@ -685,13 +969,16 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     useAnimationFrameWithResizeObserver: true,
   });
   useEffect(() => {
+    listVirtualizer.measure();
+  }, [listRows, listVirtualizer]);
+  useEffect(() => {
     gridVirtualizer.measure();
   }, [
     folderGridRowHeight,
     gridColumns,
+    gridRows,
     photoAnalysisEnabled,
     photoGridRowHeight,
-    sortedEntries,
     gridVirtualizer,
   ]);
 
@@ -720,10 +1007,14 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       return [];
     }
 
-    const startIndex = gridViewportStartRow * gridColumns;
-    const endIndex = Math.min(sortedEntries.length, (gridViewportEndRow + 1) * gridColumns);
-    return sortedEntries.slice(startIndex, endIndex);
-  }, [gridColumns, gridViewportEndRow, gridViewportStartRow, sortedEntries, viewMode]);
+    const visible: FileEntry[] = [];
+    const end = Math.min(gridRows.length - 1, gridViewportEndRow);
+    for (let i = Math.max(0, gridViewportStartRow); i <= end; i += 1) {
+      const row = gridRows[i];
+      if (row?.kind === "entries") visible.push(...row.entries);
+    }
+    return visible;
+  }, [gridRows, gridViewportEndRow, gridViewportStartRow, viewMode]);
   const gridViewportPaths = useMemo(
     () => gridViewportEntries.map((entry) => entry.path),
     [gridViewportEntries]
@@ -733,8 +1024,14 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   const listEnd = listVirtualizer.range?.endIndex ?? -1;
   const listViewportPaths = useMemo(() => {
     if (viewMode !== "list" || listEnd < listStart) return [];
-    return sortedEntries.slice(listStart, listEnd + 1).map((entry) => entry.path);
-  }, [listEnd, listStart, sortedEntries, viewMode]);
+    const visible: string[] = [];
+    const end = Math.min(listRows.length - 1, listEnd);
+    for (let i = Math.max(0, listStart); i <= end; i += 1) {
+      const row = listRows[i];
+      if (row?.kind === "entry") visible.push(row.entry.path);
+    }
+    return visible;
+  }, [listEnd, listRows, listStart, viewMode]);
   const computedViewportPriorityPaths = viewMode === "icon" ? gridViewportPaths : listViewportPaths;
 
   useEffect(() => {
@@ -861,12 +1158,27 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     scrollToIndexRef.current = (index: number) => {
       if (index < 0) return;
       if (viewMode === "list") {
-        listVirtualizer.scrollToIndex(index, { align: "auto" });
+        const entry = flatListEntries[index];
+        const rowIdx = entry ? (listEntryRowIndexByPath.get(entry.path) ?? index) : index;
+        listVirtualizer.scrollToIndex(rowIdx, { align: "auto" });
       } else if (viewMode === "icon") {
-        gridVirtualizer.scrollToIndex(Math.floor(index / gridColumns), { align: "auto" });
+        const entry = flatGridEntries[index];
+        const rowIdx = entry
+          ? (gridRowIndexByPath.get(entry.path) ?? Math.floor(index / gridColumns))
+          : Math.floor(index / gridColumns);
+        gridVirtualizer.scrollToIndex(rowIdx, { align: "auto" });
       }
     };
-  }, [gridColumns, gridVirtualizer, listVirtualizer, viewMode]);
+  }, [
+    flatGridEntries,
+    flatListEntries,
+    gridColumns,
+    gridRowIndexByPath,
+    gridVirtualizer,
+    listEntryRowIndexByPath,
+    listVirtualizer,
+    viewMode,
+  ]);
 
   useEffect(() => {
     let selectedBytes = 0;
@@ -884,11 +1196,11 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
     });
   }, [currentPath, keyboardEntries.length, loading, selectedFileEntries, setStatusBar]);
 
-  const sortedEntriesRef = useRef(sortedEntries);
+  const sortedEntriesRef = useRef(keyboardEntries);
   const selectedPathSetRef = useRef(selectedPathSet);
   useEffect(() => {
-    sortedEntriesRef.current = sortedEntries;
-  }, [sortedEntries]);
+    sortedEntriesRef.current = keyboardEntries;
+  }, [keyboardEntries]);
   useEffect(() => {
     selectedPathSetRef.current = selectedPathSet;
   }, [selectedPathSet]);
@@ -995,6 +1307,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       onCompare: (entriesToCompare) => setCompareEntries(entriesToCompare),
       onBatchExport: (photos) =>
         openBatchExport(photos, operationPath.startsWith(SMART_FOLDER_PREFIX) ? "" : operationPath),
+      onRotateImage: handleRotateImage,
+      onShare: handleShare,
       onCopy: handleCopy,
       onCut: handleCut,
       onPaste: handlePaste,
@@ -1030,6 +1344,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       handleGoToLocation,
       handleOpen,
       handlePaste,
+      handleRotateImage,
+      handleShare,
       handleShowOriginal,
       handleShowPackageContents,
       handleStartRename,
@@ -1343,8 +1659,49 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                     />
                   )}
                   {listVirtualizer.getVirtualItems().map((virtualItem) => {
-                    const entry = sortedEntries[virtualItem.index];
-                    if (!entry) return null;
+                    const row = listRows[virtualItem.index];
+                    if (!row) return null;
+                    if (row.kind === "group") {
+                      const collapsed = collapsedGroupSet.has(row.group.id);
+                      const label = row.group.labelKey
+                        ? t(row.group.labelKey)
+                        : (row.group.rawLabel ?? row.group.id);
+                      return (
+                        <div
+                          key={`group:${row.group.id}`}
+                          data-index={virtualItem.index}
+                          ref={listVirtualizer.measureElement}
+                          style={{
+                            position: "absolute",
+                            top: 0,
+                            left: 0,
+                            width: "100%",
+                            height: `${GROUP_HEADER_HEIGHT}px`,
+                            transform: `translateY(${virtualItem.start}px)`,
+                          }}
+                          className="border-border/50 bg-muted/40 flex items-center border-b px-2 text-xs font-medium"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => toggleGroupCollapsed(row.group.id)}
+                            className="text-muted-foreground hover:text-foreground flex w-full items-center gap-1.5 text-left"
+                          >
+                            {collapsed ? (
+                              <ChevronRight className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                            ) : (
+                              <ChevronDown className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                            )}
+                            <span className="truncate">{label}</span>
+                            <span className="text-muted-foreground/75 text-[11px] tabular-nums">
+                              ({row.group.entries.length})
+                            </span>
+                          </button>
+                        </div>
+                      );
+                    }
+
+                    const { entry, flatIndex, depth, canExpand, isExpanded, isLoadingChildren } =
+                      row;
                     const dragHandlers = makeDragHandlers(
                       entry,
                       selectedPaths,
@@ -1376,7 +1733,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                         >
                           <FileListItem
                             entry={entry}
-                            index={virtualItem.index}
+                            index={flatIndex}
                             visibleSharpness={visibleSharpness.get(entry.path)}
                             isInViewport={
                               virtualItem.index >= listStart && virtualItem.index <= listEnd
@@ -1396,6 +1753,11 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                             columnVisibility={listColumnVisibility}
                             cullingState={cullingMap.get(entry.path)}
                             pairedBadge={pairedCompanionsByPath.has(entry.path) ? "RAW+JPG" : null}
+                            depth={depth}
+                            canExpand={canExpand}
+                            isExpanded={isExpanded}
+                            isLoadingChildren={isLoadingChildren}
+                            onToggleExpand={groupBy === "none" ? handleToggleExpandDir : undefined}
                           />
                         </AppContextMenu>
                       </div>
@@ -1431,9 +1793,48 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                     />
                   )}
                   {gridVirtualizer.getVirtualItems().map((virtualRow) => {
+                    const row = gridRows[virtualRow.index];
+                    if (!row) return null;
+                    if (row.kind === "group") {
+                      const collapsed = collapsedGroupSet.has(row.group.id);
+                      const label = row.group.labelKey
+                        ? t(row.group.labelKey)
+                        : (row.group.rawLabel ?? row.group.id);
+                      return (
+                        <div
+                          key={`grid-group:${row.group.id}`}
+                          data-index={virtualRow.index}
+                          style={{
+                            position: "absolute",
+                            top: 0,
+                            left: 0,
+                            width: "100%",
+                            height: `${virtualRow.size}px`,
+                            transform: `translateY(${virtualRow.start}px)`,
+                          }}
+                          className="border-border/50 bg-muted/35 flex items-center border-b px-3 text-xs font-medium"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => toggleGroupCollapsed(row.group.id)}
+                            className="text-muted-foreground hover:text-foreground flex w-full items-center gap-1.5 text-left"
+                          >
+                            {collapsed ? (
+                              <ChevronRight className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                            ) : (
+                              <ChevronDown className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                            )}
+                            <span className="truncate">{label}</span>
+                            <span className="text-muted-foreground/75 text-[11px] tabular-nums">
+                              ({row.group.entries.length})
+                            </span>
+                          </button>
+                        </div>
+                      );
+                    }
+
                     const cols = gridColumns;
-                    const startIdx = virtualRow.index * cols;
-                    const rowEntries = sortedEntries.slice(startIdx, startIdx + cols);
+                    const rowEntries = row.entries;
                     return (
                       <div
                         key={virtualRow.index}
@@ -1454,7 +1855,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                           }}
                         >
                           {rowEntries.map((entry, colIdx) => {
-                            const globalIndex = startIdx + colIdx;
+                            const globalIndex = row.startFlatIndex + colIdx;
                             const dragHandlers = makeDragHandlers(
                               entry,
                               selectedPaths,
@@ -1528,6 +1929,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
           onSetRating={handleSetRating}
           onSetFlag={handleSetFlag}
           onDelete={(target) => handleDelete([target])}
+          onExtract={(target) => void handleExtract(target)}
           onNavigate={(entry) => {
             const index = sortedEntries.findIndex((candidate) => candidate.path === entry.path);
             selectSingle(entry.path, index);

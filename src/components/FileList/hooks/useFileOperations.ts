@@ -189,10 +189,40 @@ export function useFileOperations({
   );
 
   const handleGetInfo = useCallback(
-    (entry: FileEntry) => {
+    (entry: FileEntry | FileEntry[]) => {
       openFileInfo(entry);
     },
     [openFileInfo]
+  );
+
+  const handleRotateImage = useCallback(
+    async (entries: FileEntry[], clockwise: boolean) => {
+      if (entries.length === 0) return;
+      try {
+        for (const item of entries) {
+          await invoke("rotate_image_file", { path: item.path, clockwise });
+        }
+        invalidateCache(currentPath);
+        onRefresh(true);
+      } catch (error) {
+        console.error("Failed to rotate image:", error);
+        alert(t("file_list.error_operation", { error: String(error) }));
+      }
+    },
+    [currentPath, onRefresh, t]
+  );
+
+  const handleShare = useCallback(
+    async (entries: FileEntry[]) => {
+      if (entries.length === 0) return;
+      try {
+        await invoke("share_files_native", { paths: entries.map((e) => e.path) });
+      } catch (error) {
+        console.error("Failed to share files:", error);
+        alert(t("file_list.error_operation", { error: String(error) }));
+      }
+    },
+    [t]
   );
 
   const handleToggleFavorite = useCallback(
@@ -318,6 +348,8 @@ export function useFileOperations({
     handleCompress,
     handleExtract,
     handleGetInfo,
+    handleRotateImage,
+    handleShare,
     handleToggleFavorite,
     isFavorite,
     handleCopyPath,

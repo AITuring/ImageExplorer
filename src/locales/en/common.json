@@ -82,7 +82,9 @@
       "eye_focus": "Eye Focus (F)",
       "eye_focus_scanning": "Detecting eyes...",
       "eye_focus_none": "No face found",
-      "eye_focus_cycle": "Eye {{current}}/{{total}} (F)"
+      "eye_focus_cycle": "Eye {{current}}/{{total}} (F)",
+      "zip_summary": "ZIP Archive · {{count}} items · {{uncompressed}} ({{compressed}} compressed, {{ratio}}% saved)",
+      "zip_truncated": "Showing first {{shown}} items"
     }
   },
   "updates": {
@@ -158,6 +160,11 @@
   "file_info": {
     "title": "Item Info",
     "description": "Inspect detailed attributes for files, folders, packages, aliases, and links.",
+    "multi_title": "{{count}} Items Info",
+    "multi_description": "Inspect combined size and batch-edit Finder tags or lock state across selected items.",
+    "multi_breakdown": "{{dirs}} folders, {{files}} files",
+    "mixed": "Mixed",
+    "selected_items": "Selected items",
     "kind": "Kind",
     "folder": "Folder",
     "file": "File",

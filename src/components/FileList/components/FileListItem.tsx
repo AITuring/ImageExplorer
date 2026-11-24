@@ -4,7 +4,7 @@ import { getPhotoMetadataSummary } from "@/lib/photoMetadata";
 import { isAnalyzablePhoto } from "@/lib/photoAnalysis";
 import type { VisibleSharpness } from "@/hooks/useVisibleSharpness";
 import { memo, useEffect, useRef } from "react";
-import { Check, Star, XCircle } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Loader2, Star, XCircle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { FileEntry } from "@/types/index";
 import type { ListColumnVisibility, ListColumnWidths } from "@/stores/viewMode";
@@ -38,6 +38,11 @@ interface FileListItemProps {
   columnVisibility?: ListColumnVisibility;
   pairedBadge?: string | null;
   cullingState?: PhotoCullingState;
+  depth?: number;
+  canExpand?: boolean;
+  isExpanded?: boolean;
+  isLoadingChildren?: boolean;
+  onToggleExpand?: (entry: FileEntry) => void;
 }
 
 export const FileListItem = memo(function FileListItem({
@@ -63,6 +68,11 @@ export const FileListItem = memo(function FileListItem({
   columnVisibility,
   pairedBadge,
   cullingState,
+  depth = 0,
+  canExpand = false,
+  isExpanded = false,
+  isLoadingChildren = false,
+  onToggleExpand,
 }: FileListItemProps) {
   const { t } = useTranslation();
   const metadata = usePhotoMetadata(entry, isInViewport && !isScrolling);
@@ -96,7 +106,34 @@ export const FileListItem = memo(function FileListItem({
         else onDoubleClick?.();
       }}
     >
-      <div className="flex min-w-0 flex-1 items-center gap-3">
+      <div
+        className="flex min-w-0 flex-1 items-center gap-2"
+        style={depth > 0 ? { paddingLeft: `${depth * 18}px` } : undefined}
+      >
+        {canExpand ? (
+          <button
+            type="button"
+            tabIndex={-1}
+            aria-label={isExpanded ? t("file_list.collapse_folder") : t("file_list.expand_folder")}
+            aria-expanded={isExpanded}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleExpand?.(entry);
+            }}
+            onDoubleClick={(e) => e.stopPropagation()}
+            className="text-muted-foreground hover:text-foreground flex h-4 w-4 shrink-0 items-center justify-center rounded transition-colors"
+          >
+            {isLoadingChildren ? (
+              <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+            ) : isExpanded ? (
+              <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+            )}
+          </button>
+        ) : onToggleExpand ? (
+          <span className="h-4 w-4 shrink-0" aria-hidden="true" />
+        ) : null}
         <CompactFileThumbnail entry={entry} isInViewport={isInViewport} isScrolling={isScrolling} />
         {isEditing ? (
           <Input

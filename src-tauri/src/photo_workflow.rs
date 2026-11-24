@@ -26,6 +26,15 @@ extern "C" {
         out_error: *mut *mut libc::c_char,
     ) -> libc::c_int;
     fn imageexplorer_image_metadata(path: *const libc::c_char, length: *mut usize) -> *mut u8;
+    fn imageexplorer_rotate_image(
+        path: *const libc::c_char,
+        clockwise: libc::c_int,
+        out_error: *mut *mut libc::c_char,
+    ) -> libc::c_int;
+    fn imageexplorer_share_files(
+        paths_json: *const libc::c_char,
+        out_error: *mut *mut libc::c_char,
+    ) -> libc::c_int;
     fn imageexplorer_free_thumbnail(bytes: *mut u8);
     fn imageexplorer_free_c_string(value: *mut libc::c_char);
 }
@@ -647,6 +656,155 @@ pub async fn run_sd_ingest(
     })
     .await
     .map_err(|e| format!("SD ingest task failed: {e}"))?
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RenameExifTokens {
+    pub date_ymd: Option<String>,
+    pub model: Option<String>,
+    pub iso: Option<String>,
+    pub focal: Option<String>,
+}
+
+fn sanitize_token(raw: &str) -> String {
+    raw.trim()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else if c.is_whitespace() {
+                '-'
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches(|c| c == '-' || c == '_')
+        .to_string()
+}
+
+#[cfg(target_os = "macos")]
+pub fn read_rename_exif_tokens(path: &Path) -> RenameExifTokens {
+    let Ok(c_path) = CString::new(path.to_string_lossy().as_bytes()) else {
+        return RenameExifTokens::default();
+    };
+    let mut len: usize = 0;
+    let ptr = unsafe { imageexplorer_image_metadata(c_path.as_ptr(), &mut len) };
+    if ptr.is_null() || len == 0 {
+        return RenameExifTokens::default();
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+    unsafe { imageexplorer_free_thumbnail(ptr) };
+    let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return RenameExifTokens::default();
+    };
+    let date_ymd = parsed
+        .get("capturedAt")
+        .and_then(|v| v.as_str())
+        .and_then(parse_exif_ymd)
+        .map(|(y, m, d)| format!("{y:04}{m:02}{d:02}"));
+    let model = parsed
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(sanitize_token)
+        .filter(|s| !s.is_empty());
+    let iso = parsed
+        .get("iso")
+        .and_then(|v| v.as_str())
+        .map(|s| format!("ISO{}", sanitize_token(s)))
+        .filter(|s| s.len() > 3);
+    let focal = parsed
+        .get("focalLength")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|f| format!("{}mm", f.round() as i64));
+    RenameExifTokens {
+        date_ymd,
+        model,
+        iso,
+        focal,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn read_rename_exif_tokens(_path: &Path) -> RenameExifTokens {
+    RenameExifTokens::default()
+}
+
+pub fn file_mtime_ymd(path: &Path) -> String {
+    let secs = fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|m| m.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let (y, m, d) = unix_seconds_to_local_ymd(secs);
+    format!("{y:04}{m:02}{d:02}")
+}
+
+#[cfg(target_os = "macos")]
+fn rotate_image_blocking(path: &str, clockwise: bool) -> Result<(), String> {
+    let c_path = CString::new(path).map_err(|_| "Invalid file path".to_string())?;
+    let mut err_ptr: *mut libc::c_char = std::ptr::null_mut();
+    let ok = unsafe {
+        imageexplorer_rotate_image(c_path.as_ptr(), if clockwise { 1 } else { 0 }, &mut err_ptr)
+    };
+    if ok != 0 {
+        return Ok(());
+    }
+    let message = if !err_ptr.is_null() {
+        let msg = unsafe { CStr::from_ptr(err_ptr) }
+            .to_string_lossy()
+            .into_owned();
+        unsafe { imageexplorer_free_c_string(err_ptr) };
+        msg
+    } else {
+        "Image rotation failed".to_string()
+    };
+    Err(message)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn rotate_image_blocking(_path: &str, _clockwise: bool) -> Result<(), String> {
+    Err("Image rotation is only supported on macOS".to_string())
+}
+
+#[tauri::command]
+pub async fn rotate_image_file(path: String, clockwise: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || rotate_image_blocking(&path, clockwise))
+        .await
+        .map_err(|e| format!("Image rotation task failed: {e}"))?
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub fn share_files_native(paths: Vec<String>) -> Result<(), String> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let json = serde_json::to_string(&paths).map_err(|e| e.to_string())?;
+    let c_json = CString::new(json).map_err(|_| "Invalid paths JSON".to_string())?;
+    let mut err_ptr: *mut libc::c_char = std::ptr::null_mut();
+    let ok = unsafe { imageexplorer_share_files(c_json.as_ptr(), &mut err_ptr) };
+    if ok != 0 {
+        return Ok(());
+    }
+    let message = if !err_ptr.is_null() {
+        let msg = unsafe { CStr::from_ptr(err_ptr) }
+            .to_string_lossy()
+            .into_owned();
+        unsafe { imageexplorer_free_c_string(err_ptr) };
+        msg
+    } else {
+        "Unable to open macOS Share sheet".to_string()
+    };
+    Err(message)
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub fn share_files_native(_paths: Vec<String>) -> Result<(), String> {
+    Err("Native share sheet is only supported on macOS".to_string())
 }
 
 #[cfg(test)]

@@ -3761,6 +3761,20 @@ pub fn batch_rename(
                 }
                 format!("{}{}", old_name.replace(find_str, effective_pattern), ext)
             }
+            "regex" => {
+                let find_str = find.as_deref().unwrap_or("");
+                if find_str.is_empty() {
+                    errors.push(format!("{}: regex pattern is empty", path_str));
+                    continue;
+                }
+                match regex::Regex::new(find_str) {
+                    Ok(re) => format!("{}{}", re.replace_all(&old_name, effective_pattern), ext),
+                    Err(err) => {
+                        errors.push(format!("{}: invalid regex ({})", path_str, err));
+                        continue;
+                    }
+                }
+            }
             "prefix" => format!("{}{}{}", effective_pattern, old_name, ext),
             "suffix" => format!("{}{}{}", old_name, effective_pattern, ext),
             "counter" => {
@@ -3769,6 +3783,61 @@ pub fn batch_rename(
                     .replace("{counter}", &counter)
                     .replace("{name}", &old_name);
                 format!("{}{}", name, ext)
+            }
+            "template" => {
+                let tmpl = if effective_pattern.is_empty() {
+                    "{date}_{name}_{counter:03}"
+                } else {
+                    effective_pattern
+                };
+                let needs_exif = tmpl.contains("{date}")
+                    || tmpl.contains("{model}")
+                    || tmpl.contains("{iso}")
+                    || tmpl.contains("{focal}");
+                let tokens = if needs_exif && !source_metadata.is_dir() {
+                    crate::photo_workflow::read_rename_exif_tokens(path_obj)
+                } else {
+                    crate::photo_workflow::RenameExifTokens::default()
+                };
+                let date_str = tokens
+                    .date_ymd
+                    .unwrap_or_else(|| crate::photo_workflow::file_mtime_ymd(path_obj));
+                let counter_plain = format!("{}", i + 1);
+                let counter_padded = format!("{:03}", i + 1);
+                let rendered = tmpl
+                    .replace("{counter:03}", &counter_padded)
+                    .replace("{counter}", &counter_plain)
+                    .replace("{name}", &old_name)
+                    .replace("{date}", &date_str)
+                    .replace("{model}", tokens.model.as_deref().unwrap_or("Camera"))
+                    .replace("{iso}", tokens.iso.as_deref().unwrap_or("ISO"))
+                    .replace("{focal}", tokens.focal.as_deref().unwrap_or("0mm"));
+                format!("{}{}", rendered, ext)
+            }
+            "case" => {
+                let transformed = match effective_pattern {
+                    "upper" => old_name.to_uppercase(),
+                    "title" => {
+                        let mut out = String::with_capacity(old_name.len());
+                        let mut capitalize_next = true;
+                        for ch in old_name.chars() {
+                            if ch.is_alphanumeric() {
+                                if capitalize_next {
+                                    out.extend(ch.to_uppercase());
+                                    capitalize_next = false;
+                                } else {
+                                    out.extend(ch.to_lowercase());
+                                }
+                            } else {
+                                out.push(ch);
+                                capitalize_next = true;
+                            }
+                        }
+                        out
+                    }
+                    _ => old_name.to_lowercase(),
+                };
+                format!("{}{}", transformed, ext)
             }
             _ => {
                 errors.push(format!("{}: unknown mode '{}'", path_str, mode));
@@ -4379,6 +4448,55 @@ mod file_entry_tests {
         assert!(second.is_file());
         assert_eq!(fs::read(&first).expect("read first"), b"cat");
         assert_eq!(fs::read(&second).expect("read second"), b"bat");
+
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn batch_rename_supports_regex_template_and_case_modes() {
+        let root = test_root();
+        fs::create_dir_all(&root).expect("create test root");
+        let a = root.join("IMG_0012_raw.jpg");
+        let b = root.join("IMG_0013_raw.jpg");
+        fs::write(&a, b"a").expect("write a");
+        fs::write(&b, b"b").expect("write b");
+
+        // Regex capture group replacement
+        let res = batch_rename(
+            vec![
+                a.to_string_lossy().to_string(),
+                b.to_string_lossy().to_string(),
+            ],
+            "shot-$1".to_string(),
+            "regex".to_string(),
+            Some(r"IMG_(\d+)_raw".to_string()),
+        )
+        .expect("regex rename");
+        assert_eq!(res.success, 2);
+        assert!(root.join("shot-0012.jpg").is_file());
+        assert!(root.join("shot-0013.jpg").is_file());
+
+        // Case conversion (title)
+        let res_case = batch_rename(
+            vec![root.join("shot-0012.jpg").to_string_lossy().to_string()],
+            "title".to_string(),
+            "case".to_string(),
+            None,
+        )
+        .expect("case rename");
+        assert_eq!(res_case.success, 1);
+        assert!(root.join("Shot-0012.jpg").is_file());
+
+        // Template mode with zero-padded counter
+        let res_tpl = batch_rename(
+            vec![root.join("Shot-0012.jpg").to_string_lossy().to_string()],
+            "{name}_{counter:03}".to_string(),
+            "template".to_string(),
+            None,
+        )
+        .expect("template rename");
+        assert_eq!(res_tpl.success, 1);
+        assert!(root.join("Shot-0012_001.jpg").is_file());
 
         fs::remove_dir_all(root).expect("remove test root");
     }

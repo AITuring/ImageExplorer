@@ -1,7 +1,9 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import type { GroupByField } from "@/lib/finderGrouping";
 
 export type ViewMode = "icon" | "list" | "column" | "gallery";
+export type { GroupByField };
 
 export interface ListColumnWidths {
   kind: number;
@@ -37,12 +39,14 @@ export const DEFAULT_LIST_COLUMN_VISIBILITY: ListColumnVisibility = {
 
 interface ViewModeState {
   viewMode: ViewMode;
+  groupBy: GroupByField;
   iconSize: number;
   columnViewWidth: number;
   cullAutoAdvance: boolean;
   listColumnWidths: ListColumnWidths;
   listColumnVisibility: ListColumnVisibility;
   setViewMode: (mode: ViewMode) => void;
+  setGroupBy: (groupBy: GroupByField) => void;
   setIconSize: (size: number) => void;
   setColumnViewWidth: (width: number) => void;
   toggleCullAutoAdvance: () => void;
@@ -69,12 +73,14 @@ export const useViewMode = create<ViewModeState>()(
   persist(
     (set) => ({
       viewMode: "list",
+      groupBy: "none",
       iconSize: ICON_SIZE_DEFAULT,
       columnViewWidth: COLUMN_VIEW_WIDTH_DEFAULT,
       cullAutoAdvance: false,
       listColumnWidths: DEFAULT_LIST_COLUMN_WIDTHS,
       listColumnVisibility: DEFAULT_LIST_COLUMN_VISIBILITY,
       setViewMode: (mode) => set({ viewMode: mode }),
+      setGroupBy: (groupBy) => set({ groupBy }),
       setIconSize: (size) => set({ iconSize: clampIconSize(size) }),
       setColumnViewWidth: (width) => set({ columnViewWidth: clampColumnViewWidth(width) }),
       toggleCullAutoAdvance: () => set((state) => ({ cullAutoAdvance: !state.cullAutoAdvance })),
@@ -98,12 +104,17 @@ export const useViewMode = create<ViewModeState>()(
       merge: (persisted, current) => {
         const saved = persisted as Partial<ViewModeState> | undefined;
         const mode = saved?.viewMode;
+        const gb = saved?.groupBy;
         return {
           ...current,
           viewMode:
             mode === "gallery" || mode === "icon" || mode === "column" || mode === "list"
               ? mode
               : current.viewMode,
+          groupBy:
+            gb === "none" || gb === "kind" || gb === "date" || gb === "size" || gb === "tag"
+              ? gb
+              : current.groupBy,
           iconSize:
             typeof saved?.iconSize === "number" ? clampIconSize(saved.iconSize) : current.iconSize,
           columnViewWidth:

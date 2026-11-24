@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronUp, ChevronDown, SlidersHorizontal, Check } from "lucide-react";
 import { SortField, SortDirection } from "../hooks/useFileSort";
-import { useViewMode, type ListColumnWidths } from "@/stores/viewMode";
+import { useViewMode, type GroupByField, type ListColumnWidths } from "@/stores/viewMode";
 
 interface FileListHeaderProps {
   sortField: SortField;
@@ -51,8 +51,14 @@ function ResizeHandle({
 
 export function FileListHeader({ sortField, sortDirection, onSort }: FileListHeaderProps) {
   const { t } = useTranslation();
-  const { listColumnWidths, listColumnVisibility, setListColumnWidth, toggleListColumn } =
-    useViewMode();
+  const {
+    groupBy,
+    setGroupBy,
+    listColumnWidths,
+    listColumnVisibility,
+    setListColumnWidth,
+    toggleListColumn,
+  } = useViewMode();
   const [menuOpen, setMenuOpen] = useState(false);
 
   const SortIcon = sortDirection === "asc" ? ChevronUp : ChevronDown;
@@ -170,6 +176,35 @@ export function FileListHeader({ sortField, sortDirection, onSort }: FileListHea
               </span>
               <span>{t("file_list.col_created")}</span>
             </button>
+            <div className="border-border/60 my-1 border-t" />
+            <div className="text-muted-foreground px-2 py-0.5 text-[10px] font-medium">
+              {t("file_list.group.label")}
+            </div>
+            {(
+              [
+                ["none", "file_list.group.none"],
+                ["kind", "file_list.group.kind"],
+                ["date", "file_list.group.date"],
+                ["size", "file_list.group.size"],
+                ["tag", "file_list.group.tag"],
+              ] as Array<[GroupByField, string]>
+            ).map(([field, labelKey]) => (
+              <button
+                key={field}
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  setGroupBy(field);
+                  setMenuOpen(false);
+                }}
+                className="hover:bg-accent flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs"
+              >
+                <span className="flex h-3.5 w-3.5 items-center justify-center">
+                  {groupBy === field && <Check className="h-3 w-3" />}
+                </span>
+                <span>{t(labelKey)}</span>
+              </button>
+            ))}
           </div>
         )}
       </div>

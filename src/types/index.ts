@@ -197,6 +197,8 @@ export interface FileActions {
   onToggleTag?: (entries: FileEntry[], tag: string) => void;
   onCompare?: (entries: FileEntry[]) => void;
   onBatchExport?: (entries: FileEntry[]) => void;
+  onRotateImage?: (entries: FileEntry[], clockwise: boolean) => void;
+  onShare?: (entries: FileEntry[]) => void;
   onCopy: (entries: FileEntry[]) => void;
   onCut: (entries: FileEntry[]) => void;
   onPaste: () => void;
@@ -205,7 +207,7 @@ export interface FileActions {
   onDelete: (entries: FileEntry[]) => void;
   onCompress?: (entries: FileEntry[]) => void;
   onExtract?: (entry: FileEntry) => void;
-  onGetInfo?: (entry: FileEntry) => void;
+  onGetInfo?: (entry: FileEntry | FileEntry[]) => void;
   onToggleFavorite?: (entry: FileEntry) => void;
   isFavorite?: (entry: FileEntry) => boolean;
   onRename?: (entry: FileEntry) => void;

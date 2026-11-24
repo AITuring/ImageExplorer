@@ -26,6 +26,9 @@ import {
   XCircle,
   Star,
   ScanFace,
+  Archive,
+  Folder,
+  PackageOpen,
 } from "lucide-react";
 import { SmartIcon } from "@/components/SmartIcon";
 import { FileThumbnail } from "@/components/FileThumbnail";
@@ -83,9 +86,25 @@ interface QuickLookProps {
   onSetRating?: (entry: FileEntry, rating: number) => void;
   onSetFlag?: (entry: FileEntry, flag: PhotoFlag) => void;
   onDelete?: (entry: FileEntry) => Promise<void>;
+  onExtract?: (entry: FileEntry) => void;
 }
 
-type PreviewType = "text" | "image" | "video" | "audio" | "pdf" | "icon";
+type PreviewType = "text" | "image" | "video" | "audio" | "pdf" | "zip" | "icon";
+
+interface ZipEntryInfo {
+  name: string;
+  isDir: boolean;
+  compressedSize: number;
+  uncompressedSize: number;
+}
+
+interface ZipArchivePreview {
+  totalEntries: number;
+  totalCompressed: number;
+  totalUncompressed: number;
+  truncated: boolean;
+  entries: ZipEntryInfo[];
+}
 
 interface ImageDimensions {
   width: number;
@@ -1181,6 +1200,7 @@ export function QuickLook({
   onSetRating,
   onSetFlag,
   onDelete,
+  onExtract,
 }: QuickLookProps) {
   const { t } = useTranslation();
   const activeCulling = cullingState ?? DEFAULT_CULLING_STATE;
@@ -1205,6 +1225,10 @@ export function QuickLook({
   const entryIdentity = entry ? `${entryPath}\u0000${entryModified}\u0000${entrySize}` : null;
 
   const [textContent, setTextContent] = useState<string | null>(null);
+  const [zipPreviewRecord, setZipPreviewRecord] = useState<{
+    path: string;
+    preview: ZipArchivePreview;
+  } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fallbackSrc, setFallbackSrc] = useState<string | null>(null);
@@ -1265,6 +1289,7 @@ export function QuickLook({
     if (isVideoFile(entry.extension)) return "video";
     if (isAudioFile(entry.extension)) return "audio";
     if (isPdfFile(entry.extension)) return "pdf";
+    if ((entry.extension || "").toLowerCase() === "zip") return "zip";
     if (isTextFile(entry.extension) && entry.size < 1024 * 1024) return "text";
     return "icon";
   }, [entry]);
@@ -1283,6 +1308,7 @@ export function QuickLook({
       case "video":
         return "h-[min(92vh,64rem)] w-[min(96vw,96rem)]";
       case "text":
+      case "zip":
         return "h-[min(88vh,56rem)] w-[min(92vw,80rem)]";
       default:
         return "h-[min(82vh,42rem)] w-[min(88vw,56rem)]";
@@ -1953,6 +1979,31 @@ export function QuickLook({
     };
   }, [entryIdentity, entryPath, previewType]);
 
+  useEffect(() => {
+    if (!entryPath || previewType !== "zip") {
+      return;
+    }
+    let cancelled = false;
+    const loadZip = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        const preview = await invoke<ZipArchivePreview>("list_zip_entries", { path: entryPath });
+        if (!cancelled) {
+          setZipPreviewRecord({ path: entryPath, preview });
+        }
+      } catch (err) {
+        if (!cancelled) setError(String(err));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    void loadZip();
+    return () => {
+      cancelled = true;
+    };
+  }, [entryIdentity, entryPath, previewType]);
+
   const handleOpen = async () => {
     if (!entry) {
       return;
@@ -2175,6 +2226,75 @@ export function QuickLook({
             <pre className="font-mono text-xs break-words whitespace-pre-wrap">{textContent}</pre>
           </div>
         ) : null;
+
+      case "zip": {
+        const zip = zipPreviewRecord?.path === entryPath ? zipPreviewRecord.preview : null;
+        if (!zip) return null;
+        const ratio =
+          zip.totalUncompressed > 0
+            ? Math.max(0, Math.round((1 - zip.totalCompressed / zip.totalUncompressed) * 100))
+            : 0;
+        return (
+          <div className="flex h-full w-full flex-col gap-3 overflow-hidden">
+            <div className="bg-muted/30 flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="inline-flex items-center gap-1.5 font-medium">
+                  <Archive className="text-primary h-4 w-4" aria-hidden="true" />
+                  {t("common.quick_look.zip_summary", {
+                    count: zip.totalEntries,
+                    uncompressed: formatFileSize(zip.totalUncompressed),
+                    compressed: formatFileSize(zip.totalCompressed),
+                    ratio,
+                  })}
+                </span>
+                {zip.truncated && (
+                  <span className="text-muted-foreground">
+                    {t("common.quick_look.zip_truncated", { shown: zip.entries.length })}
+                  </span>
+                )}
+              </div>
+              {onExtract && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onExtract(entry);
+                    onClose();
+                  }}
+                  className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium"
+                >
+                  <PackageOpen className="h-3.5 w-3.5" aria-hidden="true" />
+                  {t("context_menu.extract_zip")}
+                </button>
+              )}
+            </div>
+            <div className="bg-muted/20 min-h-0 flex-1 overflow-y-auto rounded-lg border">
+              <div className="divide-border/50 divide-y text-xs">
+                {zip.entries.map((item) => (
+                  <div
+                    key={item.name}
+                    className="hover:bg-accent/50 flex items-center justify-between gap-3 px-3 py-1.5"
+                  >
+                    <div className="flex min-w-0 items-center gap-2">
+                      {item.isDir ? (
+                        <Folder className="h-3.5 w-3.5 shrink-0 text-blue-500" aria-hidden="true" />
+                      ) : (
+                        <File
+                          className="text-muted-foreground h-3.5 w-3.5 shrink-0"
+                          aria-hidden="true"
+                        />
+                      )}
+                      <span className="truncate font-mono">{item.name}</span>
+                    </div>
+                    <span className="text-muted-foreground shrink-0 font-mono tabular-nums">
+                      {item.isDir ? "--" : formatFileSize(item.uncompressedSize)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      }
 
       case "icon":
       default:

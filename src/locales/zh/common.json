@@ -82,7 +82,9 @@
       "eye_focus": "人眼核焦 (F)",
       "eye_focus_scanning": "检测人眼中...",
       "eye_focus_none": "未检测到人脸",
-      "eye_focus_cycle": "人眼 {{current}}/{{total}} (F)"
+      "eye_focus_cycle": "人眼 {{current}}/{{total}} (F)",
+      "zip_summary": "ZIP 归档 · {{count}} 个项目 · 原始 {{uncompressed}}（压缩后 {{compressed}}，压缩率 {{ratio}}%）",
+      "zip_truncated": "仅显示前 {{shown}} 项"
     }
   },
   "updates": {
@@ -158,6 +160,11 @@
   "file_info": {
     "title": "项目属性",
     "description": "查看文件、文件夹、Package、Alias 和链接的详细属性。",
+    "multi_title": "{{count}} 个项目简介",
+    "multi_description": "查看多个已选项目的合计大小，并批量修改标签或锁定状态。",
+    "multi_breakdown": "{{dirs}} 个文件夹，{{files}} 个文件",
+    "mixed": "部分已锁定",
+    "selected_items": "已选项目",
     "kind": "类型",
     "folder": "文件夹",
     "file": "文件",

@@ -26,10 +26,25 @@ import {
   Link,
   Pencil,
   PackageOpen,
+  RotateCcw,
+  RotateCw,
   Scissors,
+  Share,
   Terminal,
   Trash2,
 } from "lucide-react";
+
+const ROTATABLE_IMAGE_EXTS = new Set([
+  "jpg",
+  "jpeg",
+  "png",
+  "heic",
+  "heif",
+  "tif",
+  "tiff",
+  "webp",
+  "bmp",
+]);
 
 interface FileMenuContentProps {
   entry: FileEntry;
@@ -249,12 +264,49 @@ export function FileMenuContent({ entry, selectedEntries, actions }: FileMenuCon
         />
       )}
 
+      {actions.onRotateImage &&
+        (() => {
+          const rotatable = targets.filter(
+            (item) =>
+              !item.is_dir &&
+              !item.readonly &&
+              ROTATABLE_IMAGE_EXTS.has((item.extension ?? "").toLowerCase())
+          );
+          if (rotatable.length === 0) return null;
+          return (
+            <>
+              <MenuItem
+                fallbackIcon={RotateCcw}
+                label={t("context_menu.rotate_left")}
+                onClick={() => actions.onRotateImage?.(rotatable, false)}
+              />
+              <MenuItem
+                fallbackIcon={RotateCw}
+                label={t("context_menu.rotate_right")}
+                onClick={() => actions.onRotateImage?.(rotatable, true)}
+              />
+            </>
+          );
+        })()}
+
+      {actions.onShare && (
+        <MenuItem
+          fallbackIcon={Share}
+          label={t("context_menu.share")}
+          onClick={() => actions.onShare?.(targets)}
+        />
+      )}
+
       {actions.onGetInfo && (
         <MenuItem
           fallbackIcon={Info}
-          label={t("context_menu.get_info")}
+          label={
+            targets.length > 1
+              ? t("context_menu.get_info_multi", { count: targets.length })
+              : t("context_menu.get_info")
+          }
           shortcut="⌘I"
-          onClick={() => actions.onGetInfo?.(entry)}
+          onClick={() => actions.onGetInfo?.(targets.length > 1 ? targets : entry)}
         />
       )}
 

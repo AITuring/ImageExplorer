@@ -15,6 +15,7 @@ mod thumb_disk_cache;
 mod thumb_protocol;
 mod trash_commands;
 mod xmp_sidecar;
+mod zip_preview;
 
 #[cfg(target_os = "macos")]
 use commands::apps::get_arw_embedded_jpeg;
@@ -1350,6 +1351,9 @@ pub fn run() {
             photo_workflow::batch_export_photos,
             photo_workflow::plan_sd_ingest,
             photo_workflow::run_sd_ingest,
+            photo_workflow::rotate_image_file,
+            photo_workflow::share_files_native,
+            zip_preview::list_zip_entries,
             analyze_directory_storage,
             find_duplicate_files,
             cancel_storage_analysis,

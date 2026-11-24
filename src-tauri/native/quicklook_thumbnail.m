@@ -1233,3 +1233,225 @@ int imageexplorer_export_image(
         return finalized ? 1 : 0;
     }
 }
+
+// Rotate a raster image file 90 degrees clockwise or counter-clockwise in-process
+// via CoreGraphics + ImageIO and replace the file atomically.
+int imageexplorer_rotate_image(const char *path, int clockwise, char **outError) {
+    if (outError != NULL) {
+        *outError = NULL;
+    }
+    if (path == NULL) {
+        return 0;
+    }
+
+    @autoreleasepool {
+        NSString *filePath = [NSString stringWithUTF8String:path];
+        if (filePath == nil) {
+            return 0;
+        }
+        NSURL *fileURL = [NSURL fileURLWithPath:filePath];
+        CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)fileURL, NULL);
+        if (source == NULL) {
+            if (outError != NULL) {
+                *outError = imageexplorer_copy_utf8(@"Unable to open image for rotation");
+            }
+            return 0;
+        }
+
+        CFStringRef sourceType = CGImageSourceGetType(source);
+        CFStringRef outputUTI = sourceType != NULL ? CFRetain(sourceType) : CFRetain(CFSTR("public.jpeg"));
+        NSDictionary *srcProps = CFBridgingRelease(
+            CGImageSourceCopyPropertiesAtIndex(source, 0, NULL)
+        );
+        NSNumber *pixelWidth = srcProps[(id)kCGImagePropertyPixelWidth];
+        NSNumber *pixelHeight = srcProps[(id)kCGImagePropertyPixelHeight];
+        NSUInteger maxDim = MAX(pixelWidth.unsignedIntegerValue, pixelHeight.unsignedIntegerValue);
+
+        CGImageRef upright = NULL;
+        if (maxDim > 0) {
+            NSDictionary *opts = @{
+                (id)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+                (id)kCGImageSourceCreateThumbnailWithTransform: @YES,
+                (id)kCGImageSourceThumbnailMaxPixelSize: @(maxDim),
+            };
+            upright = CGImageSourceCreateThumbnailAtIndex(source, 0, (__bridge CFDictionaryRef)opts);
+        }
+        if (upright == NULL) {
+            upright = CGImageSourceCreateImageAtIndex(source, 0, NULL);
+        }
+        CFRelease(source);
+
+        if (upright == NULL) {
+            CFRelease(outputUTI);
+            if (outError != NULL) {
+                *outError = imageexplorer_copy_utf8(@"Failed to decode image");
+            }
+            return 0;
+        }
+
+        size_t origW = CGImageGetWidth(upright);
+        size_t origH = CGImageGetHeight(upright);
+        size_t newW = origH;
+        size_t newH = origW;
+
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+        CGContextRef ctx = CGBitmapContextCreate(
+            NULL,
+            newW,
+            newH,
+            8,
+            0,
+            colorSpace,
+            (CGBitmapInfo)kCGImageAlphaPremultipliedLast
+        );
+        CGColorSpaceRelease(colorSpace);
+        if (ctx == NULL) {
+            CGImageRelease(upright);
+            CFRelease(outputUTI);
+            if (outError != NULL) {
+                *outError = imageexplorer_copy_utf8(@"Failed to allocate graphics context");
+            }
+            return 0;
+        }
+
+        CGContextTranslateCTM(ctx, (CGFloat)newW * 0.5, (CGFloat)newH * 0.5);
+        // CoreGraphics Y-axis points up: clockwise 90 deg is -pi/2, CCW is +pi/2.
+        CGContextRotateCTM(ctx, clockwise ? -(CGFloat)M_PI_2 : (CGFloat)M_PI_2);
+        CGContextDrawImage(
+            ctx,
+            CGRectMake(-(CGFloat)origW * 0.5, -(CGFloat)origH * 0.5, (CGFloat)origW, (CGFloat)origH),
+            upright
+        );
+        CGImageRef rotated = CGBitmapContextCreateImage(ctx);
+        CGContextRelease(ctx);
+        CGImageRelease(upright);
+
+        if (rotated == NULL) {
+            CFRelease(outputUTI);
+            if (outError != NULL) {
+                *outError = imageexplorer_copy_utf8(@"Failed to render rotated image");
+            }
+            return 0;
+        }
+
+        NSString *tempPath = [NSString stringWithFormat:@"%@.rotate-%@.tmp",
+                              filePath, [[NSUUID UUID] UUIDString]];
+        NSURL *tempURL = [NSURL fileURLWithPath:tempPath];
+        CGImageDestinationRef dest = CGImageDestinationCreateWithURL(
+            (__bridge CFURLRef)tempURL,
+            outputUTI,
+            1,
+            NULL
+        );
+        CFRelease(outputUTI);
+        if (dest == NULL) {
+            CGImageRelease(rotated);
+            if (outError != NULL) {
+                *outError = imageexplorer_copy_utf8(@"Format does not support in-place image rotation");
+            }
+            return 0;
+        }
+
+        NSMutableDictionary *destProps = srcProps != nil
+            ? [srcProps mutableCopy]
+            : [NSMutableDictionary dictionary];
+        destProps[(id)kCGImagePropertyOrientation] = @1;
+        id tiff = destProps[(id)kCGImagePropertyTIFFDictionary];
+        if ([tiff isKindOfClass:NSDictionary.class]) {
+            NSMutableDictionary *cleanTiff = [(NSDictionary *)tiff mutableCopy];
+            cleanTiff[(id)kCGImagePropertyTIFFOrientation] = @1;
+            destProps[(id)kCGImagePropertyTIFFDictionary] = cleanTiff;
+        }
+        destProps[(id)kCGImageDestinationLossyCompressionQuality] = @0.94;
+
+        CGImageDestinationAddImage(dest, rotated, (__bridge CFDictionaryRef)destProps);
+        BOOL finalized = CGImageDestinationFinalize(dest);
+        CFRelease(dest);
+        CGImageRelease(rotated);
+
+        if (!finalized) {
+            [[NSFileManager defaultManager] removeItemAtURL:tempURL error:NULL];
+            if (outError != NULL) {
+                *outError = imageexplorer_copy_utf8(@"Failed to save rotated image");
+            }
+            return 0;
+        }
+
+        NSError *replaceError = nil;
+        NSURL *replacedURL = nil;
+        BOOL replaced = [[NSFileManager defaultManager] replaceItemAtURL:fileURL
+                                                           withItemAtURL:tempURL
+                                                          backupItemName:nil
+                                                                 options:0
+                                                        resultingItemURL:&replacedURL
+                                                                   error:&replaceError];
+        if (!replaced) {
+            [[NSFileManager defaultManager] removeItemAtURL:tempURL error:NULL];
+            if (outError != NULL && replaceError != nil) {
+                *outError = imageexplorer_copy_utf8(replaceError.localizedDescription);
+            }
+            return 0;
+        }
+        return 1;
+    }
+}
+
+// Present the native macOS NSSharingServicePicker (AirDrop, Mail, Messages, etc.)
+// anchored near the current cursor inside the active application window.
+int imageexplorer_share_files(const char *pathsJson, char **outError) {
+    if (outError != NULL) {
+        *outError = NULL;
+    }
+    if (pathsJson == NULL) {
+        return 0;
+    }
+
+    @autoreleasepool {
+        NSData *jsonData = [NSData dataWithBytes:pathsJson length:strlen(pathsJson)];
+        id parsed = [NSJSONSerialization JSONObjectWithData:jsonData options:0 error:NULL];
+        if (![parsed isKindOfClass:NSArray.class]) {
+            if (outError != NULL) {
+                *outError = imageexplorer_copy_utf8(@"Invalid paths payload");
+            }
+            return 0;
+        }
+
+        NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+        for (id item in (NSArray *)parsed) {
+            if ([item isKindOfClass:NSString.class] && [(NSString *)item length] > 0) {
+                [urls addObject:[NSURL fileURLWithPath:(NSString *)item]];
+            }
+        }
+        if (urls.count == 0) {
+            return 0;
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSWindow *window = [NSApp keyWindow];
+            if (window == nil) {
+                for (NSWindow *candidate in [NSApp windows]) {
+                    if (candidate.isVisible && candidate.contentView != nil) {
+                        window = candidate;
+                        break;
+                    }
+                }
+            }
+            NSView *contentView = window.contentView;
+            if (window == nil || contentView == nil) {
+                return;
+            }
+            NSPoint screenPt = [NSEvent mouseLocation];
+            NSPoint windowPt = [window convertPointFromScreen:screenPt];
+            NSPoint viewPt = [contentView convertPoint:windowPt fromView:nil];
+            NSRect bounds = contentView.bounds;
+            if (!NSPointInRect(viewPt, bounds)) {
+                viewPt = NSMakePoint(NSMidX(bounds), NSMidY(bounds));
+            }
+            NSRect anchorRect = NSMakeRect(viewPt.x, viewPt.y, 1.0, 1.0);
+            NSSharingServicePicker *picker = [[NSSharingServicePicker alloc] initWithItems:urls];
+            [picker showRelativeToRect:anchorRect ofView:contentView preferredEdge:NSRectEdgeMinY];
+        });
+
+        return 1;
+    }
+}

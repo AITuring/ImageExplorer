@@ -14,13 +14,14 @@ import {
   Columns2,
   GalleryHorizontalEnd,
   HardDriveDownload,
+  Layers3,
   PieChart,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AppContextMenu } from "@/components/AppContextMenu";
 import { TextInputActions, SearchResult, SearchResponse, FileActions, FileEntry } from "@/types";
 import { SmartIcon } from "@/components/SmartIcon";
-import { useViewMode } from "@/stores/viewMode";
+import { useViewMode, type GroupByField } from "@/stores/viewMode";
 import { useSplitView } from "@/stores/splitView";
 import { useStorageAnalyzerDialog } from "@/stores/storageAnalyzerDialog";
 import { useSdIngestDialog } from "@/stores/sdIngestDialog";
@@ -85,7 +86,8 @@ export function TopBar({ onNavigate }: TopBarProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(currentPath);
 
-  const { viewMode } = useViewMode();
+  const { viewMode, groupBy, setGroupBy } = useViewMode();
+  const [groupMenuOpen, setGroupMenuOpen] = useState(false);
   const splitViewEnabled = useSplitView((state) => state.enabled);
   const toggleSplitView = useSplitView((state) => state.toggleSplitView);
   const openStorageAnalyzer = useStorageAnalyzerDialog((state) => state.open);
@@ -959,6 +961,59 @@ export function TopBar({ onNavigate }: TopBarProps) {
             <GalleryHorizontalEnd className="h-4 w-4" />
           </button>
           <span className="bg-border/60 mx-0.5 h-3.5 w-[1px]" aria-hidden="true" />
+          {(viewMode === "list" || viewMode === "icon") && (
+            <div className="relative">
+              <button
+                type="button"
+                className={`rounded-sm p-1 transition-colors ${
+                  groupBy !== "none"
+                    ? "bg-accent text-accent-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+                onClick={() => setGroupMenuOpen((open) => !open)}
+                onBlur={() => window.setTimeout(() => setGroupMenuOpen(false), 150)}
+                aria-expanded={groupMenuOpen}
+                aria-label={t("file_list.group.label")}
+                title={t("file_list.group.label")}
+              >
+                <Layers3 className="h-4 w-4" />
+              </button>
+              {groupMenuOpen && (
+                <div className="finder-popover bg-popover text-popover-foreground absolute top-full right-0 z-[100] mt-1.5 w-36 rounded-md border p-1 shadow-lg">
+                  <div className="text-muted-foreground px-2 py-1 text-[10px] font-medium">
+                    {t("file_list.group.label")}
+                  </div>
+                  {(
+                    [
+                      ["none", "file_list.group.none"],
+                      ["kind", "file_list.group.kind"],
+                      ["date", "file_list.group.date"],
+                      ["size", "file_list.group.size"],
+                      ["tag", "file_list.group.tag"],
+                    ] as Array<[GroupByField, string]>
+                  ).map(([field, labelKey]) => (
+                    <button
+                      key={field}
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        setGroupBy(field);
+                        setGroupMenuOpen(false);
+                      }}
+                      className={`hover:bg-accent flex w-full items-center justify-between rounded px-2 py-1 text-left text-xs ${
+                        groupBy === field ? "text-primary font-medium" : ""
+                      }`}
+                    >
+                      <span>{t(labelKey)}</span>
+                      {groupBy === field && (
+                        <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <button
             type="button"
             className={`rounded-sm p-1 transition-colors ${
