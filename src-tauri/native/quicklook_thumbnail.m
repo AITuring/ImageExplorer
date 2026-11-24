@@ -4,6 +4,7 @@
 #import <Foundation/Foundation.h>
 #import <ImageIO/ImageIO.h>
 #import <QuickLook/QuickLook.h>
+#import <Vision/Vision.h>
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -902,5 +903,333 @@ char *imageexplorer_resolve_alias(const char *path, int *outIsAlias) {
             return NULL;
         }
         return imageexplorer_copy_utf8(resolved.path);
+    }
+}
+
+static BOOL imageexplorer_landmark_centroid(
+    VNFaceLandmarkRegion2D *region,
+    CGRect faceBox,
+    double *outX,
+    double *outY
+) {
+    if (region == nil || region.pointCount == 0 || region.normalizedPoints == NULL) {
+        return NO;
+    }
+    const CGPoint *pts = region.normalizedPoints;
+    double sumX = 0.0;
+    double sumY = 0.0;
+    NSUInteger count = region.pointCount;
+    for (NSUInteger i = 0; i < count; i++) {
+        sumX += pts[i].x;
+        sumY += pts[i].y;
+    }
+    double avgX = sumX / (double)count;
+    double avgY = sumY / (double)count;
+    *outX = faceBox.origin.x + avgX * faceBox.size.width;
+    *outY = 1.0 - (faceBox.origin.y + avgY * faceBox.size.height);
+    return YES;
+}
+
+static uint8_t *imageexplorer_detect_faces_on_cgimage(CGImageRef cgImage, size_t *outLength) {
+    if (cgImage == NULL || outLength == NULL) {
+        return NULL;
+    }
+    *outLength = 0;
+
+    VNDetectFaceLandmarksRequest *request = [[VNDetectFaceLandmarksRequest alloc] init];
+    VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:cgImage
+                                                                            options:@{}];
+    NSError *error = nil;
+    if (![handler performRequests:@[request] error:&error] || error != nil) {
+        return NULL;
+    }
+
+    NSArray<VNFaceObservation *> *observations = request.results;
+    NSMutableArray<NSDictionary *> *faces = [NSMutableArray array];
+    for (VNFaceObservation *obs in observations) {
+        CGRect box = obs.boundingBox;
+        double x = box.origin.x;
+        double y = 1.0 - (box.origin.y + box.size.height);
+        double w = box.size.width;
+        double h = box.size.height;
+
+        double leftX = 0.0, leftY = 0.0;
+        double rightX = 0.0, rightY = 0.0;
+        BOOL hasLeft = imageexplorer_landmark_centroid(obs.landmarks.leftPupil, box, &leftX, &leftY) ||
+                       imageexplorer_landmark_centroid(obs.landmarks.leftEye, box, &leftX, &leftY);
+        BOOL hasRight = imageexplorer_landmark_centroid(obs.landmarks.rightPupil, box, &rightX, &rightY) ||
+                        imageexplorer_landmark_centroid(obs.landmarks.rightEye, box, &rightX, &rightY);
+
+        double eyeX = x + w * 0.5;
+        double eyeY = y + h * 0.36;
+        if (hasLeft && hasRight) {
+            eyeX = (leftX + rightX) * 0.5;
+            eyeY = (leftY + rightY) * 0.5;
+        } else if (hasLeft) {
+            eyeX = leftX;
+            eyeY = leftY;
+        } else if (hasRight) {
+            eyeX = rightX;
+            eyeY = rightY;
+        }
+
+        NSMutableDictionary *entry = [NSMutableDictionary dictionaryWithDictionary:@{
+            @"x": @(x),
+            @"y": @(y),
+            @"width": @(w),
+            @"height": @(h),
+            @"eyeX": @(eyeX),
+            @"eyeY": @(eyeY),
+            @"_area": @(w * h),
+        }];
+        if (hasLeft) {
+            entry[@"leftEye"] = @[@(leftX), @(leftY)];
+        }
+        if (hasRight) {
+            entry[@"rightEye"] = @[@(rightX), @(rightY)];
+        }
+        [faces addObject:entry];
+    }
+
+    [faces sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        double areaA = [a[@"_area"] doubleValue];
+        double areaB = [b[@"_area"] doubleValue];
+        if (areaA > areaB) return NSOrderedAscending;
+        if (areaA < areaB) return NSOrderedDescending;
+        return NSOrderedSame;
+    }];
+
+    NSMutableArray<NSDictionary *> *cleanFaces = [NSMutableArray arrayWithCapacity:faces.count];
+    for (NSDictionary *item in faces) {
+        NSMutableDictionary *copy = [item mutableCopy];
+        [copy removeObjectForKey:@"_area"];
+        [cleanFaces addObject:copy];
+    }
+
+    NSData *json = [NSJSONSerialization dataWithJSONObject:cleanFaces options:0 error:NULL];
+    if (json == nil || json.length == 0) {
+        return NULL;
+    }
+    uint8_t *result = malloc(json.length);
+    if (result == NULL) {
+        return NULL;
+    }
+    [json getBytes:result length:json.length];
+    *outLength = json.length;
+    return result;
+}
+
+static CGImageRef imageexplorer_create_upright_cgimage_for_vision(CGImageSourceRef source) {
+    if (source == NULL) {
+        return NULL;
+    }
+    NSDictionary *options = @{
+        (id)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+        (id)kCGImageSourceCreateThumbnailWithTransform: @YES,
+        (id)kCGImageSourceThumbnailMaxPixelSize: @1280,
+    };
+    CGImageRef thumb = CGImageSourceCreateThumbnailAtIndex(source, 0, (__bridge CFDictionaryRef)options);
+    if (thumb != NULL) {
+        return thumb;
+    }
+    return CGImageSourceCreateImageAtIndex(source, 0, NULL);
+}
+
+// Detect faces and eye landmarks via macOS Vision.framework from in-memory JPEG/image bytes.
+uint8_t *imageexplorer_detect_faces_from_bytes(
+    const uint8_t *bytes,
+    size_t length,
+    size_t *outLength
+) {
+    if (bytes == NULL || length == 0 || outLength == NULL) {
+        return NULL;
+    }
+    *outLength = 0;
+
+    @autoreleasepool {
+        CFDataRef data = CFDataCreateWithBytesNoCopy(
+            kCFAllocatorDefault,
+            bytes,
+            (CFIndex)length,
+            kCFAllocatorNull
+        );
+        if (data == NULL) {
+            return NULL;
+        }
+        CGImageSourceRef source = CGImageSourceCreateWithData(data, NULL);
+        CFRelease(data);
+        if (source == NULL) {
+            return NULL;
+        }
+        CGImageRef image = imageexplorer_create_upright_cgimage_for_vision(source);
+        CFRelease(source);
+        if (image == NULL) {
+            return NULL;
+        }
+        uint8_t *result = imageexplorer_detect_faces_on_cgimage(image, outLength);
+        CGImageRelease(image);
+        return result;
+    }
+}
+
+// Detect faces and eye landmarks via macOS Vision.framework directly from a file path.
+uint8_t *imageexplorer_detect_faces(const char *path, size_t *outLength) {
+    if (path == NULL || outLength == NULL) {
+        return NULL;
+    }
+    *outLength = 0;
+
+    @autoreleasepool {
+        NSString *filePath = [NSString stringWithUTF8String:path];
+        if (filePath == nil) {
+            return NULL;
+        }
+        NSURL *fileURL = [NSURL fileURLWithPath:filePath];
+        CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)fileURL, NULL);
+        if (source == NULL) {
+            return NULL;
+        }
+        CGImageRef image = imageexplorer_create_upright_cgimage_for_vision(source);
+        CFRelease(source);
+        if (image == NULL) {
+            return NULL;
+        }
+        uint8_t *result = imageexplorer_detect_faces_on_cgimage(image, outLength);
+        CGImageRelease(image);
+        return result;
+    }
+}
+
+// Export an image (including macOS-supported RAW files) to JPEG, PNG, or HEIC
+// with optional long-edge resize, compression quality, and GPS stripping.
+int imageexplorer_export_image(
+    const char *srcPath,
+    const char *dstPath,
+    const char *format,
+    uint32_t maxEdge,
+    double quality,
+    int stripGps,
+    char **outError
+) {
+    if (outError != NULL) {
+        *outError = NULL;
+    }
+    if (srcPath == NULL || dstPath == NULL || format == NULL) {
+        return 0;
+    }
+
+    @autoreleasepool {
+        NSString *srcStr = [NSString stringWithUTF8String:srcPath];
+        NSString *dstStr = [NSString stringWithUTF8String:dstPath];
+        NSString *fmtStr = [[NSString stringWithUTF8String:format] lowercaseString];
+        if (srcStr == nil || dstStr == nil || fmtStr == nil) {
+            return 0;
+        }
+
+        CFStringRef uti = CFSTR("public.jpeg");
+        BOOL isLossy = YES;
+        if ([fmtStr isEqualToString:@"png"]) {
+            uti = CFSTR("public.png");
+            isLossy = NO;
+        } else if ([fmtStr isEqualToString:@"heic"]) {
+            uti = CFSTR("public.heic");
+            isLossy = YES;
+        }
+
+        NSURL *srcURL = [NSURL fileURLWithPath:srcStr];
+        CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)srcURL, NULL);
+        if (source == NULL) {
+            if (outError != NULL) {
+                *outError = imageexplorer_copy_utf8(@"Unable to open source image");
+            }
+            return 0;
+        }
+
+        NSDictionary *srcProps = CFBridgingRelease(
+            CGImageSourceCopyPropertiesAtIndex(source, 0, NULL)
+        );
+        NSNumber *pixelWidth = srcProps[(id)kCGImagePropertyPixelWidth];
+        NSNumber *pixelHeight = srcProps[(id)kCGImagePropertyPixelHeight];
+        NSUInteger origMax = MAX(pixelWidth.unsignedIntegerValue, pixelHeight.unsignedIntegerValue);
+
+        CGImageRef image = NULL;
+        uint32_t targetMax = 0;
+        if (maxEdge > 0 && (origMax == 0 || origMax > maxEdge)) {
+            targetMax = maxEdge;
+        } else if (origMax > 0) {
+            targetMax = (uint32_t)origMax;
+        }
+
+        if (targetMax > 0) {
+            NSDictionary *thumbOpts = @{
+                (id)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+                (id)kCGImageSourceCreateThumbnailWithTransform: @YES,
+                (id)kCGImageSourceThumbnailMaxPixelSize: @(targetMax),
+            };
+            image = CGImageSourceCreateThumbnailAtIndex(source, 0, (__bridge CFDictionaryRef)thumbOpts);
+        }
+        if (image == NULL) {
+            image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
+        }
+        CFRelease(source);
+
+        if (image == NULL) {
+            if (outError != NULL) {
+                *outError = imageexplorer_copy_utf8(@"Failed to decode image for export");
+            }
+            return 0;
+        }
+
+        NSMutableDictionary *destProps = [NSMutableDictionary dictionary];
+        if (srcProps != nil) {
+            id exif = srcProps[(id)kCGImagePropertyExifDictionary];
+            if (exif != nil) {
+                destProps[(id)kCGImagePropertyExifDictionary] = exif;
+            }
+            id tiff = srcProps[(id)kCGImagePropertyTIFFDictionary];
+            if ([tiff isKindOfClass:NSDictionary.class]) {
+                NSMutableDictionary *cleanTiff = [(NSDictionary *)tiff mutableCopy];
+                cleanTiff[(id)kCGImagePropertyTIFFOrientation] = @1;
+                destProps[(id)kCGImagePropertyTIFFDictionary] = cleanTiff;
+            }
+            if (!stripGps) {
+                id gps = srcProps[(id)kCGImagePropertyGPSDictionary];
+                if (gps != nil) {
+                    destProps[(id)kCGImagePropertyGPSDictionary] = gps;
+                }
+            }
+        }
+        destProps[(id)kCGImagePropertyOrientation] = @1;
+        if (isLossy) {
+            double clamped = quality;
+            if (clamped < 0.1) clamped = 0.1;
+            if (clamped > 1.0) clamped = 1.0;
+            destProps[(id)kCGImageDestinationLossyCompressionQuality] = @(clamped);
+        }
+
+        NSURL *dstURL = [NSURL fileURLWithPath:dstStr];
+        CGImageDestinationRef dest = CGImageDestinationCreateWithURL(
+            (__bridge CFURLRef)dstURL,
+            uti,
+            1,
+            NULL
+        );
+        if (dest == NULL) {
+            CGImageRelease(image);
+            if (outError != NULL) {
+                *outError = imageexplorer_copy_utf8(@"Unable to create image destination");
+            }
+            return 0;
+        }
+
+        CGImageDestinationAddImage(dest, image, (__bridge CFDictionaryRef)destProps);
+        BOOL finalized = CGImageDestinationFinalize(dest);
+        CFRelease(dest);
+        CGImageRelease(image);
+
+        if (!finalized && outError != NULL) {
+            *outError = imageexplorer_copy_utf8(@"Failed to finalize exported image");
+        }
+        return finalized ? 1 : 0;
     }
 }

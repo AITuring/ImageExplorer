@@ -59,6 +59,7 @@ import { makeNativeFileDragGestureHandlers } from "@/lib/nativeFileDragGesture";
 import { isPermissionDeniedError, requestDirectoryAccess } from "@/lib/directoryAccess";
 import { settingsManager } from "@/lib/store";
 import { useStatusBar } from "@/stores/statusBar";
+import { useBatchExportDialog } from "@/stores/batchExportDialog";
 
 /** 列表视图固定行高 */
 const LIST_ITEM_HEIGHT = 32;
@@ -142,6 +143,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   const photoAnalysisEnabled = true;
   const { addTab, activeTab, goBack, goForward, canGoBack, canGoForward } = useTabs();
   const setStatusBar = useStatusBar((state) => state.setStatus);
+  const openBatchExport = useBatchExportDialog((state) => state.open);
   const [legacyTabNumberShortcuts] = useSetting<boolean>("legacy_cmd_number_tabs", false);
   const [gridColumns, setGridColumns] = useState(6);
   const [columnSelectionContext, setColumnSelectionContext] =
@@ -991,6 +993,8 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       onShowOriginal: handleShowOriginal,
       onToggleTag: handleToggleTag,
       onCompare: (entriesToCompare) => setCompareEntries(entriesToCompare),
+      onBatchExport: (photos) =>
+        openBatchExport(photos, operationPath.startsWith(SMART_FOLDER_PREFIX) ? "" : operationPath),
       onCopy: handleCopy,
       onCut: handleCut,
       onPaste: handlePaste,
@@ -1032,6 +1036,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       handleToggleFavorite,
       handleToggleTag,
       isFavorite,
+      openBatchExport,
       operationPath,
     ]
   );
@@ -1243,6 +1248,15 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
                 onToggleSortByCaptured={() => handleSort("captured")}
                 onAutoPickBest={handleAutoPickBest}
                 onExportXmp={hasPhotosInFolder ? () => void handleExportXmp() : undefined}
+                onBatchExport={
+                  allPhotosInView.length > 0
+                    ? () =>
+                        openBatchExport(
+                          allPhotosInView,
+                          currentPath.startsWith(SMART_FOLDER_PREFIX) ? "" : currentPath
+                        )
+                    : undefined
+                }
                 onExportFiltered={() => void handleExportFiltered()}
                 inputRef={filterInputRef}
                 onClose={

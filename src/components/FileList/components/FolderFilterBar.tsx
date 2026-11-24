@@ -7,6 +7,7 @@ import {
   FileCode2,
   Filter,
   FolderOutput,
+  ImageDown,
   Layers,
   Sparkles,
   Star,
@@ -40,6 +41,7 @@ interface FolderFilterBarProps {
   onAutoPickBest?: () => void;
   onExportXmp?: () => void;
   onExportFiltered?: () => void;
+  onBatchExport?: () => void;
   inputRef?: React.RefObject<HTMLInputElement | null>;
   onClose?: () => void;
 }
@@ -60,6 +62,7 @@ export const FolderFilterBar = memo(function FolderFilterBar({
   onAutoPickBest,
   onExportXmp,
   onExportFiltered,
+  onBatchExport,
   inputRef,
   onClose,
 }: FolderFilterBarProps) {
@@ -381,6 +384,19 @@ export const FolderFilterBar = memo(function FolderFilterBar({
         >
           <FileCode2 className="h-3 w-3" aria-hidden="true" />
           <span>{t("file_list.culling.export_xmp")}</span>
+        </button>
+      )}
+
+      {/* Batch Transcode Export */}
+      {filteredCount > 0 && onBatchExport && (
+        <button
+          type="button"
+          onClick={onBatchExport}
+          title={t("photo_workflow.export.title")}
+          className="text-muted-foreground hover:bg-accent hover:text-foreground inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] transition-colors"
+        >
+          <ImageDown className="h-3 w-3" aria-hidden="true" />
+          <span>{t("context_menu.batch_export").replace(/\.\.\.$/, "")}</span>
         </button>
       )}
 

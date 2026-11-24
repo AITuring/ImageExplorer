@@ -16,6 +16,7 @@
     "split_view": "双栏分屏 (⌘\\)",
     "split_pane_close": "关闭副栏",
     "storage_analyzer": "空间与重复文件分析",
+    "sd_ingest": "SD 卡按日期导入",
     "icon_size": "图标大小",
     "photo_sharpness_toggle": "清晰度",
     "photo_analysis_enable": "开启清晰度标签、视角与焦点识别",
@@ -77,7 +78,11 @@
       "sharpness_full_image_short": "整张",
       "sharpness_select_area": "框选",
       "sharpness_reselect": "重选",
-      "sharpness_selection_label": "清晰度检查框选模式。拖动以框选区域；按 Enter 或空格分析整张图；按 Escape 退出框选。"
+      "sharpness_selection_label": "清晰度检查框选模式。拖动以框选区域；按 Enter 或空格分析整张图；按 Escape 退出框选。",
+      "eye_focus": "人眼核焦 (F)",
+      "eye_focus_scanning": "检测人眼中...",
+      "eye_focus_none": "未检测到人脸",
+      "eye_focus_cycle": "人眼 {{current}}/{{total}} (F)"
     }
   },
   "updates": {
@@ -215,5 +220,45 @@
     "no_duplicates": "未检测到内容完全相同的重复文件",
     "reclaimable": "可释放 {{size}}",
     "keep_badge": "保留"
+  },
+  "photo_workflow": {
+    "choose_folder": "选择文件夹",
+    "open_dest": "打开目标目录",
+    "export": {
+      "title": "批量转码导出照片",
+      "count": "{{count}} 张",
+      "format": "输出格式",
+      "max_edge": "长边尺寸限制",
+      "edge_original": "原尺寸",
+      "edge_4096": "4096 px",
+      "edge_2560": "2560 px (高清)",
+      "edge_1920": "1920 px (网页)",
+      "edge_1280": "1280 px (社交)",
+      "quality": "压缩质量",
+      "strip_gps": "移除 GPS 定位信息",
+      "strip_gps_hint": "保留相机 EXIF 拍摄参数，仅剥离经纬度坐标保护隐私",
+      "dest": "导出目录",
+      "dest_placeholder": "选择或输入导出目标目录",
+      "start": "开始批量导出",
+      "running": "正在多线程导出...",
+      "done": "已成功导出 {{exported}} 张照片（失败 {{failed}} 张）"
+    },
+    "ingest": {
+      "title": "SD 存储卡按拍摄日期导入",
+      "detected_volumes": "已挂载存储卷",
+      "source": "源目录 / 存储卡",
+      "dest": "目标照片库根目录",
+      "skip_duplicates": "自动跳过已导入重复文件",
+      "prefix_date": "文件名添加日期前缀 (YYYYMMDD_)",
+      "plan_preview": "导入计划预览 (YYYY/YYYY-MM-DD)",
+      "scanning": "正在读取 EXIF 拍摄日期...",
+      "empty": "源目录中未发现可导入的照片或视频",
+      "summary_total": "共 {{count}} 个文件 · {{size}}",
+      "duplicates_found": "已存在 {{count}} 个重复项",
+      "hint": "选择存储卡或源目录后自动预览按日期归档结构",
+      "start": "开始导入",
+      "running": "正在拷贝导入...",
+      "done": "导入完成：新拷贝 {{copied}} 个，跳过重复 {{skipped}} 个"
+    }
   }
 }

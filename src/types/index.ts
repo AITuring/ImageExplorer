@@ -196,6 +196,7 @@ export interface FileActions {
   onShowOriginal?: (entry: FileEntry) => void;
   onToggleTag?: (entries: FileEntry[], tag: string) => void;
   onCompare?: (entries: FileEntry[]) => void;
+  onBatchExport?: (entries: FileEntry[]) => void;
   onCopy: (entries: FileEntry[]) => void;
   onCut: (entries: FileEntry[]) => void;
   onPaste: () => void;

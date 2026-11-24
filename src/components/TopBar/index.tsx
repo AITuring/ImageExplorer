@@ -13,6 +13,7 @@ import {
   Columns,
   Columns2,
   GalleryHorizontalEnd,
+  HardDriveDownload,
   PieChart,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -22,6 +23,7 @@ import { SmartIcon } from "@/components/SmartIcon";
 import { useViewMode } from "@/stores/viewMode";
 import { useSplitView } from "@/stores/splitView";
 import { useStorageAnalyzerDialog } from "@/stores/storageAnalyzerDialog";
+import { useSdIngestDialog } from "@/stores/sdIngestDialog";
 import { useTabs } from "@/hooks/useTabs";
 import { SEARCH_DEBOUNCE_MS, FOCUS_DELAY_MS, SMART_FOLDER_PREFIX } from "@/constants/config";
 import { filterHiddenEntries } from "@/utils/file";
@@ -87,6 +89,7 @@ export function TopBar({ onNavigate }: TopBarProps) {
   const splitViewEnabled = useSplitView((state) => state.enabled);
   const toggleSplitView = useSplitView((state) => state.toggleSplitView);
   const openStorageAnalyzer = useStorageAnalyzerDialog((state) => state.open);
+  const openSdIngest = useSdIngestDialog((state) => state.open);
   const { scopePath: photoAnalysisScope, progress: photoAnalysisProgress } =
     usePhotoAnalysisProgress();
   const [showHiddenFiles] = useSetting<boolean>("show_hidden_files", false);
@@ -983,6 +986,15 @@ export function TopBar({ onNavigate }: TopBarProps) {
             title={t("common.storage_analyzer")}
           >
             <PieChart className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            className="text-muted-foreground hover:text-foreground rounded-sm p-1 transition-colors"
+            onClick={() => openSdIngest()}
+            aria-label={t("common.sd_ingest")}
+            title={t("common.sd_ingest")}
+          >
+            <HardDriveDownload className="h-4 w-4" />
           </button>
         </div>
 

@@ -20,6 +20,7 @@ import {
   Columns2,
   Copy,
   FolderPlus,
+  ImageDown,
   Info,
   Star,
   Link,
@@ -198,6 +199,20 @@ export function FileMenuContent({ entry, selectedEntries, actions }: FileMenuCon
               fallbackIcon={Columns2}
               label={t("context_menu.compare_photos")}
               onClick={() => actions.onCompare?.(photos.slice(0, 4))}
+            />
+          );
+        })()}
+
+      {targets.length >= 1 &&
+        actions.onBatchExport &&
+        (() => {
+          const photos = targets.filter(isAnalyzablePhoto);
+          if (photos.length === 0) return null;
+          return (
+            <MenuItem
+              fallbackIcon={ImageDown}
+              label={t("context_menu.batch_export")}
+              onClick={() => actions.onBatchExport?.(photos)}
             />
           );
         })()}

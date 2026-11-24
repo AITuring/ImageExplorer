@@ -38,5 +38,6 @@
   "rename": "Rename",
   "go_to_location": "Go to File Location",
   "compare_photos": "Compare Photos",
+  "batch_export": "Batch Export Photos...",
   "batch_rename": "Batch Rename..."
 }

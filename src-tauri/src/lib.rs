@@ -8,6 +8,7 @@ mod db;
 mod index;
 mod menu;
 mod operations;
+mod photo_workflow;
 mod raw_preview;
 mod storage_analyzer;
 mod thumb_disk_cache;
@@ -1345,6 +1346,10 @@ pub fn run() {
             get_photo_culling_states,
             set_photo_culling_states,
             export_xmp_sidecars,
+            photo_workflow::detect_photo_faces,
+            photo_workflow::batch_export_photos,
+            photo_workflow::plan_sd_ingest,
+            photo_workflow::run_sd_ingest,
             analyze_directory_storage,
             find_duplicate_files,
             cancel_storage_analysis,

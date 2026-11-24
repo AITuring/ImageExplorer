@@ -21,6 +21,8 @@ import { OperationConflictDialog } from "@/components/OperationConflictDialog";
 import { TrashDialog } from "@/components/TrashDialog";
 import { FileInfoDialog } from "@/components/FileInfoDialog";
 import { StorageAnalyzerDialog } from "@/components/StorageAnalyzerDialog";
+import { BatchExportDialog } from "@/components/BatchExportDialog";
+import { SdIngestDialog } from "@/components/SdIngestDialog";
 import { ensureDirectoryAccess } from "@/lib/directoryAccess";
 import { useLocations } from "@/stores/locations";
 import { useClipboard } from "@/stores/clipboard";
@@ -366,6 +368,8 @@ function App() {
       <TrashDialog />
       <FileInfoDialog />
       <StorageAnalyzerDialog onNavigate={handleNavigate} />
+      <BatchExportDialog onNavigate={handleNavigate} />
+      <SdIngestDialog onNavigate={handleNavigate} />
 
       {isInitializing ? (
         <div className="flex h-full flex-1 items-center justify-center">

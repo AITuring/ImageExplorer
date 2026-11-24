@@ -25,6 +25,7 @@ import {
   Check,
   XCircle,
   Star,
+  ScanFace,
 } from "lucide-react";
 import { SmartIcon } from "@/components/SmartIcon";
 import { FileThumbnail } from "@/components/FileThumbnail";
@@ -89,6 +90,17 @@ type PreviewType = "text" | "image" | "video" | "audio" | "pdf" | "icon";
 interface ImageDimensions {
   width: number;
   height: number;
+}
+
+interface DetectedFace {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  eyeX: number;
+  eyeY: number;
+  leftEye?: [number, number] | null;
+  rightEye?: [number, number] | null;
 }
 
 const MAX_IMAGE_ZOOM = 6;
@@ -335,6 +347,8 @@ interface ZoomableImagePreviewProps {
   fallbackSrc: string | null;
   fileSrc: string | null;
   clippingMaskUrl?: string | null;
+  detectedFaces?: DetectedFace[];
+  activeFaceIndex?: number;
   zoomActionsRef?: MutableRefObject<ZoomPreviewActions | null>;
   useNativeImagePreview: boolean;
   progressivePreviewRequestSize: number;
@@ -352,6 +366,8 @@ interface ZoomableImageElementProps {
   src: string;
   interactionSrc?: string | null;
   clippingMaskUrl?: string | null;
+  detectedFaces?: DetectedFace[];
+  activeFaceIndex?: number;
   renderedImageSize: { width: number; height: number } | null;
   frameRef: (node: HTMLDivElement | null) => void;
   onLoad: (image: HTMLImageElement) => void;
@@ -366,6 +382,8 @@ const ZoomableImageElement = memo(function ZoomableImageElement({
   src,
   interactionSrc,
   clippingMaskUrl,
+  detectedFaces,
+  activeFaceIndex = -1,
   renderedImageSize,
   frameRef,
   onLoad,
@@ -437,6 +455,42 @@ const ZoomableImageElement = memo(function ZoomableImageElement({
           }}
         />
       ))}
+      {detectedFaces && detectedFaces.length > 0
+        ? detectedFaces.map((face, idx) => {
+            const isActive = idx === activeFaceIndex;
+            return (
+              <div
+                key={`face-${idx}-${face.x.toFixed(3)}-${face.y.toFixed(3)}`}
+                className="pointer-events-none absolute inset-0"
+              >
+                <div
+                  className={`absolute rounded-sm border transition-colors ${
+                    isActive
+                      ? "border-emerald-400 shadow-[0_0_0_1px_rgba(0,0,0,0.45)]"
+                      : "border-emerald-400/50"
+                  }`}
+                  style={{
+                    left: `${face.x * 100}%`,
+                    top: `${face.y * 100}%`,
+                    width: `${face.width * 100}%`,
+                    height: `${face.height * 100}%`,
+                  }}
+                />
+                <div
+                  className={`absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 ${
+                    isActive
+                      ? "border-emerald-300 bg-emerald-400/30 shadow-[0_0_6px_rgba(16,185,129,0.9)]"
+                      : "border-emerald-300/70"
+                  }`}
+                  style={{
+                    left: `${face.eyeX * 100}%`,
+                    top: `${face.eyeY * 100}%`,
+                  }}
+                />
+              </div>
+            );
+          })
+        : null}
       {children}
     </div>
   );
@@ -452,6 +506,8 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
   fallbackSrc,
   fileSrc,
   clippingMaskUrl,
+  detectedFaces,
+  activeFaceIndex = -1,
   zoomActionsRef,
   useNativeImagePreview,
   progressivePreviewRequestSize,
@@ -983,6 +1039,8 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
                 src={nativePreviewSrc}
                 interactionSrc={interactionPreviewSrc}
                 clippingMaskUrl={clippingMaskUrl}
+                detectedFaces={detectedFaces}
+                activeFaceIndex={activeFaceIndex}
                 renderedImageSize={renderedImageSize}
                 frameRef={registerZoomFrame}
                 onLoad={handleDisplayedImageLoad}
@@ -1047,6 +1105,8 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
               entry={entry}
               src={fallbackSrc || fileSrc || ""}
               clippingMaskUrl={clippingMaskUrl}
+              detectedFaces={detectedFaces}
+              activeFaceIndex={activeFaceIndex}
               renderedImageSize={renderedImageSize}
               frameRef={registerZoomFrame}
               onLoad={handleDisplayedImageLoad}
@@ -1125,6 +1185,12 @@ export function QuickLook({
   const { t } = useTranslation();
   const activeCulling = cullingState ?? DEFAULT_CULLING_STATE;
   const [showClippingOverlay, setShowClippingOverlay] = useState(false);
+  const [faceDetection, setFaceDetection] = useState<{
+    path: string;
+    faces: DetectedFace[];
+    activeIndex: number;
+  } | null>(null);
+  const [detectingFaces, setDetectingFaces] = useState(false);
   const [histogramRecord, setHistogramRecord] = useState<{
     path: string;
     histogram: PhotoHistogramData;
@@ -1448,6 +1514,42 @@ export function QuickLook({
     };
   }, []);
 
+  const handleEyeFocusZoom = useCallback(async () => {
+    if (!entryPath || previewType !== "image" || detectingFaces) return;
+    if (faceDetection && faceDetection.path === entryPath) {
+      if (faceDetection.faces.length === 0) return;
+      const nextIndex = faceDetection.activeIndex + 1;
+      if (nextIndex < faceDetection.faces.length) {
+        const face = faceDetection.faces[nextIndex];
+        setFaceDetection({ ...faceDetection, activeIndex: nextIndex });
+        zoomActionsRef.current?.zoomToNormalizedPoint(face.eyeX, face.eyeY);
+      } else {
+        setFaceDetection({ ...faceDetection, activeIndex: -1 });
+        zoomActionsRef.current?.toggleOneToOne();
+      }
+      return;
+    }
+
+    setDetectingFaces(true);
+    try {
+      const faces = await invoke<DetectedFace[]>("detect_photo_faces", { path: entryPath });
+      if (activeEntryIdentityRef.current !== entryIdentity) return;
+      if (faces.length > 0) {
+        setFaceDetection({ path: entryPath, faces, activeIndex: 0 });
+        zoomActionsRef.current?.zoomToNormalizedPoint(faces[0].eyeX, faces[0].eyeY);
+      } else {
+        setFaceDetection({ path: entryPath, faces: [], activeIndex: -1 });
+      }
+    } catch (err) {
+      console.error("Failed to detect faces:", err);
+      if (activeEntryIdentityRef.current === entryIdentity) {
+        setFaceDetection({ path: entryPath, faces: [], activeIndex: -1 });
+      }
+    } finally {
+      setDetectingFaces(false);
+    }
+  }, [detectingFaces, entryIdentity, entryPath, faceDetection, previewType]);
+
   // ESC 关闭 + 媒体清理
   useEffect(() => {
     if (!entry) return;
@@ -1518,6 +1620,19 @@ export function QuickLook({
       ) {
         e.preventDefault();
         zoomActionsRef.current?.toggleOneToOne();
+        return;
+      }
+
+      if (
+        previewType === "image" &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey &&
+        (e.key === "f" || e.key === "F")
+      ) {
+        e.preventDefault();
+        void handleEyeFocusZoom();
         return;
       }
 
@@ -1627,6 +1742,7 @@ export function QuickLook({
     autoAdvance,
     canNavigate,
     entry,
+    handleEyeFocusZoom,
     nextEntry,
     onClose,
     onDelete,
@@ -1916,6 +2032,10 @@ export function QuickLook({
       ? histogramRecord.clippingMaskUrl
       : null;
 
+  const activeFaceDetection = faceDetection?.path === entryPath ? faceDetection : null;
+  const activeDetectedFaces = activeFaceDetection?.faces ?? [];
+  const activeFaceIndex = activeFaceDetection?.activeIndex ?? -1;
+
   const renderPreview = () => {
     if (loading) {
       return (
@@ -1951,6 +2071,8 @@ export function QuickLook({
                 fallbackSrc={fallbackSrc}
                 fileSrc={fileSrc}
                 clippingMaskUrl={activeClippingMaskUrl}
+                detectedFaces={activeDetectedFaces}
+                activeFaceIndex={activeFaceIndex}
                 zoomActionsRef={zoomActionsRef}
                 useNativeImagePreview={useNativeImagePreview}
                 progressivePreviewRequestSize={progressivePreviewRequestSize}
@@ -2152,6 +2274,38 @@ export function QuickLook({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {previewType === "image" && (
+              <button
+                type="button"
+                onClick={() => void handleEyeFocusZoom()}
+                disabled={detectingFaces}
+                aria-pressed={activeFaceIndex >= 0}
+                title={t("common.quick_look.eye_focus")}
+                className={`hidden items-center gap-1 rounded px-2 py-1 text-xs transition-colors sm:inline-flex ${
+                  activeFaceIndex >= 0
+                    ? "bg-emerald-500/20 font-medium text-emerald-700 dark:text-emerald-300"
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                }`}
+              >
+                {detectingFaces ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <ScanFace className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+                <span>
+                  {detectingFaces
+                    ? t("common.quick_look.eye_focus_scanning")
+                    : activeFaceDetection && activeDetectedFaces.length === 0
+                      ? t("common.quick_look.eye_focus_none")
+                      : activeFaceIndex >= 0
+                        ? t("common.quick_look.eye_focus_cycle", {
+                            current: activeFaceIndex + 1,
+                            total: activeDetectedFaces.length,
+                          })
+                        : t("common.quick_look.eye_focus")}
+                </span>
+              </button>
+            )}
             {previewType === "image" && onSetFlag && (
               <div className="hidden items-center gap-1 sm:flex">
                 <button
