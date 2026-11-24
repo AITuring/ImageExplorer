@@ -537,14 +537,34 @@ export function useFileKeyboardShortcuts(
             (event.key === "ArrowLeft" || event.key === "ArrowRight"),
           enabled: () =>
             Boolean(
-              optionsRef.current.onColumnNavigateLeft || optionsRef.current.onColumnNavigateRight
+              optionsRef.current.onColumnNavigateLeft ||
+              optionsRef.current.onColumnNavigateRight ||
+              optionsRef.current.sortedEntries.length > 0
             ),
           run: async (event) => {
+            const current = optionsRef.current;
             if (event.key === "ArrowLeft") {
-              optionsRef.current.onColumnNavigateLeft?.();
+              if (current.onColumnNavigateLeft?.()) return;
             } else {
-              await optionsRef.current.onColumnNavigateRight?.();
+              if (await current.onColumnNavigateRight?.()) return;
             }
+            // When not navigating into/out of a subfolder column (e.g. browsing
+            // photos in a leaf directory), let Left/Right step previous/next item.
+            const entriesList = optionsRef.current.sortedEntries;
+            if (entriesList.length === 0) return;
+            const currentIndex = optionsRef.current.selectedPath
+              ? entriesList.findIndex((entry) => entry.path === optionsRef.current.selectedPath)
+              : -1;
+            const step = event.key === "ArrowRight" ? 1 : -1;
+            const nextIndex =
+              currentIndex < 0
+                ? 0
+                : Math.max(0, Math.min(entriesList.length - 1, currentIndex + step));
+            const nextEntry = entriesList[nextIndex];
+            if (!nextEntry) return;
+            optionsRef.current.selectSingle(nextEntry.path, nextIndex);
+            void optionsRef.current.onColumnFocusEntry?.(nextEntry);
+            optionsRef.current.onScrollToIndex?.(nextIndex);
           },
         },
         {

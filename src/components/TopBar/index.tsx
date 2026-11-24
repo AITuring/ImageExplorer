@@ -842,6 +842,7 @@ export function TopBar({ onNavigate }: TopBarProps) {
               {pathSuggestions.length > 0 && (
                 <ul
                   role="listbox"
+                  data-keyboard-overlay="true"
                   className="finder-popover bg-popover text-popover-foreground absolute top-full left-0 z-[110] mt-1 max-h-56 w-full overflow-y-auto rounded-md border py-1 shadow-xl"
                 >
                   {pathSuggestions.map((suggestion, index) => (

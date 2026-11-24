@@ -1709,6 +1709,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
             key={currentPath}
             entries={folderScanEntries}
             enabled={!loading && !error}
+            positionClassName={viewMode === "gallery" ? "right-3 bottom-32" : "right-3 bottom-3"}
             onLocate={(entry) => {
               const parent = entry.path.slice(0, entry.path.lastIndexOf("/")) || "/";
               if (parent !== currentPath || viewMode === "column") {
@@ -1826,6 +1827,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
             <div className="min-h-0 flex-1 overflow-hidden">
               <FileColumnView
                 currentPath={currentPath}
+                rootEntries={sortedEntries}
                 selectedPaths={selectedPaths}
                 focusedPath={selectedPath}
                 selectedFileEntries={selectedFileEntries}

@@ -1,7 +1,7 @@
 const EDITABLE_TARGET_SELECTOR =
   'input, textarea, select, [contenteditable="true"], [role="textbox"]';
 const OVERLAY_TARGET_SELECTOR =
-  '[aria-modal="true"], [role="menu"], [role="listbox"], [data-context-menu-content], [data-radix-menu-content]';
+  '[aria-modal="true"], [role="menu"], [data-keyboard-overlay="true"], [data-context-menu-content], [data-radix-menu-content]';
 const QUICK_LOOK_SCOPE_SELECTOR = '[data-keyboard-scope="quick-look"]';
 
 export type KeyboardCommandScope = "file-view" | "preview";
@@ -30,9 +30,12 @@ function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 function isVisibleOverlay(element: Element): boolean {
-  if (element.getAttribute("aria-hidden") === "true" || element.hasAttribute("hidden")) return false;
+  if (element.getAttribute("aria-hidden") === "true" || element.hasAttribute("hidden"))
+    return false;
   const style = window.getComputedStyle(element);
-  return style.display !== "none" && style.visibility !== "hidden" && element.getClientRects().length > 0;
+  return (
+    style.display !== "none" && style.visibility !== "hidden" && element.getClientRects().length > 0
+  );
 }
 
 function scopeForElements(candidates: Element[]): KeyboardCommandScope | null {
@@ -54,7 +57,9 @@ function scopeForElements(candidates: Element[]): KeyboardCommandScope | null {
 function scopeForEvent(event: KeyboardEvent): KeyboardCommandScope | null {
   const eventTarget = event.target instanceof Element ? event.target : null;
   const activeElement = document.activeElement instanceof Element ? document.activeElement : null;
-  const candidates = [eventTarget, activeElement].filter((element): element is Element => Boolean(element));
+  const candidates = [eventTarget, activeElement].filter((element): element is Element =>
+    Boolean(element)
+  );
   return scopeForElements(candidates);
 }
 
@@ -124,7 +129,9 @@ export function shouldIgnoreKeyboardCommand(
   if (isComposing(event)) return true;
   const eventTarget = event.target instanceof Element ? event.target : null;
   const activeElement = document.activeElement instanceof Element ? document.activeElement : null;
-  const candidates = [eventTarget, activeElement].filter((element): element is Element => Boolean(element));
+  const candidates = [eventTarget, activeElement].filter((element): element is Element =>
+    Boolean(element)
+  );
 
   if (candidates.some(isEditableTarget)) return true;
 

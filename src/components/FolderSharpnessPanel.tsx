@@ -13,6 +13,7 @@ interface Props {
   entries: FileEntry[];
   verdicts?: ReadonlyMap<string, VisibleSharpness>;
   enabled: boolean;
+  positionClassName?: string;
   onLocate: (entry: FileEntry) => void;
 }
 
@@ -20,6 +21,7 @@ export const FolderSharpnessPanel = memo(function FolderSharpnessPanel({
   entries,
   verdicts: externalVerdicts,
   enabled,
+  positionClassName = "right-3 bottom-3",
   onLocate,
 }: Props) {
   const { t } = useTranslation();
@@ -68,7 +70,7 @@ export const FolderSharpnessPanel = memo(function FolderSharpnessPanel({
     return (
       <button
         type="button"
-        className="bg-background/90 border-border/80 hover:bg-accent/80 absolute right-3 bottom-3 z-20 flex max-w-[90%] items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs shadow-md backdrop-blur-md transition-colors disabled:opacity-80"
+        className={`bg-background/90 border-border/80 hover:bg-accent/80 absolute ${positionClassName} z-20 flex max-w-[90%] items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs shadow-md backdrop-blur-md transition-colors disabled:opacity-80`}
         onMouseDown={(event) => event.stopPropagation()}
         onClick={() => setExpanded(true)}
         aria-expanded={false}
@@ -88,7 +90,7 @@ export const FolderSharpnessPanel = memo(function FolderSharpnessPanel({
     <aside
       aria-label={t("folder_sharpness.title")}
       onMouseDown={(event) => event.stopPropagation()}
-      className="bg-background/92 border-border/80 absolute right-3 bottom-3 z-20 flex max-h-[min(320px,52%)] w-64 max-w-[calc(100%-1.5rem)] flex-col overflow-hidden rounded-xl border shadow-xl backdrop-blur-xl"
+      className={`bg-background/92 border-border/80 absolute ${positionClassName} z-20 flex max-h-[min(320px,52%)] w-64 max-w-[calc(100%-1.5rem)] flex-col overflow-hidden rounded-xl border shadow-xl backdrop-blur-xl`}
     >
       <div className="border-border/50 flex shrink-0 items-center justify-between gap-2 border-b px-2.5 py-2">
         <h2 className="flex min-w-0 items-center gap-1.5 truncate text-xs font-medium">

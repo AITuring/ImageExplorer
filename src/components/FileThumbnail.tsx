@@ -3,6 +3,7 @@ import { File, Folder } from "lucide-react";
 import { SmartIcon } from "@/components/SmartIcon";
 import {
   buildFileThumbnailUrl,
+  getLargestLoadedFileThumbnailUrl,
   getThumbnailRequestSize,
   isFileThumbnailFailed,
   markFileThumbnailFailed,
@@ -70,10 +71,18 @@ export const FileThumbnail = memo(function FileThumbnail({
   );
 
   const identity = `${entry.path}\u0000${entry.modified ?? 0}\u0000${entry.size}\u0000${requestSize}`;
+  const cachedBestThumbnail = shouldLoadPreview
+    ? getLargestLoadedFileThumbnailUrl(entry.path, entry.modified, entry.size)
+    : null;
+  const cachedAlreadyMeetsTarget = Boolean(
+    cachedBestThumbnail &&
+    cachedBestThumbnail.requestSize >= requestSize &&
+    !isFileThumbnailFailed(cachedBestThumbnail.url)
+  );
   const [loadState, setLoadState] = useState<ThumbnailLoadState>(() => ({
     identity,
     stage: "embedded",
-    loadedUrl: null,
+    loadedUrl: cachedAlreadyMeetsTarget ? (cachedBestThumbnail?.url ?? null) : null,
   }));
 
   const currentStage: ThumbnailStage =
@@ -84,10 +93,27 @@ export const FileThumbnail = memo(function FileThumbnail({
           ? "full"
           : "failed"
         : "embedded";
-  const loadedUrl = loadState.identity === identity ? loadState.loadedUrl : null;
+  const loadedUrl =
+    loadState.identity === identity
+      ? loadState.loadedUrl
+      : cachedAlreadyMeetsTarget
+        ? (cachedBestThumbnail?.url ?? null)
+        : null;
   const activeUrl =
     currentStage === "embedded" ? embeddedUrl : currentStage === "full" ? fullUrl : null;
-  const isLoaded = Boolean(activeUrl && loadedUrl === activeUrl);
+  const isLoaded = Boolean(
+    activeUrl && (loadedUrl === activeUrl || (cachedAlreadyMeetsTarget && cachedBestThumbnail))
+  );
+  const displayUrl =
+    loadedUrl === activeUrl
+      ? activeUrl
+      : cachedAlreadyMeetsTarget
+        ? (cachedBestThumbnail?.url ?? activeUrl)
+        : activeUrl;
+  const progressivePlaceholderUrl =
+    !isLoaded && cachedBestThumbnail && !isFileThumbnailFailed(cachedBestThumbnail.url)
+      ? cachedBestThumbnail.url
+      : null;
   const shouldRenderImg = Boolean(
     shouldLoadPreview && activeUrl && (isLoaded || (isInViewport && !isScrolling))
   );
@@ -95,25 +121,48 @@ export const FileThumbnail = memo(function FileThumbnail({
 
   // Abort any in-flight thumbnail fetch as soon as a virtualized cell scrolls
   // out of view or switches identity so rapid scrolling never clogs WebKit's pool.
-  // Mark the element aborted before clearing src so WebKit's synthetic error event
-  // never poisons failedThumbnailUrls or escalates to full RAW demosaicing.
+  // Restore `src` on effect setup so React StrictMode's mount -> cleanup -> remount
+  // cycle never leaves the hidden <img> without a src attribute (which would stall
+  // Gallery/Column previews on the fallback file icon permanently).
   useEffect(() => {
+    let cancelled = false;
     const img = pendingImgRef.current;
-    if (img) {
+    if (img && activeUrl && shouldRenderImg) {
       delete img.dataset.aborted;
+      if (img.getAttribute("src") !== activeUrl) {
+        img.src = activeUrl;
+      } else if (img.complete && img.naturalWidth > 0) {
+        markFileThumbnailLoaded(entry.path, entry.modified, entry.size, requestSize, activeUrl);
+        queueMicrotask(() => {
+          if (cancelled) return;
+          setLoadState({ identity, stage: currentStage, loadedUrl: activeUrl });
+          onImageLoad?.(img);
+        });
+      }
     }
     return () => {
+      cancelled = true;
       if (img && !img.complete) {
         img.dataset.aborted = "1";
         img.removeAttribute("src");
       }
     };
-  }, [activeUrl, shouldRenderImg]);
+  }, [
+    activeUrl,
+    currentStage,
+    entry.modified,
+    entry.path,
+    entry.size,
+    identity,
+    onImageLoad,
+    requestSize,
+    shouldRenderImg,
+  ]);
 
-  if (isLoaded && shouldRenderImg && activeUrl) {
+  if (isLoaded && shouldRenderImg && displayUrl) {
     return (
       <img
-        src={activeUrl}
+        src={displayUrl}
         crossOrigin="anonymous"
         className={className || "object-contain"}
         style={className ? undefined : { width: roundedSize, height: roundedSize }}
@@ -127,7 +176,17 @@ export const FileThumbnail = memo(function FileThumbnail({
     );
   }
 
-  const fallbackIcon = (
+  const fallbackElement = progressivePlaceholderUrl ? (
+    <img
+      src={progressivePlaceholderUrl}
+      crossOrigin="anonymous"
+      className={className || "object-contain"}
+      style={className ? undefined : { width: roundedSize, height: roundedSize }}
+      alt=""
+      decoding="async"
+      draggable={false}
+    />
+  ) : (
     <SmartIcon
       icon={entry.is_dir ? Folder : File}
       className={
@@ -145,12 +204,12 @@ export const FileThumbnail = memo(function FileThumbnail({
   );
 
   if (!shouldRenderImg || !activeUrl) {
-    return fallbackIcon;
+    return fallbackElement;
   }
 
   return (
     <>
-      {fallbackIcon}
+      {fallbackElement}
       <img
         ref={pendingImgRef}
         src={activeUrl}

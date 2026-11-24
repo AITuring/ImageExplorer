@@ -67,6 +67,7 @@ export interface ColumnSelectionContext {
 
 interface FileColumnViewProps {
   currentPath: string;
+  rootEntries?: FileEntry[];
   selectedPaths: string[];
   focusedPath: string | null;
   selectedFileEntries: FileEntry[];
@@ -351,6 +352,7 @@ const ColumnPane = memo(function ColumnPane({
 
 export function FileColumnView({
   currentPath,
+  rootEntries,
   selectedPaths,
   focusedPath,
   selectedFileEntries,
@@ -379,8 +381,58 @@ export function FileColumnView({
   const columnViewWidth = useViewMode((state) => state.columnViewWidth);
   const setColumnViewWidth = useViewMode((state) => state.setColumnViewWidth);
   const [columnWidthOverrides, setColumnWidthOverrides] = useState<Record<string, number>>({});
-  const [columns, setColumns] = useState<ColumnData[]>([]);
+  const [rawColumns, setColumns] = useState<ColumnData[]>(() =>
+    rootEntries
+      ? [
+          {
+            path: currentPath,
+            entries: rootEntries,
+            selectedPath:
+              focusedPath && rootEntries.some((entry) => entry.path === focusedPath)
+                ? focusedPath
+                : null,
+          },
+        ]
+      : []
+  );
   const [activeColumnIndex, setActiveColumnIndex] = useState(0);
+
+  // Derive root column synchronously from FileList's sortedEntries so switching
+  // into Column View never flashes blank, respects current sort/filter, and
+  // needs no cascading setState-in-effect.
+  const columns = useMemo<ColumnData[]>(() => {
+    if (!rootEntries) return rawColumns;
+    if (rawColumns.length === 0 || rawColumns[0].path !== currentPath) {
+      return [
+        {
+          path: currentPath,
+          entries: rootEntries,
+          selectedPath:
+            focusedPath && rootEntries.some((entry) => entry.path === focusedPath)
+              ? focusedPath
+              : null,
+        },
+      ];
+    }
+    const rootSelected =
+      rawColumns[0].selectedPath ??
+      (focusedPath && rootEntries.some((entry) => entry.path === focusedPath) ? focusedPath : null);
+    if (rawColumns[0].entries === rootEntries && rawColumns[0].selectedPath === rootSelected) {
+      return rawColumns;
+    }
+    return [
+      { ...rawColumns[0], entries: rootEntries, selectedPath: rootSelected },
+      ...rawColumns.slice(1),
+    ];
+  }, [currentPath, focusedPath, rawColumns, rootEntries]);
+
+  const effectiveActiveColumnIndex = Math.min(activeColumnIndex, Math.max(0, columns.length - 1));
+
+  useEffect(() => {
+    return () => {
+      onContextChange(null);
+    };
+  }, [onContextChange]);
 
   const handleResizeColumnWidth = useCallback(
     (columnPath: string, width: number, applyAll: boolean) => {
@@ -420,20 +472,48 @@ export function FileColumnView({
   const hasCurrentRoot = columns[0]?.path === currentPath;
   const selectedPathSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
 
+  const lastContextRef = useRef<{
+    rootPath: string;
+    locationPath: string;
+    activeEntries: FileEntry[];
+    columnEntriesSignature: FileEntry[][];
+  } | null>(null);
+
   useEffect(() => {
-    const activeColumn = columns[activeColumnIndex];
+    const activeColumn = columns[effectiveActiveColumnIndex];
     if (!activeColumn) {
-      onContextChange(null);
+      if (lastContextRef.current !== null) {
+        lastContextRef.current = null;
+        onContextChange(null);
+      }
       return;
     }
 
+    const locationPath = columns[columns.length - 1]?.path ?? currentPath;
+    const prev = lastContextRef.current;
+    const sameColumnsEntries =
+      prev !== null &&
+      prev.rootPath === currentPath &&
+      prev.locationPath === locationPath &&
+      prev.activeEntries === activeColumn.entries &&
+      prev.columnEntriesSignature.length === columns.length &&
+      prev.columnEntriesSignature.every((list, idx) => list === columns[idx]?.entries);
+    if (sameColumnsEntries) return;
+
+    lastContextRef.current = {
+      rootPath: currentPath,
+      locationPath,
+      activeEntries: activeColumn.entries,
+      columnEntriesSignature: columns.map((column) => column.entries),
+    };
+
     onContextChange({
       rootPath: currentPath,
-      locationPath: columns[columns.length - 1]?.path ?? currentPath,
+      locationPath,
       activeEntries: activeColumn.entries,
       visibleEntries: columns.flatMap((column) => column.entries),
     });
-  }, [activeColumnIndex, columns, currentPath, onContextChange]);
+  }, [columns, currentPath, effectiveActiveColumnIndex, onContextChange]);
 
   useEffect(() => {
     if (!editingPath) return;
@@ -606,23 +686,30 @@ export function FileColumnView({
 
       if (!selectionRequests.current.isCurrent(requestId)) return;
       setColumns((prev) => {
-        if (!prev[columnIndex]) return prev;
-        const newColumns = prev.slice(0, columnIndex + 1);
-        newColumns[columnIndex] = { ...newColumns[columnIndex], selectedPath: entry.path };
+        const base = prev.length > 0 && prev[0].path === currentPath ? prev : columns;
+        const current = base[columnIndex];
+        if (!current) return base;
+        if (!browsable && base.length === columnIndex + 1 && current.selectedPath === entry.path) {
+          return prev;
+        }
+        const newColumns = base.slice(0, columnIndex + 1);
+        newColumns[columnIndex] = { ...current, selectedPath: entry.path };
         if (browsable) {
           newColumns.push({ path: entry.path, entries: newEntries, selectedPath: null });
         }
         return newColumns;
       });
 
-      requestAnimationFrame(() => {
-        scrollContainerRef.current?.scrollTo({
-          left: scrollContainerRef.current.scrollWidth,
-          behavior: "smooth",
+      if (browsable) {
+        requestAnimationFrame(() => {
+          scrollContainerRef.current?.scrollTo({
+            left: scrollContainerRef.current.scrollWidth,
+            behavior: "smooth",
+          });
         });
-      });
+      }
     },
-    [loadColumn, showHiddenFiles]
+    [columns, currentPath, loadColumn, showHiddenFiles]
   );
 
   // 选中文件夹时展开新列（使用函数式更新避免 columns 依赖）
@@ -640,8 +727,8 @@ export function FileColumnView({
     if (!navigationRef) return;
     navigationRef.current = {
       navigateLeft: () => {
-        if (activeColumnIndex <= 0) return false;
-        const parentIndex = activeColumnIndex - 1;
+        if (effectiveActiveColumnIndex <= 0) return false;
+        const parentIndex = effectiveActiveColumnIndex - 1;
         const parentColumn = columns[parentIndex];
         if (!parentColumn) return false;
         setActiveColumnIndex(parentIndex);
@@ -655,13 +742,13 @@ export function FileColumnView({
         return true;
       },
       navigateRight: async () => {
-        const currentColumn = columns[activeColumnIndex];
+        const currentColumn = columns[effectiveActiveColumnIndex];
         if (!currentColumn) return false;
         const targetPath = focusedPath ?? currentColumn.selectedPath;
         const entry = currentColumn.entries.find((item) => item.path === targetPath);
         if (!entry || !isBrowsableDirectory(entry)) return false;
 
-        const existingChild = columns[activeColumnIndex + 1];
+        const existingChild = columns[effectiveActiveColumnIndex + 1];
         let childEntries: FileEntry[];
         if (existingChild && existingChild.path === entry.path) {
           childEntries = existingChild.entries;
@@ -670,9 +757,13 @@ export function FileColumnView({
           childEntries = filterHiddenEntries(await loadColumn(entry.path), showHiddenFiles);
           if (!selectionRequests.current.isCurrent(requestId)) return false;
           setColumns((prev) => {
-            if (!prev[activeColumnIndex]) return prev;
-            const next = prev.slice(0, activeColumnIndex + 1);
-            next[activeColumnIndex] = { ...next[activeColumnIndex], selectedPath: entry.path };
+            const base = prev.length > 0 && prev[0].path === currentPath ? prev : columns;
+            if (!base[effectiveActiveColumnIndex]) return base;
+            const next = base.slice(0, effectiveActiveColumnIndex + 1);
+            next[effectiveActiveColumnIndex] = {
+              ...next[effectiveActiveColumnIndex],
+              selectedPath: entry.path,
+            };
             next.push({
               path: entry.path,
               entries: childEntries,
@@ -684,13 +775,14 @@ export function FileColumnView({
 
         if (childEntries.length === 0) return true;
 
-        const nextColIndex = activeColumnIndex + 1;
+        const nextColIndex = effectiveActiveColumnIndex + 1;
         const firstChild = childEntries[0];
         setActiveColumnIndex(nextColIndex);
         onSelectSingle(firstChild.path, 0);
         setColumns((prev) => {
-          if (!prev[nextColIndex]) return prev;
-          const next = prev.slice(0, nextColIndex + 1);
+          const base = prev.length > 0 && prev[0].path === currentPath ? prev : columns;
+          if (!base[nextColIndex]) return base;
+          const next = base.slice(0, nextColIndex + 1);
           next[nextColIndex] = { ...next[nextColIndex], selectedPath: firstChild.path };
           return next;
         });
@@ -704,15 +796,16 @@ export function FileColumnView({
         return true;
       },
       focusEntry: async (entry: FileEntry) => {
-        await focusEntryInColumn(activeColumnIndex, entry);
+        await focusEntryInColumn(effectiveActiveColumnIndex, entry);
       },
     };
     return () => {
       navigationRef.current = null;
     };
   }, [
-    activeColumnIndex,
     columns,
+    currentPath,
+    effectiveActiveColumnIndex,
     focusEntryInColumn,
     focusedPath,
     loadColumn,
@@ -760,7 +853,13 @@ export function FileColumnView({
           handleCopyTo={handleCopyTo}
         />
       ))}
-      {previewEntry && <ColumnFilePreview key={previewEntry.path} entry={previewEntry} />}
+      {previewEntry && (
+        <ColumnFilePreview
+          key={previewEntry.path}
+          entry={previewEntry}
+          onDoubleClick={handleDoubleClick}
+        />
+      )}
     </div>
   );
 }

@@ -121,12 +121,12 @@ const GalleryPreviewStage = memo(function GalleryPreviewStage({
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
       {/* Main large preview area */}
-      <div className="relative flex min-w-0 flex-1 flex-col items-center justify-center overflow-hidden p-4">
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center overflow-hidden p-4">
         <div
-          className="relative flex min-h-0 w-full flex-1 items-center justify-center"
+          className="relative flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden"
           onDoubleClick={() => onDoubleClick(entry)}
         >
-          <div className="relative flex max-h-full max-w-full items-center justify-center">
+          <div className="relative flex h-full w-full items-center justify-center overflow-hidden">
             <FileThumbnail
               key={entry.path}
               entry={entry}
@@ -148,6 +148,7 @@ const GalleryPreviewStage = memo(function GalleryPreviewStage({
           {canGoPrev && (
             <button
               type="button"
+              onMouseDown={(event) => event.preventDefault()}
               onClick={onPrev}
               aria-label={t("common.quick_look.previous")}
               title={t("common.quick_look.previous")}
@@ -159,6 +160,7 @@ const GalleryPreviewStage = memo(function GalleryPreviewStage({
           {canGoNext && (
             <button
               type="button"
+              onMouseDown={(event) => event.preventDefault()}
               onClick={onNext}
               aria-label={t("common.quick_look.next")}
               title={t("common.quick_look.next")}
@@ -193,6 +195,7 @@ const GalleryPreviewStage = memo(function GalleryPreviewStage({
                     title={label}
                     aria-label={label}
                     aria-pressed={active}
+                    onMouseDown={(event) => event.preventDefault()}
                     onClick={() => onToggleTag(preset.id)}
                     className={`h-3.5 w-3.5 rounded-full transition-transform hover:scale-115 ${
                       active
@@ -211,6 +214,7 @@ const GalleryPreviewStage = memo(function GalleryPreviewStage({
                 type="button"
                 aria-pressed={culling.flag === "pick"}
                 title={`${t("file_list.culling.pick")} (P)`}
+                onMouseDown={(event) => event.preventDefault()}
                 onClick={() => onSetFlag(culling.flag === "pick" ? "none" : "pick")}
                 className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] transition-colors ${
                   culling.flag === "pick"
@@ -225,6 +229,7 @@ const GalleryPreviewStage = memo(function GalleryPreviewStage({
                 type="button"
                 aria-pressed={culling.flag === "reject"}
                 title={`${t("file_list.culling.reject")} (X)`}
+                onMouseDown={(event) => event.preventDefault()}
                 onClick={() => onSetFlag(culling.flag === "reject" ? "none" : "reject")}
                 className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] transition-colors ${
                   culling.flag === "reject"
@@ -247,6 +252,7 @@ const GalleryPreviewStage = memo(function GalleryPreviewStage({
                 <button
                   key={star}
                   type="button"
+                  onMouseDown={(event) => event.preventDefault()}
                   onClick={() => onSetRating(culling.rating === star ? 0 : star)}
                   aria-label={`${star}★`}
                   className="text-muted-foreground p-0.5 transition-colors hover:text-amber-500"
@@ -460,6 +466,7 @@ export function FileGalleryView({
                     type="button"
                     role="option"
                     aria-selected={isSelected}
+                    onMouseDown={(event) => event.preventDefault()}
                     onClick={(event) => onSelect(entry, virtualItem.index, event)}
                     onDoubleClick={() => onDoubleClick(entry)}
                     title={entry.name}
