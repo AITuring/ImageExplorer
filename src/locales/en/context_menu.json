@@ -43,5 +43,7 @@
   "go_to_location": "Go to File Location",
   "compare_photos": "Compare Photos",
   "batch_export": "Batch Export Photos...",
+  "exhibit_label_mode": "Exhibit Label Recognition...",
+  "exhibit_label_mode_selected": "Exhibit Label Recognition ({{count}})...",
   "batch_rename": "Batch Rename..."
 }

@@ -63,6 +63,7 @@ import { isPermissionDeniedError, requestDirectoryAccess } from "@/lib/directory
 import { settingsManager } from "@/lib/store";
 import { useStatusBar } from "@/stores/statusBar";
 import { useBatchExportDialog } from "@/stores/batchExportDialog";
+import { useExhibitLabelDialog } from "@/stores/exhibitLabelDialog";
 
 /** 列表视图固定行高 */
 const LIST_ITEM_HEIGHT = 32;
@@ -167,6 +168,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
   const { addTab, activeTab, goBack, goForward, canGoBack, canGoForward } = useTabs();
   const setStatusBar = useStatusBar((state) => state.setStatus);
   const openBatchExport = useBatchExportDialog((state) => state.open);
+  const openExhibitLabel = useExhibitLabelDialog((state) => state.open);
   const [legacyTabNumberShortcuts] = useSetting<boolean>("legacy_cmd_number_tabs", false);
   const [gridColumns, setGridColumns] = useState(6);
   const [columnSelectionContext, setColumnSelectionContext] =
@@ -1307,6 +1309,13 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       onCompare: (entriesToCompare) => setCompareEntries(entriesToCompare),
       onBatchExport: (photos) =>
         openBatchExport(photos, operationPath.startsWith(SMART_FOLDER_PREFIX) ? "" : operationPath),
+      onExhibitLabelMode: (targets) => {
+        if (targets.length === 1 && targets[0].is_dir) {
+          openExhibitLabel(targets[0].path, []);
+        } else if (!operationPath.startsWith(SMART_FOLDER_PREFIX)) {
+          openExhibitLabel(operationPath, targets);
+        }
+      },
       onRotateImage: handleRotateImage,
       onShare: handleShare,
       onCopy: handleCopy,
@@ -1353,6 +1362,7 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
       handleToggleTag,
       isFavorite,
       openBatchExport,
+      openExhibitLabel,
       operationPath,
     ]
   );
@@ -1504,6 +1514,9 @@ export function FileList({ currentPath, onNavigate, fileToSelect }: FileListProp
           onNewFile: handleNewFile,
           onNewFolder: handleNewFolder,
           onOpenInTerminal: handleOpenInTerminal,
+          onExhibitLabelMode: !currentPath.startsWith(SMART_FOLDER_PREFIX)
+            ? () => openExhibitLabel(currentPath, [])
+            : undefined,
           onSort: handleSort,
           onArrange: () => handleArrange(),
           onArrangeBy: handleArrange,

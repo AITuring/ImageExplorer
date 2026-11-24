@@ -1455,3 +1455,190 @@ int imageexplorer_share_files(const char *pathsJson, char **outError) {
         return 1;
     }
 }
+
+static uint8_t *imageexplorer_recognize_text_on_cgimage(
+    CGImageRef cgImage,
+    int accurate,
+    size_t *outLength
+) {
+    if (cgImage == NULL || outLength == NULL) {
+        return NULL;
+    }
+    *outLength = 0;
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunguarded-availability-new"
+    Class requestClass = NSClassFromString(@"VNRecognizeTextRequest");
+    if (requestClass == Nil) {
+        return NULL;
+    }
+
+    VNRecognizeTextRequest *request = [[requestClass alloc] init];
+    if (request == nil) {
+        return NULL;
+    }
+    request.recognitionLevel = accurate
+        ? VNRequestTextRecognitionLevelAccurate
+        : VNRequestTextRecognitionLevelFast;
+    request.usesLanguageCorrection = YES;
+    if ([request respondsToSelector:@selector(setRecognitionLanguages:)]) {
+        request.recognitionLanguages = @[@"zh-Hans", @"zh-Hant", @"en-US"];
+    }
+    if ([request respondsToSelector:@selector(setMinimumTextHeight:)]) {
+        request.minimumTextHeight = 0.012f;
+    }
+
+    VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:cgImage
+                                                                            options:@{}];
+    NSError *error = nil;
+    if (![handler performRequests:@[request] error:&error] || error != nil) {
+        return NULL;
+    }
+
+    NSArray<VNRecognizedTextObservation *> *observations = request.results;
+    NSMutableArray<NSDictionary *> *lines = [NSMutableArray array];
+    for (VNRecognizedTextObservation *obs in observations) {
+        NSArray<VNRecognizedText *> *candidates = [obs topCandidates:1];
+        VNRecognizedText *best = candidates.firstObject;
+        if (best == nil) {
+            continue;
+        }
+        NSString *trimmed = [best.string stringByTrimmingCharactersInSet:
+            [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (trimmed.length == 0) {
+            continue;
+        }
+        CGRect box = obs.boundingBox;
+        double x = box.origin.x;
+        double y = 1.0 - (box.origin.y + box.size.height);
+        double w = box.size.width;
+        double h = box.size.height;
+        [lines addObject:@{
+            @"text": trimmed,
+            @"confidence": @((double)best.confidence),
+            @"x": @(x),
+            @"y": @(y),
+            @"width": @(w),
+            @"height": @(h),
+        }];
+    }
+#pragma clang diagnostic pop
+
+    // Sort top-to-bottom, left-to-right within the same visual text row.
+    [lines sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        double yA = [a[@"y"] doubleValue];
+        double yB = [b[@"y"] doubleValue];
+        double hAvg = ([a[@"height"] doubleValue] + [b[@"height"] doubleValue]) * 0.35;
+        double tol = MAX(0.012, hAvg);
+        if (fabs(yA - yB) <= tol) {
+            double xA = [a[@"x"] doubleValue];
+            double xB = [b[@"x"] doubleValue];
+            if (xA < xB) return NSOrderedAscending;
+            if (xA > xB) return NSOrderedDescending;
+            return NSOrderedSame;
+        }
+        return yA < yB ? NSOrderedAscending : NSOrderedDescending;
+    }];
+
+    NSData *json = [NSJSONSerialization dataWithJSONObject:lines options:0 error:NULL];
+    if (json == nil || json.length == 0) {
+        return NULL;
+    }
+    uint8_t *result = malloc(json.length);
+    if (result == NULL) {
+        return NULL;
+    }
+    [json getBytes:result length:json.length];
+    *outLength = json.length;
+    return result;
+}
+
+static CGImageRef imageexplorer_create_upright_cgimage_for_ocr(
+    CGImageSourceRef source,
+    uint32_t maxPixelSize
+) {
+    if (source == NULL) {
+        return NULL;
+    }
+    uint32_t target = maxPixelSize > 0 ? maxPixelSize : 2048;
+    NSDictionary *options = @{
+        (id)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+        (id)kCGImageSourceCreateThumbnailWithTransform: @YES,
+        (id)kCGImageSourceThumbnailMaxPixelSize: @(target),
+    };
+    CGImageRef thumb = CGImageSourceCreateThumbnailAtIndex(source, 0, (__bridge CFDictionaryRef)options);
+    if (thumb != NULL) {
+        return thumb;
+    }
+    return CGImageSourceCreateImageAtIndex(source, 0, NULL);
+}
+
+// Recognize Chinese/English text via macOS Vision.framework from in-memory JPEG/image bytes.
+uint8_t *imageexplorer_recognize_text_from_bytes(
+    const uint8_t *bytes,
+    size_t length,
+    int accurate,
+    size_t *outLength
+) {
+    if (bytes == NULL || length == 0 || outLength == NULL) {
+        return NULL;
+    }
+    *outLength = 0;
+
+    @autoreleasepool {
+        CFDataRef data = CFDataCreateWithBytesNoCopy(
+            kCFAllocatorDefault,
+            bytes,
+            (CFIndex)length,
+            kCFAllocatorNull
+        );
+        if (data == NULL) {
+            return NULL;
+        }
+        CGImageSourceRef source = CGImageSourceCreateWithData(data, NULL);
+        CFRelease(data);
+        if (source == NULL) {
+            return NULL;
+        }
+        CGImageRef image = imageexplorer_create_upright_cgimage_for_ocr(source, accurate ? 2048 : 1280);
+        CFRelease(source);
+        if (image == NULL) {
+            return NULL;
+        }
+        uint8_t *result = imageexplorer_recognize_text_on_cgimage(image, accurate, outLength);
+        CGImageRelease(image);
+        return result;
+    }
+}
+
+// Recognize Chinese/English text via macOS Vision.framework directly from a file path.
+uint8_t *imageexplorer_recognize_text(
+    const char *path,
+    int accurate,
+    size_t *outLength
+) {
+    if (path == NULL || outLength == NULL) {
+        return NULL;
+    }
+    *outLength = 0;
+
+    @autoreleasepool {
+        NSString *filePath = [NSString stringWithUTF8String:path];
+        if (filePath == nil) {
+            return NULL;
+        }
+        NSURL *fileURL = [NSURL fileURLWithPath:filePath];
+        CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)fileURL, NULL);
+        if (source == NULL) {
+            return NULL;
+        }
+        CGImageRef image = imageexplorer_create_upright_cgimage_for_ocr(source, accurate ? 2048 : 1280);
+        CFRelease(source);
+        if (image == NULL) {
+            return NULL;
+        }
+        uint8_t *result = imageexplorer_recognize_text_on_cgimage(image, accurate, outLength);
+        CGImageRelease(image);
+        return result;
+    }
+}

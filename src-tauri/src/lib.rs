@@ -5,6 +5,7 @@ mod cache;
 mod commands;
 mod config;
 mod db;
+mod exhibit_label;
 mod index;
 mod menu;
 mod operations;
@@ -1353,6 +1354,10 @@ pub fn run() {
             photo_workflow::run_sd_ingest,
             photo_workflow::rotate_image_file,
             photo_workflow::share_files_native,
+            exhibit_label::scan_exhibit_labels,
+            exhibit_label::cancel_exhibit_label_scan,
+            exhibit_label::apply_exhibit_label_renames,
+            exhibit_label::undo_exhibit_label_renames,
             zip_preview::list_zip_entries,
             analyze_directory_storage,
             find_duplicate_files,

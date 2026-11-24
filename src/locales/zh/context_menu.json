@@ -43,5 +43,7 @@
   "go_to_location": "跳转到源文件",
   "compare_photos": "并排对比照片",
   "batch_export": "批量转码导出...",
+  "exhibit_label_mode": "文物展牌识别模式...",
+  "exhibit_label_mode_selected": "文物展牌识别模式 ({{count}} 张)...",
   "batch_rename": "批量重命名..."
 }

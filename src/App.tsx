@@ -23,6 +23,7 @@ import { FileInfoDialog } from "@/components/FileInfoDialog";
 import { StorageAnalyzerDialog } from "@/components/StorageAnalyzerDialog";
 import { BatchExportDialog } from "@/components/BatchExportDialog";
 import { SdIngestDialog } from "@/components/SdIngestDialog";
+import { ExhibitLabelDialog } from "@/components/ExhibitLabelDialog";
 import { ensureDirectoryAccess } from "@/lib/directoryAccess";
 import { useLocations } from "@/stores/locations";
 import { useClipboard } from "@/stores/clipboard";
@@ -370,6 +371,7 @@ function App() {
       <StorageAnalyzerDialog onNavigate={handleNavigate} />
       <BatchExportDialog onNavigate={handleNavigate} />
       <SdIngestDialog onNavigate={handleNavigate} />
+      <ExhibitLabelDialog />
 
       {isInitializing ? (
         <div className="flex h-full flex-1 items-center justify-center">

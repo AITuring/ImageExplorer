@@ -11,7 +11,15 @@ import { isCommandEnabled, runCommand } from "@/lib/commands";
 import { EmptyAreaActions } from "@/types";
 import { SYSTEM_PATHS, SF_SYMBOLS } from "@/constants/paths";
 import { MenuItem } from "../MenuItem";
-import { ArrowDownAZ, ArrowDownUp, FileText, Folder, RefreshCw, Terminal } from "lucide-react";
+import {
+  ArrowDownAZ,
+  ArrowDownUp,
+  FileText,
+  Folder,
+  Landmark,
+  RefreshCw,
+  Terminal,
+} from "lucide-react";
 
 interface EmptyAreaMenuContentProps {
   actions: EmptyAreaActions;
@@ -46,15 +54,9 @@ export function EmptyAreaMenuContent({ actions }: EmptyAreaMenuContentProps) {
         fallbackIcon={FileText}
         label={t("context_menu.new_file")}
         shortcut={actions.commands?.newFile?.shortcut}
-        disabled={
-          actions.commands?.newFile
-            ? !isCommandEnabled(actions.commands.newFile)
-            : false
-        }
+        disabled={actions.commands?.newFile ? !isCommandEnabled(actions.commands.newFile) : false}
         onClick={() =>
-          actions.commands?.newFile
-            ? runCommand(actions.commands.newFile)
-            : actions.onNewFile()
+          actions.commands?.newFile ? runCommand(actions.commands.newFile) : actions.onNewFile()
         }
       />
       <MenuItem
@@ -63,9 +65,7 @@ export function EmptyAreaMenuContent({ actions }: EmptyAreaMenuContentProps) {
         label={t("context_menu.new_folder")}
         shortcut={actions.commands?.newFolder?.shortcut}
         disabled={
-          actions.commands?.newFolder
-            ? !isCommandEnabled(actions.commands.newFolder)
-            : false
+          actions.commands?.newFolder ? !isCommandEnabled(actions.commands.newFolder) : false
         }
         onClick={() =>
           actions.commands?.newFolder
@@ -78,15 +78,9 @@ export function EmptyAreaMenuContent({ actions }: EmptyAreaMenuContentProps) {
           sysIcon={{ type: "sfsymbol", value: SF_SYMBOLS.PASTE }}
           label={t("context_menu.paste")}
           shortcut={actions.commands?.paste?.shortcut ?? "⌘V"}
-          disabled={
-            actions.commands?.paste
-              ? !isCommandEnabled(actions.commands.paste)
-              : false
-          }
+          disabled={actions.commands?.paste ? !isCommandEnabled(actions.commands.paste) : false}
           onClick={() =>
-            actions.commands?.paste
-              ? runCommand(actions.commands.paste)
-              : actions.onPaste()
+            actions.commands?.paste ? runCommand(actions.commands.paste) : actions.onPaste()
           }
         />
       )}
@@ -96,6 +90,13 @@ export function EmptyAreaMenuContent({ actions }: EmptyAreaMenuContentProps) {
         label={t("context_menu.open_in_terminal")}
         onClick={actions.onOpenInTerminal}
       />
+      {actions.onExhibitLabelMode && (
+        <MenuItem
+          fallbackIcon={Landmark}
+          label={t("context_menu.exhibit_label_mode")}
+          onClick={actions.onExhibitLabelMode}
+        />
+      )}
       <ContextMenuSeparator />
       <MenuItem
         sysIcon={{ type: "sfsymbol", value: SF_SYMBOLS.REFRESH }}

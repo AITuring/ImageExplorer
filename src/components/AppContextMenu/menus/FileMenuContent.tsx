@@ -22,6 +22,7 @@ import {
   FolderPlus,
   ImageDown,
   Info,
+  Landmark,
   Star,
   Link,
   Pencil,
@@ -228,6 +229,32 @@ export function FileMenuContent({ entry, selectedEntries, actions }: FileMenuCon
               fallbackIcon={ImageDown}
               label={t("context_menu.batch_export")}
               onClick={() => actions.onBatchExport?.(photos)}
+            />
+          );
+        })()}
+
+      {actions.onExhibitLabelMode &&
+        (() => {
+          if (targets.length === 1 && targets[0].is_dir && !targets[0].is_package) {
+            return (
+              <MenuItem
+                fallbackIcon={Landmark}
+                label={t("context_menu.exhibit_label_mode")}
+                onClick={() => actions.onExhibitLabelMode?.(targets)}
+              />
+            );
+          }
+          const photos = targets.filter(isAnalyzablePhoto);
+          if (photos.length === 0) return null;
+          return (
+            <MenuItem
+              fallbackIcon={Landmark}
+              label={
+                photos.length > 1
+                  ? t("context_menu.exhibit_label_mode_selected", { count: photos.length })
+                  : t("context_menu.exhibit_label_mode")
+              }
+              onClick={() => actions.onExhibitLabelMode?.(photos)}
             />
           );
         })()}
