@@ -354,7 +354,15 @@ uint8_t *imageexplorer_quicklook_thumbnail(
                     image = imageexplorer_create_imageio_preview(fileURL, size);
                 }
             } else {
-                image = imageexplorer_create_coreimage_raw_preview(fileURL, size);
+                // Full sensor CIRAWFilter demosaicing serializes on CoreImage's internal
+                // CIContext mutex (~1s/frame). Reserve it strictly for large Quick Look
+                // requests (>= 1600px) and use fast ImageIO/embedded previews for thumbnails.
+                if (size >= 1600) {
+                    image = imageexplorer_create_coreimage_raw_preview(fileURL, size);
+                }
+                if (image == NULL) {
+                    image = imageexplorer_create_arw_full_jpeg(fileURL, size);
+                }
                 if (image == NULL) {
                     image = imageexplorer_create_imageio_preview(fileURL, size);
                 }

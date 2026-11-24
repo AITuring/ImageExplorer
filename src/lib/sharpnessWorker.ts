@@ -16,7 +16,7 @@ interface SharpnessWorkerFailure {
 
 type SharpnessWorkerResponse = SharpnessWorkerSuccess | SharpnessWorkerFailure;
 
-const MAX_IDLE_WORKERS = 2;
+const MAX_IDLE_WORKERS = 3;
 const idleWorkers: Worker[] = [];
 
 function acquireWorker(): Worker {

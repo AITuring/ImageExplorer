@@ -9,9 +9,10 @@ import {
   markFileThumbnailLoaded,
 } from "@/lib/iconCache";
 import type { FileEntry } from "@/types/index";
-import { IMAGE_EXTENSIONS } from "@/constants/fileTypes";
+import { IMAGE_EXTENSIONS, RAW_IMAGE_EXTENSIONS } from "@/constants/fileTypes";
 
 const PREVIEWABLE_EXTENSIONS = new Set([...IMAGE_EXTENSIONS, "pdf"]);
+const RAW_EXTENSIONS = new Set<string>(RAW_IMAGE_EXTENSIONS);
 
 interface FileThumbnailProps {
   entry: FileEntry;
@@ -43,6 +44,7 @@ export const FileThumbnail = memo(function FileThumbnail({
   isInViewport = true,
 }: FileThumbnailProps) {
   const normalizedExtension = (entry.extension || "").toLowerCase();
+  const isRawFile = RAW_EXTENSIONS.has(normalizedExtension);
   const shouldLoadPreview = !entry.is_dir && PREVIEWABLE_EXTENSIONS.has(normalizedExtension);
   const requestSize = useMemo(
     () => getThumbnailRequestSize(size, requestSizeOverride),
@@ -57,12 +59,14 @@ export const FileThumbnail = memo(function FileThumbnail({
         : "",
     [entry.modified, entry.path, entry.size, requestSize, shouldLoadPreview]
   );
+  // RAW embedded=1 already has a full native fallback chain; never escalate small
+  // grid thumbnails to embedded=0 (which triggers slow full-sensor RAW demosaicing).
   const fullUrl = useMemo(
     () =>
-      shouldLoadPreview
+      shouldLoadPreview && !isRawFile
         ? buildFileThumbnailUrl(entry.path, entry.modified, entry.size, requestSize, false, false)
         : "",
-    [entry.modified, entry.path, entry.size, requestSize, shouldLoadPreview]
+    [entry.modified, entry.path, entry.size, isRawFile, requestSize, shouldLoadPreview]
   );
 
   const identity = `${entry.path}\u0000${entry.modified ?? 0}\u0000${entry.size}\u0000${requestSize}`;
@@ -76,9 +80,9 @@ export const FileThumbnail = memo(function FileThumbnail({
     loadState.identity === identity
       ? loadState.stage
       : isFileThumbnailFailed(embeddedUrl)
-        ? isFileThumbnailFailed(fullUrl)
-          ? "failed"
-          : "full"
+        ? fullUrl && !isFileThumbnailFailed(fullUrl)
+          ? "full"
+          : "failed"
         : "embedded";
   const loadedUrl = loadState.identity === identity ? loadState.loadedUrl : null;
   const activeUrl =
@@ -91,11 +95,17 @@ export const FileThumbnail = memo(function FileThumbnail({
 
   // Abort any in-flight thumbnail fetch as soon as a virtualized cell scrolls
   // out of view or switches identity so rapid scrolling never clogs WebKit's pool.
+  // Mark the element aborted before clearing src so WebKit's synthetic error event
+  // never poisons failedThumbnailUrls or escalates to full RAW demosaicing.
   useEffect(() => {
     const img = pendingImgRef.current;
+    if (img) {
+      delete img.dataset.aborted;
+    }
     return () => {
       if (img && !img.complete) {
-        img.src = "";
+        img.dataset.aborted = "1";
+        img.removeAttribute("src");
       }
     };
   }, [activeUrl, shouldRenderImg]);
@@ -154,9 +164,12 @@ export const FileThumbnail = memo(function FileThumbnail({
           setLoadState({ identity, stage: currentStage, loadedUrl: activeUrl });
           onImageLoad?.(event.currentTarget);
         }}
-        onError={() => {
+        onError={(event) => {
+          if (event.currentTarget.dataset.aborted === "1") {
+            return;
+          }
           markFileThumbnailFailed(activeUrl);
-          if (currentStage === "embedded" && !isFileThumbnailFailed(fullUrl)) {
+          if (currentStage === "embedded" && fullUrl && !isFileThumbnailFailed(fullUrl)) {
             setLoadState({ identity, stage: "full", loadedUrl: null });
           } else {
             setLoadState({ identity, stage: "failed", loadedUrl: null });

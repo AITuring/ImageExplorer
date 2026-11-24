@@ -307,7 +307,7 @@ export function loadHtmlImage(url: string, signal?: AbortSignal): Promise<HTMLIm
     };
     const handleAbort = () => {
       cleanup();
-      image.src = "";
+      image.removeAttribute("src");
       reject(new DOMException("Image load was cancelled", "AbortError"));
     };
 
