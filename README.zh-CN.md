@@ -1,94 +1,135 @@
 <div align="center">
   <img src="./src-tauri/icons/128x128@2x.png" width="112" alt="ImageExplorer 应用图标" />
   <h1>ImageExplorer</h1>
-  <p>面向 macOS 的文件浏览器，让日常文件管理与 RAW 照片筛选在同一个窗口完成。</p>
+  <p><strong>面向 macOS 的原生级文件浏览器 × 高速摄影选片与本地 AI 影像工作台。</strong></p>
+  <p>免导入直读硬盘与外置移动盘，在一个窗口里完成 Finder 级文件管理、RAW 极速选片、文物展牌识别命名、本地人物聚合分类与无损 EXIF/GPS 修复。</p>
   <p><a href="./README.md">English</a> · 中文 · <a href="https://github.com/AITuring/ImageExplorer/releases">下载安装</a> · <a href="https://github.com/AITuring/ImageExplorer/actions/workflows/release.yml">自动构建</a></p>
 </div>
 
-![CI](https://github.com/AITuring/ImageExplorer/actions/workflows/ci.yml/badge.svg)
-![Release](https://github.com/AITuring/ImageExplorer/actions/workflows/release.yml/badge.svg)
+<p align="center">
+  <img src="https://github.com/AITuring/ImageExplorer/actions/workflows/ci.yml/badge.svg" alt="CI" />
+  <img src="https://github.com/AITuring/ImageExplorer/actions/workflows/release.yml/badge.svg" alt="Release" />
+</p>
 
-## 看得见照片，也管得好文件
+---
 
-ImageExplorer 结合 Finder 风格的界面、可编辑路径栏、目录树和本地索引搜索。它直接浏览磁盘上的文件，不需要先把照片导入图库；选片之后可以继续复制、移动、重命名、压缩或交给外部编辑器处理。
+## 为什么做 ImageExplorer
+
+日常摄影与文件整理中，我们常常不得不在 **Finder（管理文件）**、**Photo Mechanic / Lightroom（高速看 RAW 选片）** 和各种 **零散脚本（改名、按人像分文件夹、补修 PS 丢失的 EXIF/GPS）** 之间反复切换。
+
+**ImageExplorer** 基于 **Tauri 2 + Rust + Objective-C（ImageIO / Vision / AppKit）+ React 19** 打造，将它们融为一体：
+
+- **免导入、直读磁盘**：无需建立封闭图库，插入 SD 卡或移动硬盘即可直接浏览、筛选、重命名和整理原片。
+- **100% 本地离线、隐私安全**：人脸特征聚类、展牌中英文 OCR、清晰度分析与无损 EXIF/GPS 写入全部在 macOS 本机完成，绝不上传云端。
+- **无损且可撤销**：ImageIO 无损元数据合并、Adobe XMP 双向同步、APFS 零拷贝克隆与批量一键撤销，确保原片始终安全。
 
 ![RAW 照片浏览、清晰度标签与整理进度](./docs/screenshots/photo-browser-annotated.png)
 
-*实拍文件浏览示例，红框标示整理进度。文中截图来自此前界面版本：当前仅保留图标、列表、分栏三种视图，清晰度自动分析，已移除独立开关。截图中的旧工具栏和参数排版不代表当前布局。*
+*RAW 实拍浏览示例。截图为早期界面版本，当前已全面升级为四视图、双栏分屏、选片标记以及右键本地 AI / EXIF 工作台。*
 
-## 三种视图，各有用途
+---
 
-| 视图 | 适合做什么 | 显示内容 |
+## 核心功能全景
+
+### 1. Finder 级文件管理与四种视图
+
+| 视图 | 快捷键 | 适用场景 |
 | --- | --- | --- |
-| **图标 · ⌘1** | 对比构图、连续拍摄和相似视角 | 缩略图、文件名、清晰度标签、像素尺寸与拍摄参数；照片分析可显示视角分组及焦点标记 |
-| **列表 · ⌘2** | 快速查找文件、对比参数和排序 | 缩略图、名称、清晰度、ISO / 光圈 / 快门 / 焦距、大小、修改日期；缩略图不叠加焦点框 |
-| **分栏 · ⌘3** | 逐层浏览文件夹，同时查看单张照片 | 左侧文件缩略图，右侧大图、清晰度、详细参数；无选择时默认选中第一项 |
+| **图标视图** | `⌘1` | 快速浏览构图与连拍，支持缩略图滑块调节与选片/清晰度角标 |
+| **列表视图** | `⌘2` | 高效排序与参数对比，支持 **行内展开子文件夹（`→` / `←`）** 与可调宽 EXIF/文件列 |
+| **分栏视图** | `⌘3` | 多层级目录浏览，支持可调栏宽与分组化 EXIF / GPS 详情检查器 |
+| **画廊视图** | `⌘4` | 上方高清大图 + 下方虚拟化胶片条，专注逐张精筛 |
 
-三个视图共用文件选择状态与清晰度样式；切换视图按选中文件定位。整理任务和进度不依赖当前视图。大量图片采用缓存、有界后台任务，列表与图标采用虚拟化渲染，分栏缩略图仅在可见时请求。
+- **双栏分屏（`⌘\`）**：左右双窗格独立导航，支持跨窗格直接拖拽复制/移动文件。
+- **分组视图（Group By）**：按 **种类、修改日期、大小、Finder 标签** 分组折叠显示。
+- **深度 macOS 原生能力**：APFS 克隆秒级复制、**macOS Finder 标签** 与标签智能文件夹、**AirDrop 共享**（`NSSharingServicePicker`）、无损 90° 左右旋转、**多选汇总简介（`⌘I` / `⌥⌘I`）** 与文件锁定开关、路径跳转（`⇧⌘G`）自动补全、框选自动滚动、首字母快跳、外置磁盘监听与一键推出。
+- **空间治理与可靠传输**：多线程 **存储空间分析器**、三阶段 **重复文件查找器**（大小 → 首尾采样 → 全量 SHA-256）、带冲突处理与进度队列的复制/移动/ZIP 压缩解压、持久化操作记录与一键撤销、废纸篓浏览恢复，以及 **SQLite FTS5** 本地极速搜索。
 
 ![分栏浏览和选中文件的大图预览](./docs/screenshots/column-preview-annotated.png)
 
-*分栏预览示例，红框标示文件图标区域；当前该区域已改为与列表共用的缩略图，右侧参数也已拆分为下面的分组。*
+---
 
-## 照片信息与清晰度
+### 2. 高速 RAW 摄影选片与专业 Quick Look
 
-### 详细参数，不再挤成一行
-
-分栏右侧将可读取的信息分组显示，缺失字段不占位：
-
-| 分组 | 字段 |
-| --- | --- |
-| **拍摄参数** | 感光度 ISO、光圈、快门速度、焦距、拍摄时间 |
-| **相机与镜头** | 制造商、相机型号、镜头名称 |
-| **文件信息** | 宽高像素、百万像素数、文件大小、修改时间、格式 |
-| **拍摄位置** | 文件内嵌的 GPS 经纬度；点击“显示地图”加载 OpenStreetMap |
-
-照片参数优先通过 macOS ImageIO 读取，部分字段使用 Spotlight 回退。RAW 支持和字段完整性取决于 macOS 解码能力及文件本身。GPS 不会凭空推断；加载地图会将该坐标发送给 OpenStreetMap，未点击时不请求地图。
-
-### 自动分析，辅助选片
-
-- 文件夹照片自动提取特征、识别相似视角，进度条显示当前阶段和处理数量。
-- 清晰度标签区分“锐利”、偏软、检测中或不可用，三种视图使用一致的样式。
-- 清晰度是基于预览图的辅助判断，不能替代原始 RAW 的全尺寸检查，也不是相机实际合焦状态。
-- 有可用 Sony MakerNote 坐标时，可显示相机 AF 区域；只有中心点时标记为近似显示框。缺少相机坐标时，估计焦点与相机 AF 分开标识。
-- Sony AF 元数据可选依赖 ExifTool：`brew install exiftool`，也可通过 `IMAGEEXPLORER_EXIFTOOL` 或 `EXIFTOOL_PATH` 指定可执行文件。普通浏览不要求安装它。
-
-### 空格快速预览
-
-选中文件按 **Space** 打开 Quick Look。支持前后切图、以鼠标位置为中心缩放、全图或选区清晰度分析，以及相邻 RAW 预取。原生预览能力用于兼容更多格式；照片可交给系统默认应用或其他编辑器继续处理。
+- **多品牌零拷贝 RAW 引擎**：直接解析 `.ARW` / `.CR2` / `.CR3` / `.NEF` / `.NRW` / `.RAF` / `.ORF` / `.RW2` / `.PEF` / `.DNG` 内嵌预览图，配合自定义二进制 `thumb://` 协议、磁盘 LRU 缩略图缓存、SQLite EXIF 缓存与相邻帧预取，翻图丝滑零卡顿。
+- **完整选片闭环**：全局与预览窗均支持 **精选（`P`）/ 淘汰（`X`）/ 清除（`U`）**、**星级评定（`⇧0`–`⇧5`）**、**自动前进下一张（Auto-Advance）**、**按 EXIF 拍摄时间排序**，以及 **RAW+JPG 堆叠联动**（复制、移动、删除、标星自动成对处理）。
+- **文件夹内多维筛选栏**：按关键词、文件格式、清晰度、精选/淘汰/未标记、最低星级、Finder 标签与相机/镜头 EXIF 实时组合过滤。
+- **自动连拍分组与清晰度分析**：后台 Worker 自动聚类相似视角/连拍组、标注锐利度并支持 **连拍自动择优（Auto-Pick Best）**；安装 ExifTool（`brew install exiftool`，可选）后可叠加显示 Sony MakerNote 相机对焦框。
+- **Adobe XMP 侧车文件双向同步**：既可导入已有 `.xmp` 星级与旗标，也可导出选片结果并无损合并进 `.xmp`，完整保留 Lightroom / Camera Raw 调色参数。
+- **专业空格预览（`Space`）与多图对比**：
+  - `Z` 一键切换 **1:1 像素原大**；**`F` 一键触发 macOS Vision 人脸/眼部 100% 对焦放大**（循环切换画面中每张人脸/眼睛，极速核对跑焦）。
+  - 实时 **RGB 直方图** 与 **红/蓝高光欠曝溢出警告叠层**。
+  - **双图 PK 擂台对比 & 3–4 图联排对比**，支持同步缩放平移与即时留用/淘汰。
+  - 除图片、视频、音频、PDF、文本外，还内置 **纯 Rust ZIP 压缩包目录直览**。
 
 ![Quick Look 放大检查照片细节](./docs/screenshots/quick-look-zoom-focus.png)
 
-*早期 Quick Look 实拍截图，演示放大检查细节；焦点标记与控制布局已随版本更新。*
+---
 
-## 文件管理功能
+### 3. 本地 Vision AI 与一键影像工作台
 
-| 功能 | 能做什么 |
-| --- | --- |
-| 路径与导航 | 输入完整路径、点击面包屑、前进/后退；可折叠目录树、可调宽侧边栏 |
-| 本地搜索 | SQLite FTS5 索引搜索；结果支持选择、右键操作和重命名，首次索引需要时间 |
-| 外置卷 | 在侧边栏显示已挂载卷，响应挂载变化；访问受保护目录时遵循 macOS 授权 |
-| 标签页与窗口 | 多标签、多窗口、拖动分离标签页、保留导航历史、跨窗口移动文件 |
-| 复制与移动 | ⌘C / ⌘X / ⌘V，任务队列、进度、取消、错误提示与同名冲突处理 |
-| 冲突与恢复 | 保留两者、替换、跳过或取消；持久化操作记录，失败任务重试，支持可恢复操作的一步撤销 |
-| 重命名与整理 | 行内重命名、批量重命名、排序、整理、新建文件与文件夹 |
-| 废纸篓与 ZIP | 浏览/恢复/清空废纸篓，压缩与解压 ZIP；耗时操作进入任务队列 |
-| 文件简介 | 路径、权限、所有者、时间，以及包、别名、符号链接信息 |
-| 常用位置 | 收藏夹、最近位置、隐藏文件显示；浅色/深色/跟随系统，中英双语 |
+在任意文件夹空白处、目标文件夹或选中照片上 **右键**，即可唤起三大专业本地工作台：
+
+#### 文物展牌识别模式（`文物展牌识别模式...`）
+- 调用 macOS 原生 **Vision OCR**（`VNRecognizeTextRequest`，中英混合识别）自动识别博物馆/展览中与文物交替拍摄的展牌照片。
+- 严格提取并生成 **`时代-名称-出土地-馆藏-原图片名`** 规范命名，支持双行折行标题自动拼接、多文物共享展牌检测与逐张手动指定。
+- 内置 **文物与展牌并排核对视图**、元数据实时编辑联动、`.xmp` / `.acr` 伴随文件同步重命名与 **整批一键撤销**。
+
+#### 一键人物分类（`一键人物分类...`）
+- 调用 macOS 原生 **Vision** 人脸检测（`VNDetectFaceRectanglesRequest`）与 L2 归一化特征向量（`VNGenerateImageFeaturePrintRequest`），直接支持 RAW 与常见图片格式。
+- 内置同照互斥约束聚类，提供 **聚类严格度实时滑块**（毫秒级重聚，无需重新扫描），支持重命名人物文件夹、手动合并拆分人物，并提供 **多人合照灵活策略**（归入「多人合照」/ 按主人物归类 / 复制到各自文件夹）。
+- 支持移动或复制归类、同步整理 `.xmp` / `.acr` 伴随文件与 **一键撤销恢复原路径**。
+
+#### 一键补充 / 同步 EXIF 与 GPS（`一键补充 / 同步 EXIF 与 GPS...`）
+- 自动审计整个文件夹或选中照片缺失的 **拍摄时间、相机/镜头、曝光参数（ISO/光圈/快门/焦距）与 GPS 定位**，彻底解决 Photoshop 导出或修图后 EXIF 丢失的痛点。
+- **三种同步模式自由切换**：
+  1. **同步某张照片**：一键选取本目录含 EXIF 的原图，或跨目录从磁盘挑选任意原片/RAW 作为只读参考源，读取后还可顺手补填 GPS 再批量写入。
+  2. **智能同名匹配**：自动将修图导出文件（如 `DSC01684_1.jpg`）与同目录同名原片或 RAW（如 `DSC01684.jpg` / `.ARW`）一对一配对回填原始参数。
+  3. **全局统一设置 + 常用预设**：手动设定拍摄时间（支持批量 `+1 秒递增` 保持顺序）、机身/镜头、曝光与 GPS（支持直接粘贴苹果/高德/谷歌地图的 `纬度, 经度` 坐标对），并可保存复用 **常用器材与地点预设**。
+- **无损安全写入**：基于 macOS ImageIO `CGImageDestinationCopyImageSource` 与精确 EXIF 有理分数编码原子替换写入，**绝不重新压缩 JPEG 像素画质**；默认 **仅补全缺失字段**（也支持强制覆盖），可选同步更新文件修改时间 `mtime`，并自动保护 RAW 只读不被改写。
+
+---
+
+### 4. SD 卡导片、批量重命名与原生导出
+
+- **SD 卡按日期一键导入**：自动按 `YYYY/YYYY-MM-DD/` 目录结构拷贝归档，智能跳过已存在重复文件。
+- **EXIF / 正则 / 大小写批量重命名**：支持拍摄日期、机身型号、序号模板、正则表达式替换与大小写转换，实时预览新文件名。
+- **多线程原生批量转码导出**：支持导出 **JPEG / HEIC / PNG**，自定义长边尺寸、压缩质量以及可选 **抹除 GPS 隐私信息**。
+
+---
+
+## 常用快捷键一览
+
+| 场景 | 快捷键 | 功能 |
+| --- | --- | --- |
+| 视图与布局 | `⌘1` / `⌘2` / `⌘3` / `⌘4` | 切换 图标 / 列表 / 分栏 / 画廊 视图 |
+| 视图与布局 | `⌘\` | 开启 / 关闭双栏分屏 |
+| 目录导航 | `⇧⌘G` / `⌘[` / `⌘]` | 前往文件夹 / 后退 / 前进 |
+| 列表视图 | `→` / `←` | 行内展开 / 收起子文件夹 |
+| 极速选片 | `P` / `X` / `U` | 标记精选 / 淘汰 / 清除标记 |
+| 极速选片 | `⇧0` – `⇧5` | 设置 0–5 星评级 |
+| 快速预览 | `Space` | 打开 / 关闭 Quick Look 预览 |
+| 快速预览 | `Z` / `F` | 切换 1:1 像素原大 / Vision 人脸眼部 100% 对焦放大 |
+| 文件信息 | `⌘I` / `⌥⌘I` | 显示简介 / 多选汇总简介 |
+| 文件操作 | `⌘C` / `⌘X` / `⌘V` / `⌘D` | 复制 / 剪切 / 粘贴 / 制作副本 |
+
+---
 
 ## 下载与安装
 
-前往 [Releases](https://github.com/AITuring/ImageExplorer/releases)，选择最新的成功构建：
+前往 [GitHub Releases](https://github.com/AITuring/ImageExplorer/releases) 下载对应架构的最新构建：
 
-- **Apple Silicon（M 系列）**：`ImageExplorer-macos-arm64.dmg`
+- **Apple Silicon（M 系列芯片）**：`ImageExplorer-macos-arm64.dmg`
 - **Intel Mac**：`ImageExplorer-macos-x64.dmg`
-- 打开 DMG，将应用拖入 Applications；也提供 `.app.zip` 和 `SHA256SUMS.txt`。
+- 打开 DMG，将 **ImageExplorer** 拖入 Applications；同时提供 `.app.zip` 与 `SHA256SUMS.txt`。
 
-每次 push 发布的是带版本号的 **正式 GitHub Release**（标记为 Latest，而非 Pre-release），使用临时签名，未经 Apple Developer ID 签名和公证，macOS 可能阻止首次启动。当前构建不提供自动更新元数据。正式签名/公证发布需要单独配置密钥和 updater 公钥，不能将自动构建成功等同于正式发行验收。
+> **提示**：每次 push 自动发布的版本采用临时签名（未经 Apple Developer ID 公证），首次启动时如遇 macOS 安全提示，请在「系统设置 → 隐私与安全性」中允许打开。
 
-## 本地启动
+---
 
-需要 Node.js 24、pnpm 10、Rust stable，以及 Xcode Command Line Tools（`xcode-select --install`）。
+## 本地开发与构建
+
+环境要求：**Node.js 24**、**pnpm 10**、**Rust stable** 以及 **Xcode Command Line Tools**（`xcode-select --install`）。
 
 ```bash
 git clone https://github.com/AITuring/ImageExplorer.git
@@ -97,41 +138,34 @@ pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
 
-`pnpm tauri dev` 启动完整桌面应用并支持前端热更新；`pnpm dev` 只启动网页前端，不能独立提供文件系统和 RAW 原生能力。若提示端口 1420 被占用，请停止此前的开发服务后重试。
+`pnpm tauri dev` 会启动完整的 macOS 桌面应用并支持前端热更新；`pnpm dev` 仅启动前端页面，不包含原生文件系统、ImageIO 与 Vision 能力。
 
 ```bash
-# 本地构建安装包，不需要 updater 签名密钥
-pnpm tauri build --bundles app,dmg --config '{"bundle":{"createUpdaterArtifacts":false}}'
-
-# 完整自动检查：前端、格式、Rust 测试与 Clippy
+# 运行完整 CI 检查：ESLint、TypeScript、前端测试、Vite 构建、rustfmt、Rust 测试与 Clippy
 pnpm check:ci
+
+# 本地打包 macOS .app 与 .dmg（无需 updater 签名密钥）
+APPLE_SIGNING_IDENTITY="-" pnpm tauri build --bundles app,dmg --config '{"bundle":{"createUpdaterArtifacts":false}}'
 ```
 
-安装包输出在 `src-tauri/target/release/bundle/`。
+构建产物输出在 `src-tauri/target/release/bundle/`。
 
-## 每次 push 自动发布
+---
 
-[Release 工作流](./.github/workflows/release.yml) 对所有分支和标签的 push 运行，也支持手动触发：
+## 技术架构
 
-1. 在 Apple Silicon 与 Intel macOS runner 上安装锁定依赖，执行 `pnpm check:ci`。
-2. 分别构建 `.dmg` 和 `.app.zip`，汇总两个架构的产物。
-3. 构建前原子预留版本号，从 `v0.1.0` 开始递增补丁号：`v0.1.1`、`v0.1.2`……；安装包内版本与 Release 一致。两端都成功后生成 SHA-256 校验文件并发布正式 Release，记录来源引用与完整 commit SHA。
-4. 每次 push 独立运行，不取消前一次构建；重跑同一任务复用同一个版本。并发推送不会占用相同版本，Latest 指向已发布的最高版本；失败构建保留已占用的标签，因此版本可能跳号。检查或构建失败时不发布缺少安装包的正式可见 Release。
+- **前端界面**：React 19 · TypeScript · Tailwind CSS 4 · Zustand · `@tanstack/react-virtual` · Vite
+- **桌面内核**：Tauri 2 · Rust（`rayon` 并行、`rusqlite` FTS5 索引、`sha2`、自定义 `thumb://` 二进制协议）
+- **macOS 原生桥接（`src-tauri/native/quicklook_thumbnail.m`）**：Objective-C 深度封装 `ImageIO`（RAW/JPEG 解码、元数据读取、`CGImageDestinationCopyImageSource` 无损 EXIF/GPS 写入、原生旋转）、`Vision.framework`（中英文文本 OCR、人脸/眼部检测、人脸特征提取）、`QuickLookThumbnailing` 与 `AppKit`（`NSSharingServicePicker`、Finder 标签、Spotlight）。
 
-发布仅使用 GitHub 自动提供的 `GITHUB_TOKEN`（版本预留和发布 job 的 `contents: write`），不需要另建 PAT。仓库需允许 GitHub Actions 运行和写入 Release。删除分支不发布；GitHub 对大批量标签/分支推送的事件限制仍适用。
+## 自动构建与项目文档
 
-[Signed Release](./.github/workflows/release-signed.yml) 保留为手动入口，输入已有版本标签，严格检查签名配置并生成待审阅草稿。具体密钥与正式发布验收见 [发布清单](./docs/performance-release-checklist.md)。
-
-## 技术与项目文档
-
-React 19 · TypeScript · Tailwind CSS 4 · Tauri 2 · Rust · SQLite FTS5 · Vite
+每次推送均会自动触发 [CI](./.github/workflows/ci.yml) 与 [Release](./.github/workflows/release.yml) 工作流，在 Apple Silicon（`macos-14`）与 Intel（`macos-15-intel`）双架构 macOS 环境下通过全部 `pnpm check:ci` 校验后，原子递增版本号并发布附带 SHA-256 校验文件的正式 Release。
 
 - [Finder 差异分析与开发计划](./docs/finder-gap-analysis-and-development-plan.zh-CN.md)
 - [性能与正式发布清单](./docs/performance-release-checklist.md)
 - [权限与本地数据边界](./docs/permissions.md)
 
-当前重点是 macOS，自动安装包覆盖 Apple Silicon 与 Intel；不宣称 Windows/Linux 已完成发行验收。
-
 ## 许可证
 
-[BSL 1.1](./LICENSE)，具体使用授权以 LICENSE 为准。
+[BSL 1.1](./LICENSE)，具体授权条款以 LICENSE 文件为准。
