@@ -234,12 +234,16 @@ export const FileGridItem = memo(function FileGridItem({
             }
           }}
         >
-          <div className="flex w-full min-w-0 items-center justify-center gap-1">
+          <div
+            className={`flex w-full min-w-0 justify-center gap-1 ${
+              entry.is_dir ? "items-start" : "items-center"
+            }`}
+          >
             <FinderTagDots tags={entry.tags} />
             <span
-              className={`min-w-0 truncate rounded px-0.5 text-xs font-medium ${
-                isSelected ? "bg-primary/10" : ""
-              }`}
+              className={`min-w-0 rounded px-0.5 text-xs font-medium ${
+                entry.is_dir ? "line-clamp-2 leading-snug break-words" : "truncate"
+              } ${isSelected ? "bg-primary/10" : ""}`}
               title={entry.name}
             >
               {entry.name}
@@ -267,7 +271,11 @@ export const FileGridItem = memo(function FileGridItem({
             )}
           {metadataSummary && (
             <div className="text-muted-foreground mt-1 w-full space-y-0.5 px-1 text-[11px] leading-4 tabular-nums">
-              {metadataSummary.dimensions && <div>{metadataSummary.dimensions}</div>}
+              {metadataSummary.dimensions && (
+                <div className="truncate whitespace-nowrap" title={metadataSummary.dimensions}>
+                  {metadataSummary.dimensions}
+                </div>
+              )}
               {metadataSummary.exposure.length > 0 && (
                 <>
                   <div
@@ -276,7 +284,9 @@ export const FileGridItem = memo(function FileGridItem({
                   >
                     {metadataSummary.exposure.slice(0, 3).join(" · ")}
                   </div>
-                  {metadataSummary.exposure[3] && <div>{metadataSummary.exposure[3]}</div>}
+                  {metadataSummary.exposure[3] && (
+                    <div className="truncate">{metadataSummary.exposure[3]}</div>
+                  )}
                 </>
               )}
             </div>

@@ -964,7 +964,12 @@ export function FileList({
 
   // === 虚拟滚动 ===
   const listScrollRef = useRef<HTMLDivElement>(null);
-  const gridScrollRef = useRef<HTMLDivElement>(null);
+  const gridScrollRef = useRef<HTMLDivElement | null>(null);
+  const [gridScrollEl, setGridScrollEl] = useState<HTMLDivElement | null>(null);
+  const setGridScrollRef = useCallback((node: HTMLDivElement | null) => {
+    gridScrollRef.current = node;
+    setGridScrollEl((current) => (current === node ? current : node));
+  }, []);
   const scrollPositionsRef = useRef<Record<string, number>>({});
 
   const getScrollContainer = useCallback((mode: typeof viewMode) => {
@@ -975,28 +980,29 @@ export function FileList({
 
   const gridItemWidth = Math.max(GRID_ITEM_MIN_WIDTH, iconSize + 16);
   const photoGridRowHeight = Math.max(212, iconSize + 104);
-  const folderGridRowHeight = Math.max(GRID_ROW_HEIGHT, Math.round(iconSize * 0.65) + 42);
+  // Reserve enough height for 2-line Finder-style folder labels without vertical clipping.
+  const folderGridRowHeight = Math.max(GRID_ROW_HEIGHT + 16, Math.round(iconSize * 0.65) + 56);
 
-  // 计算网格每行列数
+  // 计算网格每行列数（绑定到实际挂载的滚动容器节点，避免初始 loading 阶段跳过 ResizeObserver 导致列数卡死）
   const updateGridColumns = useCallback(() => {
-    const el = gridScrollRef.current;
-    if (!el) return;
-    const containerWidth = el.clientWidth - 16; // p-2 padding
+    const el = gridScrollEl ?? gridScrollRef.current;
+    if (!el || el.clientWidth <= 0) return;
+    const containerWidth = Math.max(0, el.clientWidth - 16); // p-2 padding
     const nextColumns = Math.max(
       1,
       Math.floor((containerWidth + GRID_GAP) / (gridItemWidth + GRID_GAP))
     );
     setGridColumns((current) => (current === nextColumns ? current : nextColumns));
-  }, [gridItemWidth]);
+  }, [gridItemWidth, gridScrollEl]);
 
   useEffect(() => {
-    updateGridColumns();
-    const el = gridScrollRef.current;
+    const el = gridScrollEl;
     if (!el) return;
+    updateGridColumns();
     const observer = new ResizeObserver(updateGridColumns);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [updateGridColumns, viewMode]);
+  }, [gridScrollEl, updateGridColumns, viewMode]);
 
   // 列表虚拟化（支持分组标题与内联展开树）
   const listVirtualizer = useVirtualizer({
@@ -2034,7 +2040,7 @@ export function FileList({
             <>
               {emptyMessage}
               <div
-                ref={gridScrollRef}
+                ref={setGridScrollRef}
                 onMouseDown={handleGridMarqueeMouseDown}
                 {...delegatedDragHandlers}
                 className="file-grid-scrollbar relative min-h-0 flex-1 overflow-y-scroll select-none"
@@ -2116,7 +2122,7 @@ export function FileList({
                         <div
                           className="grid gap-3 p-2"
                           style={{
-                            gridTemplateColumns: `repeat(${cols}, minmax(0, ${gridItemWidth}px))`,
+                            gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
                           }}
                         >
                           {rowEntries.map((entry, colIdx) => {
