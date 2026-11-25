@@ -15,6 +15,7 @@ import { preloadNeighborEntries } from "@/lib/imagePreload";
 import { FINDER_TAG_PRESETS, hasFinderTag } from "@/lib/finderTags";
 import { extractHistogramFromImageElement, type PhotoHistogramData } from "@/lib/histogramAnalysis";
 import { DEFAULT_CULLING_STATE, type PhotoCullingState, type PhotoFlag } from "@/lib/photoCulling";
+import { makeNativeFileDragGestureHandlers } from "@/lib/nativeFileDragGesture";
 import type { VisibleSharpness } from "@/hooks/useVisibleSharpness";
 
 const FILMSTRIP_ITEM_WIDTH = 86;
@@ -443,6 +444,13 @@ export function FileGalleryView({
             if (!entry) return null;
             const isSelected = selectedPathSet.has(entry.path) || entry.path === activeEntry.path;
             const isInViewport = virtualItem.index >= rangeStart && virtualItem.index <= rangeEnd;
+            const dragPaths =
+              selectedPathSet.has(entry.path) && selectedPaths.length > 0
+                ? selectedPaths
+                : [entry.path];
+            const nativeDragHandlers = makeNativeFileDragGestureHandlers(dragPaths, {
+              allowButtonTarget: true,
+            });
             return (
               <div
                 key={entry.path}
@@ -466,6 +474,7 @@ export function FileGalleryView({
                     type="button"
                     role="option"
                     aria-selected={isSelected}
+                    {...nativeDragHandlers}
                     onMouseDown={(event) => event.preventDefault()}
                     onClick={(event) => onSelect(entry, virtualItem.index, event)}
                     onDoubleClick={() => onDoubleClick(entry)}

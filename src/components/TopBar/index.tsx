@@ -33,6 +33,7 @@ import { useClipboard } from "@/stores/clipboard";
 import { useFileInfoDialog } from "@/stores/fileInfoDialog";
 import { useLocations } from "@/stores/locations";
 import { isCommandEnabled, runCommand } from "@/lib/commands";
+import { makeNativeFileDragGestureHandlers } from "@/lib/nativeFileDragGesture";
 import { windowManager } from "@/lib/windowManager";
 import { registerKeyboardCommands } from "@/lib/keyboardShortcuts";
 import { viewModeCommands } from "@/lib/viewModeCommands";
@@ -903,6 +904,9 @@ export function TopBar({ onNavigate }: TopBarProps) {
               <button
                 type="button"
                 className="finder-location-button flex min-w-0 items-center gap-2"
+                {...(!currentPath.startsWith(SMART_FOLDER_PREFIX) && currentPath.length > 1
+                  ? makeNativeFileDragGestureHandlers([currentPath], { allowButtonTarget: true })
+                  : {})}
                 onClick={() => setIsEditing(true)}
                 title={currentPath}
                 aria-label={t("nav.edit_path")}

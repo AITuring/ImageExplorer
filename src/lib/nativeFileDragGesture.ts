@@ -34,7 +34,10 @@ export function hasReachedNativeDragThreshold(
  * Start the OS drag before WebKit creates its own rendered-card drag. Waiting
  * for `dragstart` is too late because WebKit already owns the mouse gesture.
  */
-export function makeNativeFileDragGestureHandlers(paths: string[]) {
+export function makeNativeFileDragGestureHandlers(
+  paths: string[],
+  options?: { allowButtonTarget?: boolean }
+) {
   const resetPointer = (element: HTMLElement, pointerId: number) => {
     const gesture = nativeDragGestureStates.get(element);
     if (!gesture || gesture.pointerStart.id !== pointerId) return;
@@ -45,7 +48,15 @@ export function makeNativeFileDragGestureHandlers(paths: string[]) {
     draggable: false as const,
     onPointerDown: (event: ReactPointerEvent<HTMLElement>) => {
       if (!event.isPrimary || event.button !== 0) return;
-      if ((event.target as Element).closest(INTERACTIVE_TARGET_SELECTOR)) return;
+      if (!options?.allowButtonTarget) {
+        if ((event.target as Element).closest(INTERACTIVE_TARGET_SELECTOR)) return;
+      } else if (
+        (event.target as Element).closest(
+          'input, select, textarea, [contenteditable="true"], [data-context-menu-content]'
+        )
+      ) {
+        return;
+      }
 
       nativeDragGestureStates.set(event.currentTarget, {
         pointerStart: {

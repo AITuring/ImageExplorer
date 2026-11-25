@@ -78,7 +78,12 @@ const PhotoCompareDialog = lazy(() =>
 const BatchRenameDialog = lazy(() =>
   import("@/components/BatchRenameDialog").then((m) => ({ default: m.BatchRenameDialog }))
 );
-import { readFileDragData } from "@/lib/dragData";
+import {
+  hasFileDragPayload,
+  resolveExecutableDrop,
+  resolveFileDragData,
+  resolveFileDropEffect,
+} from "@/lib/dragData";
 import { makeDelegatedFileDragGestureHandlers } from "@/lib/nativeFileDragGesture";
 import { isPermissionDeniedError, requestDirectoryAccess } from "@/lib/directoryAccess";
 import { settingsManager } from "@/lib/store";
@@ -123,7 +128,7 @@ interface FileListProps {
   isPrimaryPane?: boolean;
 }
 
-/** 仅文件夹需要的拖入目标事件处理（按住 Option / Alt 键执行复制而非移动） */
+/** 仅文件夹需要的拖入目标事件处理（遵循 macOS Finder 同盘移动/跨盘复制、Option 复制、Command 跨盘移动规则） */
 function makeDirectoryDropHandlers(
   entry: FileEntry,
   handleMove: (src: string | string[], dest: string) => void,
@@ -134,8 +139,13 @@ function makeDirectoryDropHandlers(
 
   return {
     onDragOver: (e: React.DragEvent) => {
+      if (!hasFileDragPayload(e.dataTransfer)) return;
       e.preventDefault();
-      e.dataTransfer.dropEffect = e.altKey ? "copy" : "move";
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = resolveFileDropEffect(e.dataTransfer, entry.path, {
+        altKey: e.altKey,
+        metaKey: e.metaKey,
+      });
       if (isGrid) {
         e.currentTarget.querySelector(".group")?.classList.add("bg-primary/20", "rounded-lg");
       } else {
@@ -152,6 +162,7 @@ function makeDirectoryDropHandlers(
       }
     },
     onDrop: (e: React.DragEvent) => {
+      if (!hasFileDragPayload(e.dataTransfer)) return;
       e.preventDefault();
       e.stopPropagation();
       if (isGrid) {
@@ -159,14 +170,14 @@ function makeDirectoryDropHandlers(
       } else {
         e.currentTarget.classList.remove("bg-primary/20", "rounded-md");
       }
-      const data = readFileDragData(e.dataTransfer);
-      if (data) {
-        const paths = data.paths.filter((path) => path !== entry.path);
-        if (paths.length > 0) {
-          if (e.altKey) handleCopyTo(paths, entry.path);
-          else handleMove(paths, entry.path);
-        }
-      }
+      const modifiers = { altKey: e.altKey, metaKey: e.metaKey };
+      void resolveFileDragData(e.dataTransfer).then((data) => {
+        if (!data) return;
+        const resolved = resolveExecutableDrop(data.paths, entry.path, modifiers);
+        if (!resolved) return;
+        if (resolved.operation === "copy") handleCopyTo(resolved.paths, entry.path);
+        else handleMove(resolved.paths, entry.path);
+      });
     },
   };
 }
@@ -1371,9 +1382,14 @@ export function FileList({
         setIsFileDragOver(false);
         return;
       }
-      if (operationPath.startsWith(SMART_FOLDER_PREFIX)) return;
+      if (operationPath.startsWith(SMART_FOLDER_PREFIX) || !hasFileDragPayload(e.dataTransfer)) {
+        return;
+      }
       e.preventDefault();
-      e.dataTransfer.dropEffect = e.altKey ? "copy" : "move";
+      e.dataTransfer.dropEffect = resolveFileDropEffect(e.dataTransfer, operationPath, {
+        altKey: e.altKey,
+        metaKey: e.metaKey,
+      });
       setIsFileDragOver(true);
     },
     [operationPath]
@@ -1387,18 +1403,20 @@ export function FileList({
 
   const handleFileContainerDrop = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
-      if (operationPath.startsWith(SMART_FOLDER_PREFIX)) return;
-      const data = readFileDragData(e.dataTransfer);
-      if (!data) return;
-
+      if (operationPath.startsWith(SMART_FOLDER_PREFIX) || !hasFileDragPayload(e.dataTransfer)) {
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
       setIsFileDragOver(false);
-      const paths = data.paths.filter((path) => path !== operationPath);
-      if (paths.length > 0) {
-        if (e.altKey) handleCopyTo(paths, operationPath);
-        else handleMove(paths, operationPath);
-      }
+      const modifiers = { altKey: e.altKey, metaKey: e.metaKey };
+      void resolveFileDragData(e.dataTransfer).then((data) => {
+        if (!data) return;
+        const resolved = resolveExecutableDrop(data.paths, operationPath, modifiers);
+        if (!resolved) return;
+        if (resolved.operation === "copy") handleCopyTo(resolved.paths, operationPath);
+        else handleMove(resolved.paths, operationPath);
+      });
     },
     [operationPath, handleCopyTo, handleMove]
   );

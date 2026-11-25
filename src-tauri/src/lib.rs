@@ -28,7 +28,7 @@ use commands::apps::{
     open_in_terminal_with, open_native_quick_look, open_with,
 };
 use commands::clipboard::{consume_cut_file_clipboard, read_file_clipboard, write_file_clipboard};
-use commands::drag::start_native_file_drag;
+use commands::drag::{get_native_drag_file_paths, start_native_file_drag};
 use commands::fs::{
     batch_rename, calculate_directory_size, cancel_directory_size, check_full_disk_access,
     copy_file, create_directory, create_file, delete_to_trash, eject_volume, exists,
@@ -1392,6 +1392,7 @@ pub fn run() {
             open_native_quick_look,
             close_native_quick_look,
             get_sf_symbol,
+            get_native_drag_file_paths,
             start_native_file_drag,
             read_file_clipboard,
             write_file_clipboard,

@@ -9,7 +9,12 @@ import { CompactFileThumbnail } from "./CompactFileThumbnail";
 import { FinderTagDots } from "@/components/FinderTagDots";
 import { filterHiddenEntries } from "@/utils/file";
 import { sortFileEntries } from "../hooks/useFileSort";
-import { readFileDragData } from "@/lib/dragData";
+import {
+  hasFileDragPayload,
+  resolveExecutableDrop,
+  resolveFileDragData,
+  resolveFileDropEffect,
+} from "@/lib/dragData";
 import { makeNativeFileDragGestureHandlers } from "@/lib/nativeFileDragGesture";
 import { AppContextMenu } from "@/components/AppContextMenu";
 import { ColumnFilePreview } from "./ColumnFilePreview";
@@ -206,7 +211,34 @@ const ColumnPane = memo(function ColumnPane({
       style={{ width: `${width}px` }}
       className="border-border/30 relative flex h-full shrink-0 flex-col border-r last:border-r-0"
     >
-      <div ref={scrollRef} className="flex-1 overflow-y-auto">
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-y-auto"
+        onDragOver={(event) => {
+          if (event.defaultPrevented || !column.path || !hasFileDragPayload(event.dataTransfer)) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          event.dataTransfer.dropEffect = resolveFileDropEffect(event.dataTransfer, column.path, {
+            altKey: event.altKey,
+            metaKey: event.metaKey,
+          });
+        }}
+        onDrop={(event) => {
+          if (!column.path || !hasFileDragPayload(event.dataTransfer)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const modifiers = { altKey: event.altKey, metaKey: event.metaKey };
+          void resolveFileDragData(event.dataTransfer).then((data) => {
+            if (!data) return;
+            const resolved = resolveExecutableDrop(data.paths, column.path, modifiers);
+            if (!resolved) return;
+            if (resolved.operation === "copy") handleCopyTo(resolved.paths, column.path);
+            else handleMove(resolved.paths, column.path);
+          });
+        }}
+      >
         {column.entries.length === 0 ? (
           <div className="text-muted-foreground flex h-20 items-center justify-center text-xs">
             Empty
@@ -257,9 +289,14 @@ const ColumnPane = memo(function ColumnPane({
                       onClick={(e) => onSelect(colIdx, entry, entryIdx, e)}
                       onDoubleClick={() => onDoubleClick(entry)}
                       onDragOver={(event) => {
-                        if (!entry.is_dir) return;
+                        if (!entry.is_dir || !hasFileDragPayload(event.dataTransfer)) return;
                         event.preventDefault();
-                        event.dataTransfer.dropEffect = event.altKey ? "copy" : "move";
+                        event.stopPropagation();
+                        event.dataTransfer.dropEffect = resolveFileDropEffect(
+                          event.dataTransfer,
+                          entry.path,
+                          { altKey: event.altKey, metaKey: event.metaKey }
+                        );
                         event.currentTarget.classList.add("bg-primary/20");
                       }}
                       onDragLeave={(event) => {
@@ -272,16 +309,21 @@ const ColumnPane = memo(function ColumnPane({
                         event.currentTarget.classList.remove("bg-primary/20");
                       }}
                       onDrop={(event) => {
-                        if (!entry.is_dir) return;
+                        if (!entry.is_dir || !hasFileDragPayload(event.dataTransfer)) return;
                         event.preventDefault();
                         event.stopPropagation();
                         event.currentTarget.classList.remove("bg-primary/20");
-                        const data = readFileDragData(event.dataTransfer);
-                        const paths = data?.paths.filter((path) => path !== entry.path) ?? [];
-                        if (paths.length > 0) {
-                          if (event.altKey) handleCopyTo(paths, entry.path);
-                          else handleMove(paths, entry.path);
-                        }
+                        const modifiers = { altKey: event.altKey, metaKey: event.metaKey };
+                        void resolveFileDragData(event.dataTransfer).then((data) => {
+                          if (!data) return;
+                          const resolved = resolveExecutableDrop(data.paths, entry.path, modifiers);
+                          if (!resolved) return;
+                          if (resolved.operation === "copy") {
+                            handleCopyTo(resolved.paths, entry.path);
+                          } else {
+                            handleMove(resolved.paths, entry.path);
+                          }
+                        });
                       }}
                     >
                       <CompactFileThumbnail

@@ -1,5 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import {
+  filterDropPathsForTarget,
+  matchPasteboardPathsToExpectedNames,
+  resolveFileDropOperation,
+} from "@/lib/dragDropUtils";
+
+export {
+  filterDropPathsForTarget,
+  getPathVolumeRoot,
+  matchPasteboardPathsToExpectedNames,
+  normalizeDirectoryPath,
+  resolveFileDropOperation,
+} from "@/lib/dragDropUtils";
 
 export const FILE_DRAG_MIME = "application/x-imageexplorer-file";
 
@@ -13,13 +26,19 @@ interface ActiveNativeFileDrag {
   paths: string[];
 }
 
+interface NativeFileDragStarted {
+  sessionId: string;
+  paths: string[];
+}
+
 interface NativeFileDragEnded {
   sessionId: string;
 }
 
+const NATIVE_FILE_DRAG_STARTED_EVENT = "native-file-drag-started";
 const NATIVE_FILE_DRAG_ENDED_EVENT = "native-file-drag-ended";
-const ACTIVE_DRAG_EXPIRY_MS = 30_000;
-const DRAG_END_GRACE_PERIOD_MS = 250;
+const ACTIVE_DRAG_EXPIRY_MS = 60_000;
+const DRAG_END_GRACE_PERIOD_MS = 1_000;
 
 let activeNativeFileDrag: ActiveNativeFileDrag | null = null;
 let activeDragExpiry: ReturnType<typeof setTimeout> | null = null;
@@ -52,10 +71,21 @@ function setActiveNativeFileDrag(sessionId: string, paths: string[]) {
   }, ACTIVE_DRAG_EXPIRY_MS);
 }
 
+// Keep every ImageExplorer window synchronized with any active native drag
+// session so split-screen Window A -> Window B drops resolve immediately.
+void listen<NativeFileDragStarted>(NATIVE_FILE_DRAG_STARTED_EVENT, ({ payload }) => {
+  const paths = uniquePaths(payload.paths ?? []);
+  if (payload.sessionId && paths.length > 0) {
+    setActiveNativeFileDrag(payload.sessionId, paths);
+  }
+}).catch((error) => {
+  console.error("Failed to listen for native file drag start", error);
+});
+
 void listen<NativeFileDragEnded>(NATIVE_FILE_DRAG_ENDED_EVENT, ({ payload }) => {
   // AppKit finishes the destination's drop callback before notifying the
-  // source. Keep a short guard for the WebView event bridge so an internal
-  // drop can still recover the source paths.
+  // source. Keep a short guard for the WebView event bridge so cross-window
+  // drops can still recover the source paths.
   setTimeout(() => {
     clearActiveNativeFileDrag(payload.sessionId);
   }, DRAG_END_GRACE_PERIOD_MS);
@@ -135,6 +165,29 @@ function parsePlainPathList(raw: string): string[] {
   return uniquePaths(paths);
 }
 
+/** Return true when a `dragover` event carries OS files or an internal file drag. */
+export function hasFileDragPayload(dataTransfer: DataTransfer): boolean {
+  if (activeNativeFileDrag) return true;
+  const types = Array.from(dataTransfer.types ?? []);
+  return (
+    types.includes(FILE_DRAG_MIME) || types.includes("Files") || types.includes("text/uri-list")
+  );
+}
+
+/** Compute the expected dropEffect cursor (`copy` vs `move`) during `dragover`. */
+export function resolveFileDropEffect(
+  dataTransfer: DataTransfer,
+  destDir: string,
+  modifiers: { altKey: boolean; metaKey: boolean }
+): "copy" | "move" {
+  if (activeNativeFileDrag && activeNativeFileDrag.paths.length > 0) {
+    return resolveFileDropOperation(activeNativeFileDrag.paths, destDir, modifiers);
+  }
+  if (modifiers.altKey) return "copy";
+  if (dataTransfer.effectAllowed === "copy") return "copy";
+  return "move";
+}
+
 export function readFileDragData(dataTransfer: DataTransfer): FileDragData | null {
   const serializedPayloads = [
     dataTransfer.getData(FILE_DRAG_MIME),
@@ -158,4 +211,53 @@ export function readFileDragData(dataTransfer: DataTransfer): FileDragData | nul
   }
 
   return null;
+}
+
+/**
+ * Resolve dropped file paths synchronously when available (same-window or
+ * cross-window ImageExplorer drag), or asynchronously from macOS's native
+ * `NSPasteboardNameDrag` when files/folders are dragged in from Finder or
+ * another desktop application.
+ *
+ * Must be called synchronously inside the `drop` handler so `dataTransfer`
+ * metadata is captured before any `await`.
+ */
+export async function resolveFileDragData(
+  dataTransfer: DataTransfer
+): Promise<FileDragData | null> {
+  // Capture all DOM DataTransfer fields synchronously before yielding to IPC.
+  const syncData = readFileDragData(dataTransfer);
+  if (syncData) return syncData;
+
+  const expectedNames = Array.from(dataTransfer.files ?? [])
+    .map((file) => file.name)
+    .filter((name) => name.length > 0);
+  const types = Array.from(dataTransfer.types ?? []);
+  const hasOsFiles = expectedNames.length > 0 || types.includes("Files");
+  if (!hasOsFiles) return null;
+
+  try {
+    const nativePaths = await invoke<string[]>("get_native_drag_file_paths");
+    const uniqueNative = uniquePaths(nativePaths);
+    const verified = matchPasteboardPathsToExpectedNames(uniqueNative, expectedNames);
+    if (verified.length > 0) {
+      return { kind: "file", paths: verified };
+    }
+  } catch (error) {
+    console.error("Failed to read native drag file paths:", error);
+  }
+
+  return null;
+}
+
+/** Helper to execute a resolved drop onto `destDir` using Finder copy/move rules. */
+export function resolveExecutableDrop(
+  sourcePaths: readonly string[],
+  destDir: string,
+  modifiers: { altKey: boolean; metaKey: boolean }
+): { operation: "copy" | "move"; paths: string[] } | null {
+  const operation = resolveFileDropOperation(sourcePaths, destDir, modifiers);
+  const paths = filterDropPathsForTarget(sourcePaths, destDir, operation);
+  if (paths.length === 0) return null;
+  return { operation, paths };
 }

@@ -29,7 +29,13 @@ import { useTrashDialog } from "@/stores/trashDialog";
 import { getLocationName, useLocations } from "@/stores/locations";
 import { FINDER_TAG_PRESETS } from "@/lib/finderTags";
 import { SMART_FOLDER_PREFIX } from "@/constants/config";
-import { readFileDragData } from "@/lib/dragData";
+import {
+  hasFileDragPayload,
+  resolveExecutableDrop,
+  resolveFileDragData,
+  resolveFileDropEffect,
+} from "@/lib/dragData";
+import { makeNativeFileDragGestureHandlers } from "@/lib/nativeFileDragGesture";
 import { enqueueFileOperation } from "@/lib/fileOperations";
 import { windowManager } from "@/lib/windowManager";
 import { useTabs } from "@/hooks/useTabs";
@@ -126,6 +132,10 @@ function SidebarLocationRow({
     onRemoveRecent,
   };
 
+  const nativeDragHandlers = isDroppableSidebarPath(path)
+    ? makeNativeFileDragGestureHandlers([path], { allowButtonTarget: true })
+    : undefined;
+
   return (
     <AppContextMenu type="sidebar-item" sidebarItemActions={sidebarItemActions} asChild>
       <div
@@ -133,6 +143,7 @@ function SidebarLocationRow({
           isDropTarget ? SIDEBAR_DROP_HIGHLIGHT_CLASS : ""
         }`}
         data-active={active}
+        {...nativeDragHandlers}
         onDragOver={(e) => dropProps.onDragOverTarget(e, path)}
         onDragLeave={(e) => dropProps.onDragLeaveTarget(e, path)}
         onDrop={(e) => dropProps.onDropOnTarget(e, path)}
@@ -329,6 +340,9 @@ function FolderTreeItem({
   };
 
   const isDropTarget = dropProps.dropTargetPath === item.path;
+  const nativeDragHandlers = isDroppableSidebarPath(item.path)
+    ? makeNativeFileDragGestureHandlers([item.path], { allowButtonTarget: true })
+    : undefined;
 
   return (
     <div>
@@ -340,6 +354,7 @@ function FolderTreeItem({
           aria-current={currentPath === item.path ? "page" : undefined}
           data-active={currentPath === item.path}
           style={{ paddingLeft: `${level * 12 + 8}px` }}
+          {...nativeDragHandlers}
           onClick={(e) => handleSidebarItemClick(e, item.path, onNavigate, onOpenInNewTab)}
           onAuxClick={(e) => {
             if (e.button === 1) {
@@ -427,10 +442,13 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
   const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
 
   const handleDragOverTarget = useCallback((event: React.DragEvent, targetPath: string) => {
-    if (!isDroppableSidebarPath(targetPath)) return;
+    if (!isDroppableSidebarPath(targetPath) || !hasFileDragPayload(event.dataTransfer)) return;
     event.preventDefault();
     event.stopPropagation();
-    event.dataTransfer.dropEffect = event.altKey ? "copy" : "move";
+    event.dataTransfer.dropEffect = resolveFileDropEffect(event.dataTransfer, targetPath, {
+      altKey: event.altKey,
+      metaKey: event.metaKey,
+    });
     setDropTargetPath((current) => (current === targetPath ? current : targetPath));
   }, []);
 
@@ -441,29 +459,24 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
   }, []);
 
   const handleDropOnTarget = useCallback((event: React.DragEvent, targetPath: string) => {
-    if (!isDroppableSidebarPath(targetPath)) return;
+    if (!isDroppableSidebarPath(targetPath) || !hasFileDragPayload(event.dataTransfer)) return;
     event.preventDefault();
     event.stopPropagation();
     setDropTargetPath(null);
 
-    const data = readFileDragData(event.dataTransfer);
-    if (!data) return;
+    const modifiers = { altKey: event.altKey, metaKey: event.metaKey };
+    void resolveFileDragData(event.dataTransfer).then((data) => {
+      if (!data) return;
+      const resolved = resolveExecutableDrop(data.paths, targetPath, modifiers);
+      if (!resolved) return;
 
-    const normalizedTarget = targetPath.replace(/\/+$/, "") || "/";
-    const paths = data.paths.filter((sourcePath) => {
-      const normalizedSource = sourcePath.replace(/\/+$/, "") || "/";
-      if (normalizedSource === normalizedTarget) return false;
-      if (normalizedTarget.startsWith(`${normalizedSource}/`)) return false;
-      return true;
-    });
-    if (paths.length === 0) return;
-
-    void enqueueFileOperation({
-      kind: event.altKey ? "copy" : "move",
-      paths,
-      destDir: targetPath,
-    }).catch((error) => {
-      console.error("Failed to drop files onto sidebar folder:", error);
+      void enqueueFileOperation({
+        kind: resolved.operation,
+        paths: resolved.paths,
+        destDir: targetPath,
+      }).catch((error) => {
+        console.error("Failed to drop files onto sidebar folder:", error);
+      });
     });
   }, []);
 
@@ -737,6 +750,11 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
                       }`}
                       aria-current={currentPath === item.path ? "page" : undefined}
                       data-active={currentPath === item.path}
+                      {...(isDroppableSidebarPath(item.path)
+                        ? makeNativeFileDragGestureHandlers([item.path], {
+                            allowButtonTarget: true,
+                          })
+                        : {})}
                       onClick={(e) =>
                         handleSidebarItemClick(e, item.path, onNavigate, handleOpenInNewTab)
                       }
@@ -861,6 +879,11 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
                           dropTargetPath === volume.path ? SIDEBAR_DROP_HIGHLIGHT_CLASS : ""
                         }`}
                         data-active={currentPath === volume.path}
+                        {...(isDroppableSidebarPath(volume.path)
+                          ? makeNativeFileDragGestureHandlers([volume.path], {
+                              allowButtonTarget: true,
+                            })
+                          : {})}
                         onDragOver={(e) => handleDragOverTarget(e, volume.path)}
                         onDragLeave={(e) => handleDragLeaveTarget(e, volume.path)}
                         onDrop={(e) => handleDropOnTarget(e, volume.path)}

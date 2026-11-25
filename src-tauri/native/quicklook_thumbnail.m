@@ -2271,3 +2271,36 @@ int imageexplorer_write_image_metadata(
         return 1;
     }
 }
+
+// Read file URLs currently on macOS's system drag pasteboard (`NSPasteboardNameDrag`)
+// so drops from Finder or other native apps resolve to real filesystem paths even
+// when WKWebView redacts `dataTransfer.getData("text/uri-list")`.
+char *imageexplorer_drag_pasteboard_paths_json(void) {
+    @autoreleasepool {
+        NSPasteboard *pasteboard = [NSPasteboard pasteboardWithName:NSPasteboardNameDrag];
+        if (pasteboard == nil) {
+            return imageexplorer_copy_utf8(@"[]");
+        }
+        NSDictionary *options = @{
+            NSPasteboardURLReadingFileURLsOnlyKey: @YES,
+        };
+        NSArray<NSURL *> *urls = [pasteboard readObjectsForClasses:@[[NSURL class]]
+                                                           options:options];
+        NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithCapacity:urls.count];
+        NSMutableSet<NSString *> *seen = [NSMutableSet setWithCapacity:urls.count];
+        for (NSURL *url in urls) {
+            if (!url.isFileURL) continue;
+            NSURL *resolved = url.filePathURL ?: url;
+            NSString *path = resolved.path;
+            if (path.length == 0 || [seen containsObject:path]) continue;
+            [seen addObject:path];
+            [paths addObject:path];
+        }
+        NSData *json = [NSJSONSerialization dataWithJSONObject:paths options:0 error:nil];
+        if (json == nil) {
+            return imageexplorer_copy_utf8(@"[]");
+        }
+        NSString *text = [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
+        return imageexplorer_copy_utf8(text ?: @"[]");
+    }
+}

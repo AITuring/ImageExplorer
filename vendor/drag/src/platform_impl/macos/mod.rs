@@ -179,7 +179,7 @@ pub fn start_drag<W: HasWindowHandle, F: Fn(DragResult, CursorPosition) + Send +
                     for path in files {
                         let nsurl = NSURL::fileURLWithPath_isDirectory(
                             &NSString::from_str(&path.display().to_string()),
-                            false,
+                            path.is_dir(),
                         );
                         let item = NSDraggingItem::initWithPasteboardWriter(
                             NSDraggingItem::alloc(),
