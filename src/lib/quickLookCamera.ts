@@ -10,7 +10,18 @@ export interface Size2D {
 }
 
 export const QUICK_LOOK_MIN_ZOOM = 1;
-export const QUICK_LOOK_MAX_ZOOM = 6;
+export const QUICK_LOOK_MAX_ZOOM = 8;
+
+export interface CrispCanvasBlitRect {
+  srcX: number;
+  srcY: number;
+  srcW: number;
+  srcH: number;
+  dstX: number;
+  dstY: number;
+  dstW: number;
+  dstH: number;
+}
 
 export function clampQuickLookZoom(scale: number): number {
   if (!Number.isFinite(scale)) return QUICK_LOOK_MIN_ZOOM;
@@ -130,5 +141,61 @@ export function getMinimapViewportRect(
     y: visTop * minimapSize.height,
     width: Math.max(8, visWidth * minimapSize.width),
     height: Math.max(8, visHeight * minimapSize.height),
+  };
+}
+
+/**
+ * Compute exact source (native image pixels) and destination (physical canvas pixels)
+ * rectangles for drawing the visible portion of a zoomed image onto a viewport-sized
+ * HiDPI canvas without WebKit CSS transform-layer downsampling.
+ */
+export function getCrispCanvasBlitRect(
+  camera: QuickLookCamera,
+  viewportSize: Size2D,
+  fitSize: Size2D,
+  naturalSize: Size2D,
+  dpr: number
+): CrispCanvasBlitRect | null {
+  if (
+    viewportSize.width <= 0 ||
+    viewportSize.height <= 0 ||
+    fitSize.width <= 0 ||
+    fitSize.height <= 0 ||
+    naturalSize.width <= 0 ||
+    naturalSize.height <= 0 ||
+    dpr <= 0
+  ) {
+    return null;
+  }
+
+  const drawW = fitSize.width * camera.scale;
+  const drawH = fitSize.height * camera.scale;
+  const visLeft = Math.max(0, camera.tx);
+  const visTop = Math.max(0, camera.ty);
+  const visRight = Math.min(viewportSize.width, camera.tx + drawW);
+  const visBottom = Math.min(viewportSize.height, camera.ty + drawH);
+  const visW = visRight - visLeft;
+  const visH = visBottom - visTop;
+  if (visW <= 0 || visH <= 0) {
+    return null;
+  }
+
+  const srcX = Math.max(0, ((visLeft - camera.tx) / drawW) * naturalSize.width);
+  const srcY = Math.max(0, ((visTop - camera.ty) / drawH) * naturalSize.height);
+  const srcW = Math.min(naturalSize.width - srcX, (visW / drawW) * naturalSize.width);
+  const srcH = Math.min(naturalSize.height - srcY, (visH / drawH) * naturalSize.height);
+  if (srcW <= 0 || srcH <= 0) {
+    return null;
+  }
+
+  return {
+    srcX,
+    srcY,
+    srcW,
+    srcH,
+    dstX: visLeft * dpr,
+    dstY: visTop * dpr,
+    dstW: visW * dpr,
+    dstH: visH * dpr,
   };
 }

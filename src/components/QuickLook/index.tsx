@@ -77,6 +77,7 @@ import {
   centerCameraOnNormalizedPoint,
   clampQuickLookCamera,
   clampQuickLookZoom,
+  getCrispCanvasBlitRect,
   getMinimapViewportRect,
   panCameraBy,
   zoomCameraAtPoint,
@@ -134,8 +135,10 @@ interface DetectedFace {
 
 const THUMBNAIL_SIZE_STEPS = [384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192];
 const MAX_RAW_PREVIEW_SIZE = 8192;
-const ARW_INTERACTIVE_PREVIEW_SIZE = 4096;
-const ARW_GESTURE_PREVIEW_SIZE = 1536;
+// Cameras like Sony A7M4 / Canon CR3 / Nikon NEF embed a full-res JPEG (6000-9500px).
+// Older bodies (e.g. Sony A7III) only embed a 1616x1080 JPEG; when an embedded RAW preview
+// is smaller than this threshold, zooming in upgrades via CoreImage CIRAWFilter demosaicing.
+const MIN_FULL_EMBEDDED_RAW_EDGE = 3200;
 const RAW_EXTENSIONS = new Set(RAW_IMAGE_EXTENSIONS);
 const DIALOG_FOCUSABLE_SELECTOR = [
   "button:not([disabled])",
@@ -317,7 +320,6 @@ interface ZoomableImagePreviewProps {
   viewportSize: { width: number; height: number };
   imageDimensions: ImageDimensions | null;
   nativePreviewSrc: string | null;
-  interactionPreviewSrc: string | null;
   minimapSrc: string | null;
   fallbackSrc: string | null;
   fileSrc: string | null;
@@ -339,12 +341,12 @@ interface ZoomableImagePreviewProps {
 interface ZoomableImageElementProps {
   entry: FileEntry;
   src: string;
-  interactionSrc?: string | null;
   clippingMaskUrl?: string | null;
   detectedFaces?: DetectedFace[];
   activeFaceIndex?: number;
   renderedImageSize: { width: number; height: number } | null;
   frameRef: (node: HTMLDivElement | null) => void;
+  imgRef?: (node: HTMLImageElement | null) => void;
   onLoad: (image: HTMLImageElement) => void;
   onError?: () => void;
   focusAnalysis?: FocusAnalysis | null;
@@ -360,6 +362,7 @@ const ZoomableImageElement = memo(function ZoomableImageElement({
   activeFaceIndex = -1,
   renderedImageSize,
   frameRef,
+  imgRef,
   onLoad,
   onError,
   focusAnalysis,
@@ -379,8 +382,6 @@ const ZoomableImageElement = memo(function ZoomableImageElement({
         maxWidth: "none",
         maxHeight: "none",
         transformOrigin: "0 0",
-        willChange: "transform",
-        backfaceVisibility: "hidden",
       }
     : {
         position: "relative",
@@ -391,6 +392,7 @@ const ZoomableImageElement = memo(function ZoomableImageElement({
   return (
     <div ref={frameRef} className="quick-look-image-frame shrink-0" style={frameStyle}>
       <img
+        ref={imgRef}
         key={entry.path}
         src={src}
         crossOrigin={src.startsWith("thumb:") ? "anonymous" : undefined}
@@ -495,6 +497,8 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
   const [showMinimap, setShowMinimap] = useState(false);
   const imageViewportRef = useRef<HTMLDivElement | null>(null);
   const imageFrameRef = useRef<HTMLDivElement | null>(null);
+  const crispCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const sourceImgRef = useRef<HTMLImageElement | null>(null);
   const minimapWindowRef = useRef<HTMLDivElement | null>(null);
   const cameraRef = useRef<QuickLookCamera>({ scale: 1, tx: 0, ty: 0 });
   const renderRafRef = useRef<number | null>(null);
@@ -525,15 +529,6 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
   const focusRegions =
     cameraAfRegions ??
     (displayedFocusAnalysis?.kind === "full-frame" ? [] : (displayedFocusAnalysis?.regions ?? []));
-  const handleDisplayedImageLoad = useCallback(
-    (image: HTMLImageElement) => {
-      onImageLoadDimensions(image);
-      if (canInspectSharpness) {
-        registerSharpnessPreviewImage(image);
-      }
-    },
-    [canInspectSharpness, onImageLoadDimensions, registerSharpnessPreviewImage]
-  );
 
   const imageViewportSize = useMemo(() => {
     if (previewViewport.width > 0 && previewViewport.height > 0) {
@@ -585,7 +580,79 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
 
     const cam = clampQuickLookCamera(cameraRef.current, vp, fit);
     cameraRef.current = cam;
-    frame.style.transform = `translate3d(${cam.tx.toFixed(2)}px, ${cam.ty.toFixed(2)}px, 0) scale(${cam.scale.toFixed(5)})`;
+    const drawWidth = fit.width * cam.scale;
+    const drawHeight = fit.height * cam.scale;
+    // Resize the lightweight overlay container directly instead of using CSS scale()
+    // so vector overlays (focus boxes, eye rings, sharpness selection) stay crisp
+    // and WKWebView never rasterizes a 1x backing texture to stretch on zoom.
+    frame.style.width = `${drawWidth.toFixed(2)}px`;
+    frame.style.height = `${drawHeight.toFixed(2)}px`;
+    frame.style.transform = `translate3d(${cam.tx.toFixed(2)}px, ${cam.ty.toFixed(2)}px, 0)`;
+
+    const canvas = crispCanvasRef.current;
+    const img = sourceImgRef.current;
+    if (
+      canvas &&
+      img &&
+      img.complete &&
+      img.naturalWidth > 0 &&
+      img.naturalHeight > 0 &&
+      vp.width > 0 &&
+      vp.height > 0
+    ) {
+      const dpr = Math.min(window.devicePixelRatio || 1, 3);
+      const targetW = Math.max(1, Math.round(vp.width * dpr));
+      const targetH = Math.max(1, Math.round(vp.height * dpr));
+      if (canvas.width !== targetW || canvas.height !== targetH) {
+        canvas.width = targetW;
+        canvas.height = targetH;
+      }
+      const ctx = canvas.getContext("2d");
+      const blit = getCrispCanvasBlitRect(
+        cam,
+        vp,
+        fit,
+        { width: img.naturalWidth, height: img.naturalHeight },
+        dpr
+      );
+      if (ctx && blit) {
+        ctx.clearRect(0, 0, targetW, targetH);
+        const clipRounded = cam.scale <= 1.02 && typeof ctx.roundRect === "function";
+        if (clipRounded) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.roundRect(cam.tx * dpr, cam.ty * dpr, drawWidth * dpr, drawHeight * dpr, 6 * dpr);
+          ctx.clip();
+        }
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(
+          img,
+          blit.srcX,
+          blit.srcY,
+          blit.srcW,
+          blit.srcH,
+          blit.dstX,
+          blit.dstY,
+          blit.dstW,
+          blit.dstH
+        );
+        if (clipRounded) {
+          ctx.restore();
+        }
+        if (img.style.opacity !== "0") {
+          img.style.opacity = "0";
+        }
+      }
+    } else if (canvas) {
+      const ctx = canvas.getContext("2d");
+      if (ctx && canvas.width > 0 && canvas.height > 0) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+      if (img && img.style.opacity !== "") {
+        img.style.opacity = "";
+      }
+    }
 
     const miniBox = minimapWindowRef.current;
     const miniSize = minimapSizeRef.current;
@@ -596,6 +663,28 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
       miniBox.style.height = `${rect.height.toFixed(1)}px`;
     }
   }, []);
+
+  const handleDisplayedImageLoad = useCallback(
+    (image: HTMLImageElement) => {
+      sourceImgRef.current = image;
+      onImageLoadDimensions(image);
+      if (canInspectSharpness) {
+        registerSharpnessPreviewImage(image);
+      }
+      applyCameraToDom();
+    },
+    [applyCameraToDom, canInspectSharpness, onImageLoadDimensions, registerSharpnessPreviewImage]
+  );
+
+  const registerSourceImage = useCallback(
+    (node: HTMLImageElement | null) => {
+      sourceImgRef.current = node;
+      if (node && node.complete && node.naturalWidth > 0) {
+        applyCameraToDom();
+      }
+    },
+    [applyCameraToDom]
+  );
 
   const syncZoomUiThresholds = useCallback((scale: number) => {
     const nextZoomed = scale > 1.005;
@@ -889,8 +978,11 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
       const rect = viewport.getBoundingClientRect();
       const anchorX = event.clientX - rect.left;
       const anchorY = event.clientY - rect.top;
-      const naturalScale = imageDimensions ? imageDimensions.width / Math.max(1, fit.width) : 2.5;
-      const targetScale = clampQuickLookZoom(Math.max(2.2, Math.min(3.5, naturalScale)));
+      const dpr = typeof window === "undefined" ? 1 : Math.min(window.devicePixelRatio || 1, 3);
+      const naturalScale = imageDimensions
+        ? imageDimensions.width / Math.max(1, fit.width * dpr)
+        : 2.5;
+      const targetScale = clampQuickLookZoom(Math.max(2.2, Math.min(4.5, naturalScale)));
       const target = zoomCameraAtPoint(
         cameraRef.current,
         targetScale,
@@ -936,8 +1028,11 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
           );
           return;
         }
-        const naturalScale = imageDimensions ? imageDimensions.width / Math.max(1, fit.width) : 2.5;
-        const targetZoom = clampQuickLookZoom(Math.max(2.2, Math.min(4, naturalScale)));
+        const dpr = typeof window === "undefined" ? 1 : Math.min(window.devicePixelRatio || 1, 3);
+        const naturalScale = imageDimensions
+          ? imageDimensions.width / Math.max(1, fit.width * dpr)
+          : 2.5;
+        const targetZoom = clampQuickLookZoom(Math.max(2.2, Math.min(4.5, naturalScale)));
         animateCameraTo(
           centerCameraOnNormalizedPoint(targetZoom, 0.5, 0.5, viewportSizeRef.current, fit)
         );
@@ -945,9 +1040,12 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
       zoomToNormalizedPoint: (normX: number, normY: number, targetZoom?: number) => {
         const fit = fitSizeRef.current;
         if (!fit) return;
-        const naturalScale = imageDimensions ? imageDimensions.width / Math.max(1, fit.width) : 3;
+        const dpr = typeof window === "undefined" ? 1 : Math.min(window.devicePixelRatio || 1, 3);
+        const naturalScale = imageDimensions
+          ? imageDimensions.width / Math.max(1, fit.width * dpr)
+          : 3;
         const resolvedZoom = clampQuickLookZoom(
-          targetZoom ?? Math.max(2.5, Math.min(4.5, naturalScale))
+          targetZoom ?? Math.max(2.5, Math.min(5, naturalScale))
         );
         animateCameraTo(
           centerCameraOnNormalizedPoint(resolvedZoom, normX, normY, viewportSizeRef.current, fit)
@@ -1011,6 +1109,11 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
         onPointerCancel={handlePanEnd}
         onDoubleClick={handleDoubleClick}
       >
+        <canvas
+          ref={crispCanvasRef}
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 h-full w-full select-none"
+        />
         {useNativeImagePreview || !isBrowserSupportedImage(entry.extension) ? (
           nativePreviewSrc ? (
             <ZoomableImageElement
@@ -1021,6 +1124,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
               activeFaceIndex={activeFaceIndex}
               renderedImageSize={fittedImageSize}
               frameRef={registerZoomFrame}
+              imgRef={registerSourceImage}
               onLoad={handleDisplayedImageLoad}
               focusAnalysis={displayedFocusAnalysis}
               cameraAfMetadata={cameraAfMetadata}
@@ -1040,7 +1144,6 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
                       width: `${fittedImageSize.width}px`,
                       height: `${fittedImageSize.height}px`,
                       transformOrigin: "0 0",
-                      willChange: "transform",
                     }
                   : { position: "relative", maxWidth: "100%", maxHeight: "100%" }
               }
@@ -1092,6 +1195,7 @@ const ZoomableImagePreview = memo(function ZoomableImagePreview({
             activeFaceIndex={activeFaceIndex}
             renderedImageSize={fittedImageSize}
             frameRef={registerZoomFrame}
+            imgRef={registerSourceImage}
             onLoad={handleDisplayedImageLoad}
             onError={onBrowserImageError}
             focusAnalysis={displayedFocusAnalysis}
@@ -1206,15 +1310,16 @@ export const QuickLook = memo(function QuickLook({
   const [useNativeImagePreview, setUseNativeImagePreview] = useState(false);
   const [imageDimensions, setImageDimensions] = useState<ImageDimensions | null>(null);
   const [nativePreviewSrc, setNativePreviewSrc] = useState<string | null>(null);
-  const [interactionPreviewSrc, setInteractionPreviewSrc] = useState<string | null>(null);
   const [viewportSize, setViewportSize] = useState(() => ({
     width: typeof window === "undefined" ? 1440 : window.innerWidth,
     height: typeof window === "undefined" ? 900 : window.innerHeight,
   }));
   const [committedZoom, setCommittedZoom] = useState(1);
+  const committedZoomRef = useRef(1);
+  committedZoomRef.current = committedZoom;
   const zoomSourceTimerRef = useRef<number | null>(null);
   const [customDialogSize, setCustomDialogSize] = useState<ImageDimensions | null>(null);
-  const embeddedArwJpegLoadedRef = useRef(false);
+  const embeddedRawMaxDimRef = useRef(0);
   const embeddedArwJpegAttemptedRef = useRef(false);
   const embeddedArwJpegLoadingRef = useRef(false);
   const activeEntryIdentityRef = useRef(entryIdentity);
@@ -1429,12 +1534,12 @@ export const QuickLook = memo(function QuickLook({
   }, [customDialogSize, previewType, viewportSize.height, viewportSize.width]);
 
   const scheduleZoomSourceUpgrade = useCallback((zoom: number) => {
-    if (embeddedArwJpegLoadedRef.current) return;
+    if (embeddedRawMaxDimRef.current >= MIN_FULL_EMBEDDED_RAW_EDGE) return;
     if (zoomSourceTimerRef.current !== null) window.clearTimeout(zoomSourceTimerRef.current);
     zoomSourceTimerRef.current = window.setTimeout(() => {
       zoomSourceTimerRef.current = null;
       setCommittedZoom(zoom);
-    }, 420);
+    }, 260);
   }, []);
 
   const finishDialogResize = useCallback((pointerId: number) => {
@@ -1449,12 +1554,15 @@ export const QuickLook = memo(function QuickLook({
     if (nextDimensions.width <= 0 || nextDimensions.height <= 0) return;
     setImageDimensions((current) => {
       if (!current) return nextDimensions;
+      // Always upgrade pixel dimensions when a higher-resolution frame arrives
+      // (e.g. 320px grid thumbnail -> 7008x4672 full RAW) so 1:1 zoom is exact.
+      if (nextDimensions.width > current.width || nextDimensions.height > current.height) {
+        return nextDimensions;
+      }
       const currentAspect = current.width / current.height;
       const nextAspect = nextDimensions.width / nextDimensions.height;
       const relativeDifference =
         Math.abs(currentAspect - nextAspect) / Math.max(currentAspect, nextAspect);
-      // Progressive RAW frames commonly change pixel dimensions while keeping
-      // the same image geometry. Preserve the fitted layout in that case.
       return relativeDifference < 0.002 ? current : nextDimensions;
     });
   }, []);
@@ -1467,8 +1575,7 @@ export const QuickLook = memo(function QuickLook({
     setUseNativeImagePreview(false);
     setImageDimensions(null);
     setNativePreviewSrc(null);
-    setInteractionPreviewSrc(null);
-    embeddedArwJpegLoadedRef.current = false;
+    embeddedRawMaxDimRef.current = 0;
     embeddedArwJpegAttemptedRef.current = false;
     embeddedArwJpegLoadingRef.current = false;
     if (zoomSourceTimerRef.current !== null) {
@@ -1824,7 +1931,7 @@ export const QuickLook = memo(function QuickLook({
       applyPreviewSource(cachedNativePreview.src, cachedNativePreview.size);
     }
 
-    const loadPreview = (requestSize: number) => {
+    const loadPreview = (requestSize: number, useEmbedded = preferEmbeddedPreview) => {
       const availableSize = Math.max(
         nativePreviewSizeRef.current,
         nativePreviewTargetSizeRef.current
@@ -1839,7 +1946,7 @@ export const QuickLook = memo(function QuickLook({
         entryModified,
         entrySize,
         requestSize,
-        preferEmbeddedPreview,
+        useEmbedded,
         !preferEmbeddedPreview
       );
       return loadHtmlImage(url, controller.signal)
@@ -1854,47 +1961,53 @@ export const QuickLook = memo(function QuickLook({
         });
     };
 
-    const loadFullPreview = () => loadPreview(nativePreviewRequestSize);
+    const loadFullPreview = (useEmbedded = preferEmbeddedPreview) =>
+      loadPreview(nativePreviewRequestSize, useEmbedded);
     if (preferEmbeddedPreview) {
-      if (embeddedArwJpegLoadedRef.current) return () => controller.abort();
+      if (embeddedRawMaxDimRef.current >= MIN_FULL_EMBEDDED_RAW_EDGE) {
+        return () => controller.abort();
+      }
       if (embeddedArwJpegLoadingRef.current) return () => controller.abort();
       if (!embeddedArwJpegAttemptedRef.current) {
         embeddedArwJpegAttemptedRef.current = true;
         embeddedArwJpegLoadingRef.current = true;
         const requestedEntryIdentity = entryIdentity;
-        const interactiveUrl = buildRawEmbeddedJpegUrl(
-          entryPath,
-          entryModified,
-          entrySize,
-          ARW_INTERACTIVE_PREVIEW_SIZE
-        );
-        const gestureUrl = buildRawEmbeddedJpegUrl(
-          entryPath,
-          entryModified,
-          entrySize,
-          ARW_GESTURE_PREVIEW_SIZE
-        );
-        void loadHtmlImage(interactiveUrl)
-          .then(() => {
+        // Request max=0 so the backend returns the camera's native full-resolution
+        // embedded JPEG untouched (zero downscale, zero re-encode on normal orientation).
+        const fullEmbeddedUrl = buildRawEmbeddedJpegUrl(entryPath, entryModified, entrySize, 0);
+        void loadHtmlImage(fullEmbeddedUrl)
+          .then((loadedImage) => {
             if (activeEntryIdentityRef.current !== requestedEntryIdentity) return;
             embeddedArwJpegLoadingRef.current = false;
-            embeddedArwJpegLoadedRef.current = true;
-            applyPreviewSource(interactiveUrl, ARW_INTERACTIVE_PREVIEW_SIZE);
-            void loadHtmlImage(gestureUrl)
-              .then(() => {
-                if (activeEntryIdentityRef.current === requestedEntryIdentity) {
-                  setInteractionPreviewSrc(gestureUrl);
-                }
-              })
-              .catch(() => {});
+            const embeddedMaxDim = Math.max(
+              loadedImage.naturalWidth || 0,
+              loadedImage.naturalHeight || 0
+            );
+            embeddedRawMaxDimRef.current = embeddedMaxDim;
+            applyPreviewSource(fullEmbeddedUrl, Math.max(embeddedMaxDim, 1024));
+            if (embeddedMaxDim < MIN_FULL_EMBEDDED_RAW_EDGE && committedZoomRef.current > 1.15) {
+              void loadFullPreview(false);
+            }
           })
           .catch(() => {
             if (activeEntryIdentityRef.current !== requestedEntryIdentity) return;
             embeddedArwJpegLoadingRef.current = false;
-            void loadFullPreview();
+            void loadFullPreview(false);
           });
         return () => {};
       }
+      // Embedded JPEG was small (e.g. older Sony 1616x1080 preview): upgrade via
+      // full-sensor CoreImage CIRAWFilter demosaicing once the user zooms in.
+      if (committedZoom > 1.15) {
+        void loadFullPreview(false);
+      }
+      return () => {
+        cancelled = true;
+        controller.abort();
+        if (nativePreviewTargetSizeRef.current > nativePreviewSizeRef.current) {
+          nativePreviewTargetSizeRef.current = nativePreviewSizeRef.current;
+        }
+      };
     }
     const availableSize = Math.max(
       nativePreviewSizeRef.current,
@@ -1924,6 +2037,7 @@ export const QuickLook = memo(function QuickLook({
     };
   }, [
     cachedNativePreview,
+    committedZoom,
     entryExtension,
     entryIdentity,
     entryModified,
@@ -2112,7 +2226,6 @@ export const QuickLook = memo(function QuickLook({
                 viewportSize={viewportSize}
                 imageDimensions={imageDimensions}
                 nativePreviewSrc={nativePreviewSrc}
-                interactionPreviewSrc={interactionPreviewSrc}
                 minimapSrc={cachedNativePreview?.src ?? null}
                 fallbackSrc={fallbackSrc}
                 fileSrc={fileSrc}

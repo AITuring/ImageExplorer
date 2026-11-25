@@ -1,4 +1,5 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   ArrowLeftRight,
   Check,
@@ -22,7 +23,19 @@ import { usePhotoMetadata } from "@/hooks/usePhotoMetadata";
 import { getPhotoMetadataSummary } from "@/lib/photoMetadata";
 import { FINDER_TAG_PRESETS, hasFinderTag } from "@/lib/finderTags";
 import { DEFAULT_CULLING_STATE, type PhotoCullingState, type PhotoFlag } from "@/lib/photoCulling";
+import {
+  buildFileThumbnailUrl,
+  buildRawEmbeddedJpegUrl,
+  getLargestLoadedFileThumbnailUrl,
+  loadHtmlImage,
+} from "@/lib/iconCache";
+import { RAW_IMAGE_EXTENSIONS } from "@/constants/fileTypes";
+import { isBrowserSupportedImage } from "@/utils/file";
+import { getCrispCanvasBlitRect } from "@/lib/quickLookCamera";
 import type { VisibleSharpness } from "@/hooks/useVisibleSharpness";
+
+const RAW_EXT_SET = new Set<string>(RAW_IMAGE_EXTENSIONS);
+const MIN_FULL_EMBEDDED_RAW_EDGE = 3200;
 
 interface PhotoCompareDialogProps {
   entries: FileEntry[] | null;
@@ -37,12 +50,226 @@ interface PhotoCompareDialogProps {
 }
 
 const MIN_ZOOM = 1;
-const MAX_ZOOM = 6;
+const MAX_ZOOM = 8;
 const QUICK_ONE_TO_ONE_ZOOM = 3;
 
 interface SafariGestureEvent extends UIEvent {
   scale: number;
 }
+
+const CrispCompareViewportImage = memo(function CrispCompareViewportImage({
+  entry,
+  zoom,
+  pan,
+}: {
+  entry: FileEntry;
+  zoom: number;
+  pan: { x: number; y: number };
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const loadedImageRef = useRef<HTMLImageElement | null>(null);
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+  const [loadedImageVersion, setLoadedImageVersion] = useState(0);
+  const [hasLoadedFullOrCached, setHasLoadedFullOrCached] = useState(false);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const measure = () => {
+      const width = el.clientWidth;
+      const height = el.clientHeight;
+      setViewportSize((current) =>
+        current.width === width && current.height === height ? current : { width, height }
+      );
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let cancelled = false;
+    loadedImageRef.current = null;
+    queueMicrotask(() => {
+      if (!cancelled) {
+        setHasLoadedFullOrCached(false);
+        setLoadedImageVersion((v) => v + 1);
+      }
+    });
+
+    const ext = (entry.extension ?? "").toLowerCase();
+    const isRaw = RAW_EXT_SET.has(ext);
+    const applyLoaded = (img: HTMLImageElement) => {
+      if (cancelled || img.naturalWidth <= 0 || img.naturalHeight <= 0) return;
+      const prev = loadedImageRef.current;
+      if (
+        prev &&
+        Math.max(prev.naturalWidth, prev.naturalHeight) >
+          Math.max(img.naturalWidth, img.naturalHeight)
+      ) {
+        return;
+      }
+      loadedImageRef.current = img;
+      setHasLoadedFullOrCached(true);
+      setLoadedImageVersion((v) => v + 1);
+    };
+
+    const cached = getLargestLoadedFileThumbnailUrl(entry.path, entry.modified, entry.size);
+    if (cached?.url) {
+      void loadHtmlImage(cached.url, controller.signal)
+        .then(applyLoaded)
+        .catch(() => undefined);
+    }
+
+    if (isRaw) {
+      const fullEmbeddedUrl = buildRawEmbeddedJpegUrl(entry.path, entry.modified, entry.size, 0);
+      void loadHtmlImage(fullEmbeddedUrl, controller.signal)
+        .then((img) => {
+          applyLoaded(img);
+          if (Math.max(img.naturalWidth, img.naturalHeight) < MIN_FULL_EMBEDDED_RAW_EDGE) {
+            const demosaicUrl = buildFileThumbnailUrl(
+              entry.path,
+              entry.modified,
+              entry.size,
+              4096,
+              false,
+              false
+            );
+            return loadHtmlImage(demosaicUrl, controller.signal)
+              .then(applyLoaded)
+              .catch(() => undefined);
+          }
+        })
+        .catch(() => {
+          const fallbackUrl = buildFileThumbnailUrl(
+            entry.path,
+            entry.modified,
+            entry.size,
+            4096,
+            false,
+            false
+          );
+          return loadHtmlImage(fallbackUrl, controller.signal)
+            .then(applyLoaded)
+            .catch(() => undefined);
+        });
+    } else if (isBrowserSupportedImage(ext)) {
+      const directUrl = convertFileSrc(entry.path);
+      void loadHtmlImage(directUrl, controller.signal)
+        .then(applyLoaded)
+        .catch(() => {
+          const fallbackUrl = buildFileThumbnailUrl(
+            entry.path,
+            entry.modified,
+            entry.size,
+            4096,
+            false,
+            false
+          );
+          return loadHtmlImage(fallbackUrl, controller.signal)
+            .then(applyLoaded)
+            .catch(() => undefined);
+        });
+    } else {
+      const nativeUrl = buildFileThumbnailUrl(
+        entry.path,
+        entry.modified,
+        entry.size,
+        4096,
+        false,
+        false
+      );
+      void loadHtmlImage(nativeUrl, controller.signal)
+        .then(applyLoaded)
+        .catch(() => undefined);
+    }
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [entry.extension, entry.modified, entry.path, entry.size]);
+
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    const img = loadedImageRef.current;
+    if (!canvas || viewportSize.width <= 0 || viewportSize.height <= 0) return;
+
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    const targetW = Math.max(1, Math.round(viewportSize.width * dpr));
+    const targetH = Math.max(1, Math.round(viewportSize.height * dpr));
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+      canvas.width = targetW;
+      canvas.height = targetH;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, targetW, targetH);
+
+    if (!img || !img.complete || img.naturalWidth <= 0 || img.naturalHeight <= 0) return;
+
+    const pad = 8;
+    const availW = Math.max(1, viewportSize.width - pad * 2);
+    const availH = Math.max(1, viewportSize.height - pad * 2);
+    const fitScale = Math.min(availW / img.naturalWidth, availH / img.naturalHeight);
+    const fitSize = {
+      width: Math.max(1, img.naturalWidth * fitScale),
+      height: Math.max(1, img.naturalHeight * fitScale),
+    };
+    const drawW = fitSize.width * zoom;
+    const drawH = fitSize.height * zoom;
+    const tx = (viewportSize.width - drawW) / 2 + pan.x;
+    const ty = (viewportSize.height - drawH) / 2 + pan.y;
+
+    const blit = getCrispCanvasBlitRect(
+      { scale: zoom, tx, ty },
+      viewportSize,
+      fitSize,
+      { width: img.naturalWidth, height: img.naturalHeight },
+      dpr
+    );
+    if (!blit) return;
+
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(
+      img,
+      blit.srcX,
+      blit.srcY,
+      blit.srcW,
+      blit.srcH,
+      blit.dstX,
+      blit.dstY,
+      blit.dstW,
+      blit.dstH
+    );
+  }, [loadedImageVersion, pan.x, pan.y, viewportSize, zoom]);
+
+  return (
+    <div ref={containerRef} className="relative flex h-full w-full items-center justify-center">
+      <canvas
+        ref={canvasRef}
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 h-full w-full select-none"
+      />
+      {!hasLoadedFullOrCached && (
+        <div className="pointer-events-none flex h-full w-full items-center justify-center p-2">
+          <FileThumbnail
+            key={entry.path}
+            entry={entry}
+            size={1024}
+            requestSizeOverride={1024}
+            className="pointer-events-none max-h-full max-w-full object-contain"
+            fallbackClassName="h-24 w-24 text-muted-foreground"
+          />
+        </div>
+      )}
+    </div>
+  );
+});
 
 const ComparePane = memo(function ComparePane({
   entry,
@@ -148,23 +375,7 @@ const ComparePane = memo(function ComparePane({
             </button>
           </div>
         )}
-        <div
-          style={{
-            transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`,
-            transformOrigin: "center center",
-            willChange: "transform",
-          }}
-          className="flex h-full w-full items-center justify-center p-2"
-        >
-          <FileThumbnail
-            key={entry.path}
-            entry={entry}
-            size={1024}
-            requestSizeOverride={2048}
-            className="pointer-events-none max-h-full max-w-full object-contain"
-            fallbackClassName="h-24 w-24 text-muted-foreground"
-          />
-        </div>
+        <CrispCompareViewportImage entry={entry} zoom={zoom} pan={pan} />
       </div>
 
       {/* Footer metadata & quick culling actions */}

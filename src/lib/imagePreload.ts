@@ -62,7 +62,7 @@ export function buildPreloadPreviewUrl(
 
   if (RAW_EXT_SET.has(ext)) {
     return mode === "quicklook"
-      ? buildRawEmbeddedJpegUrl(entry.path, entry.modified, entry.size, 4096)
+      ? buildRawEmbeddedJpegUrl(entry.path, entry.modified, entry.size, 0)
       : buildFileThumbnailUrl(entry.path, entry.modified, entry.size, gallerySize, true, false);
   }
 

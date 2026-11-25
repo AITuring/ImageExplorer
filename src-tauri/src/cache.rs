@@ -202,9 +202,9 @@ impl BytesLruCache {
             bytes: Arc::new(bytes),
             mime,
         };
-        // Skip caching oversized single preview frames (>8MB) so a 4K RAW preview
+        // Skip caching oversized single preview frames (>12MB) so a giant RAW preview
         // does not flush hundreds of grid thumbnails from the LRU cache.
-        if new_bytes > 8 * 1024 * 1024 {
+        if new_bytes > 12 * 1024 * 1024 {
             return image;
         }
         let seq = self.next_sequence.wrapping_add(1);

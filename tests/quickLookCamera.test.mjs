@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   centerCameraOnNormalizedPoint,
   clampQuickLookCamera,
+  getCrispCanvasBlitRect,
   getMinimapViewportRect,
   panCameraBy,
   zoomCameraAtPoint,
@@ -57,4 +58,41 @@ test("centerCameraOnNormalizedPoint and getMinimapViewportRect align accurately"
   assert.ok(Math.abs(mini.height - (600 / 1800) * 100) < 1e-6);
   assert.ok(Math.abs(mini.x - (850 / 2700) * 150) < 1e-6);
   assert.ok(Math.abs(mini.y - (600 / 1800) * 100) < 1e-6);
+});
+
+test("getCrispCanvasBlitRect maps full 7008x4672 native pixels onto Retina canvas when zoomed", () => {
+  const viewport = { width: 1200, height: 800 };
+  const fit = { width: 1200, height: 800 };
+  const natural = { width: 7008, height: 4672 };
+
+  // At 1x fit with 2x Retina DPR: entire native image maps onto 2400x1600 physical pixels
+  const at1x = getCrispCanvasBlitRect({ scale: 1, tx: 0, ty: 0 }, viewport, fit, natural, 2);
+  assert.ok(at1x);
+  assert.equal(at1x.srcX, 0);
+  assert.equal(at1x.srcY, 0);
+  assert.equal(at1x.srcW, 7008);
+  assert.equal(at1x.srcH, 4672);
+  assert.equal(at1x.dstX, 0);
+  assert.equal(at1x.dstY, 0);
+  assert.equal(at1x.dstW, 2400);
+  assert.equal(at1x.dstH, 1600);
+
+  // At 2.5x centered zoom: visible source crop is 1/2.5 of 7008x4672 centered, mapped 1:1 to 2400x1600
+  const centered = centerCameraOnNormalizedPoint(2.5, 0.5, 0.5, viewport, fit);
+  const atZoom = getCrispCanvasBlitRect(centered, viewport, fit, natural, 2);
+  assert.ok(atZoom);
+  assert.ok(Math.abs(atZoom.srcW - 7008 / 2.5) < 1e-6);
+  assert.ok(Math.abs(atZoom.srcH - 4672 / 2.5) < 1e-6);
+  assert.ok(Math.abs(atZoom.srcX - (7008 - 7008 / 2.5) / 2) < 1e-6);
+  assert.ok(Math.abs(atZoom.srcY - (4672 - 4672 / 2.5) / 2) < 1e-6);
+  assert.equal(atZoom.dstX, 0);
+  assert.equal(atZoom.dstY, 0);
+  assert.equal(atZoom.dstW, 2400);
+  assert.equal(atZoom.dstH, 1600);
+
+  // Invalid dimensions return null
+  assert.equal(
+    getCrispCanvasBlitRect({ scale: 1, tx: 0, ty: 0 }, { width: 0, height: 800 }, fit, natural, 2),
+    null
+  );
 });

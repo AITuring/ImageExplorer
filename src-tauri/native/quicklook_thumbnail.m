@@ -402,9 +402,10 @@ uint8_t *imageexplorer_quicklook_thumbnail(
             return NULL;
         }
 
+        CGFloat jpegQuality = size >= 1600 ? 0.94 : 0.86;
         NSDictionary *encodeOptions = hasAlpha
             ? nil
-            : @{(id)kCGImageDestinationLossyCompressionQuality: @0.86};
+            : @{(id)kCGImageDestinationLossyCompressionQuality: @(jpegQuality)};
         CGImageDestinationAddImage(destination, image, (__bridge CFDictionaryRef)encodeOptions);
         if (!CGImageDestinationFinalize(destination)) {
             if (destination != NULL) {
@@ -499,7 +500,7 @@ uint8_t *imageexplorer_resize_jpeg_bytes(
             return NULL;
         }
 
-        NSDictionary *encodeOptions = @{(id)kCGImageDestinationLossyCompressionQuality: @0.90};
+        NSDictionary *encodeOptions = @{(id)kCGImageDestinationLossyCompressionQuality: @0.95};
         CGImageDestinationAddImage(destination, image, (__bridge CFDictionaryRef)encodeOptions);
         uint8_t *result = NULL;
         if (CGImageDestinationFinalize(destination)) {
