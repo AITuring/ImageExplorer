@@ -394,6 +394,7 @@ function App() {
           // 正常初始化
           console.log("[App] Normal init with path:", initialPath || homePath);
           initTabs(initialPath || homePath);
+          setHomePath(homePath);
         }
 
         // 2. 立即解除 Loading 状态，让用户看到界面

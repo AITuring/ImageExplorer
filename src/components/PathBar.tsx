@@ -4,7 +4,10 @@ import { listen } from "@tauri-apps/api/event";
 import { ChevronRight, Folder, HardDrive } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { SMART_FOLDER_PREFIX } from "@/constants/config";
+import { AppContextMenu } from "@/components/AppContextMenu";
 import { getFinderTagColor, matchFinderTagPreset } from "@/lib/finderTags";
+import { windowManager } from "@/lib/windowManager";
+import { useTabs } from "@/hooks/useTabs";
 import { useStatusBar } from "@/stores/statusBar";
 import { ICON_SIZE_MAX, ICON_SIZE_MIN, useViewMode } from "@/stores/viewMode";
 import { formatFileSize } from "@/utils/format";
@@ -24,6 +27,7 @@ interface PathBarProps {
 /** Keep ancestor navigation and Finder-style status metrics in the bottom bar. */
 export function PathBar({ path, onNavigate }: PathBarProps) {
   const { t } = useTranslation();
+  const { addTab } = useTabs();
   const scrollRef = useRef<HTMLElement>(null);
   const segments = path.split("/").filter(Boolean);
   const statusPath = useStatusBar((s) => s.path);
@@ -122,15 +126,48 @@ export function PathBar({ path, onNavigate }: PathBarProps) {
         className="finder-pathbar-breadcrumbs flex min-w-0 flex-1 items-center gap-[3px] overflow-x-auto"
         aria-label={t("nav.path")}
       >
-        <button
-          type="button"
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => onNavigate("/")}
-          title="/"
-          aria-label={t("nav.computer")}
+        <AppContextMenu
+          type="sidebar-item"
+          asChild
+          sidebarItemActions={{
+            onOpen: () => onNavigate("/"),
+            onOpenInNewTab: () => addTab("/"),
+            onOpenInNewWindow: () => {
+              void windowManager.createWindow({ path: "/" }).catch((error) => {
+                console.error("Failed to open root in new window:", error);
+              });
+            },
+            path: "/",
+            name: t("nav.computer"),
+          }}
         >
-          <HardDrive size={13} aria-hidden="true" />
-        </button>
+          <button
+            type="button"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={(event) => {
+              if (event.metaKey || event.ctrlKey) {
+                event.preventDefault();
+                if (event.shiftKey) {
+                  void windowManager.createWindow({ path: "/" });
+                } else {
+                  addTab("/");
+                }
+                return;
+              }
+              onNavigate("/");
+            }}
+            onAuxClick={(event) => {
+              if (event.button === 1) {
+                event.preventDefault();
+                addTab("/");
+              }
+            }}
+            title="/"
+            aria-label={t("nav.computer")}
+          >
+            <HardDrive size={13} aria-hidden="true" />
+          </button>
+        </AppContextMenu>
         {smartTagName && smartTagLabel && (
           <span className="flex shrink-0 items-center gap-1.5 px-1">
             <ChevronRight size={11} className="opacity-40" aria-hidden="true" />
@@ -148,16 +185,49 @@ export function PathBar({ path, onNavigate }: PathBarProps) {
             return (
               <span className="flex shrink-0 items-center gap-1" key={destination}>
                 <ChevronRight size={11} className="opacity-40" aria-hidden="true" />
-                <button
-                  type="button"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => onNavigate(destination)}
-                  title={destination}
-                  aria-current={index === segments.length - 1 ? "location" : undefined}
+                <AppContextMenu
+                  type="sidebar-item"
+                  asChild
+                  sidebarItemActions={{
+                    onOpen: () => onNavigate(destination),
+                    onOpenInNewTab: () => addTab(destination),
+                    onOpenInNewWindow: () => {
+                      void windowManager.createWindow({ path: destination }).catch((error) => {
+                        console.error("Failed to open folder in new window:", error);
+                      });
+                    },
+                    path: destination,
+                    name,
+                  }}
                 >
-                  <Folder size={13} aria-hidden="true" />
-                  <span className="max-w-48 truncate">{name}</span>
-                </button>
+                  <button
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={(event) => {
+                      if (event.metaKey || event.ctrlKey) {
+                        event.preventDefault();
+                        if (event.shiftKey) {
+                          void windowManager.createWindow({ path: destination });
+                        } else {
+                          addTab(destination);
+                        }
+                        return;
+                      }
+                      onNavigate(destination);
+                    }}
+                    onAuxClick={(event) => {
+                      if (event.button === 1) {
+                        event.preventDefault();
+                        addTab(destination);
+                      }
+                    }}
+                    title={destination}
+                    aria-current={index === segments.length - 1 ? "location" : undefined}
+                  >
+                    <Folder size={13} aria-hidden="true" />
+                    <span className="max-w-48 truncate">{name}</span>
+                  </button>
+                </AppContextMenu>
               </span>
             );
           })}

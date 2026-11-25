@@ -7,8 +7,9 @@ import {
 } from "@/components/ui/context-menu";
 import { SidebarItemActions } from "@/types";
 import { SYSTEM_PATHS } from "@/constants/paths";
+import { SMART_FOLDER_PREFIX } from "@/constants/config";
 import { MenuItem } from "../MenuItem";
-import { LogOut, Star, Terminal, X } from "lucide-react";
+import { AppWindow, FolderPlus, LogOut, Star, Terminal, X } from "lucide-react";
 
 interface SidebarItemMenuContentProps {
   actions: SidebarItemActions;
@@ -16,9 +17,10 @@ interface SidebarItemMenuContentProps {
 
 export function SidebarItemMenuContent({ actions }: SidebarItemMenuContentProps) {
   const { t } = useTranslation();
+  const isSmartFolder = actions.path.startsWith(SMART_FOLDER_PREFIX);
 
   return (
-    <ContextMenuContent className="w-48">
+    <ContextMenuContent className="w-52">
       <ContextMenuLabel className="max-w-[12rem] truncate">{actions.name}</ContextMenuLabel>
       <ContextMenuSeparator />
       <MenuItem
@@ -26,12 +28,30 @@ export function SidebarItemMenuContent({ actions }: SidebarItemMenuContentProps)
         label={t("context_menu.open")}
         onClick={actions.onOpen}
       />
-      <MenuItem
-        sysIcon={{ type: "path", value: SYSTEM_PATHS.TERMINAL_APP }}
-        fallbackIcon={Terminal}
-        label={t("context_menu.open_in_terminal")}
-        onClick={() => openWithService.openInDefaultTerminal(actions.path)}
-      />
+      {actions.onOpenInNewTab && (
+        <MenuItem
+          sysIcon={{ type: "sfsymbol", value: "plus.square.on.square" }}
+          fallbackIcon={FolderPlus}
+          label={t("context_menu.open_in_new_tab")}
+          onClick={actions.onOpenInNewTab}
+        />
+      )}
+      {actions.onOpenInNewWindow && (
+        <MenuItem
+          sysIcon={{ type: "sfsymbol", value: "macwindow.badge.plus" }}
+          fallbackIcon={AppWindow}
+          label={t("context_menu.open_in_new_window")}
+          onClick={actions.onOpenInNewWindow}
+        />
+      )}
+      {!isSmartFolder && (
+        <MenuItem
+          sysIcon={{ type: "path", value: SYSTEM_PATHS.TERMINAL_APP }}
+          fallbackIcon={Terminal}
+          label={t("context_menu.open_in_terminal")}
+          onClick={() => openWithService.openInDefaultTerminal(actions.path)}
+        />
+      )}
       {actions.onToggleFavorite && (
         <MenuItem
           fallbackIcon={Star}

@@ -50,6 +50,7 @@ import {
 } from "@/lib/photoCulling";
 import { computeAutoPickBest } from "@/lib/autoPickBest";
 import { enqueueFileOperation } from "@/lib/fileOperations";
+import { windowManager } from "@/lib/windowManager";
 import {
   DEFAULT_FOLDER_FILTER,
   filterFolderEntries,
@@ -1402,6 +1403,13 @@ export function FileList({
       onOpen: handleOpen,
       onOpenInNewTab: (entry) => {
         if (entry.is_dir) addTab(entry.path);
+      },
+      onOpenInNewWindow: (entry) => {
+        if (entry.is_dir) {
+          void windowManager.createWindow({ path: entry.path }).catch((error) => {
+            console.error("Failed to open folder in new window:", error);
+          });
+        }
       },
       onShowPackageContents: handleShowPackageContents,
       onShowOriginal: handleShowOriginal,

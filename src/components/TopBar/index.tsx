@@ -33,6 +33,7 @@ import { useClipboard } from "@/stores/clipboard";
 import { useFileInfoDialog } from "@/stores/fileInfoDialog";
 import { useLocations } from "@/stores/locations";
 import { isCommandEnabled, runCommand } from "@/lib/commands";
+import { windowManager } from "@/lib/windowManager";
 import { registerKeyboardCommands } from "@/lib/keyboardShortcuts";
 import { viewModeCommands } from "@/lib/viewModeCommands";
 import { getFinderTagColor, matchFinderTagPreset } from "@/lib/finderTags";
@@ -570,6 +571,14 @@ export function TopBar({ onNavigate }: TopBarProps) {
       onOpenInNewTab: (entry) => {
         if (entry.is_dir) {
           addTab(entry.path);
+          closeSearchResults();
+        }
+      },
+      onOpenInNewWindow: (entry) => {
+        if (entry.is_dir) {
+          void windowManager.createWindow({ path: entry.path }).catch((error) => {
+            console.error("Failed to open folder in new window:", error);
+          });
           closeSearchResults();
         }
       },

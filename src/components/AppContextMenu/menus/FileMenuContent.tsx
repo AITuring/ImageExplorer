@@ -14,6 +14,7 @@ import { SYSTEM_PATHS, SF_SYMBOLS } from "@/constants/paths";
 import { MenuItem } from "../MenuItem";
 import { LoadableOpenWithMenu } from "../LoadableOpenWithMenu";
 import {
+  AppWindow,
   ArrowUpRight,
   Archive,
   Camera,
@@ -87,6 +88,15 @@ export function FileMenuContent({ entry, selectedEntries, actions }: FileMenuCon
           fallbackIcon={FolderPlus}
           label={t("context_menu.open_in_new_tab")}
           onClick={() => actions.onOpenInNewTab?.(entry)}
+        />
+      )}
+
+      {entry.is_dir && actions.onOpenInNewWindow && (
+        <MenuItem
+          sysIcon={{ type: "sfsymbol", value: "macwindow.badge.plus" }}
+          fallbackIcon={AppWindow}
+          label={t("context_menu.open_in_new_window")}
+          onClick={() => actions.onOpenInNewWindow?.(entry)}
         />
       )}
 

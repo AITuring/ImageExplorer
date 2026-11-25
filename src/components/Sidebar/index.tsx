@@ -31,6 +31,8 @@ import { FINDER_TAG_PRESETS } from "@/lib/finderTags";
 import { SMART_FOLDER_PREFIX } from "@/constants/config";
 import { readFileDragData } from "@/lib/dragData";
 import { enqueueFileOperation } from "@/lib/fileOperations";
+import { windowManager } from "@/lib/windowManager";
+import { useTabs } from "@/hooks/useTabs";
 
 import { FileEntry, FolderItem, MountedVolume, SidebarItemActions } from "@/types";
 
@@ -62,11 +64,36 @@ function isDroppableSidebarPath(path: string): boolean {
 
 const SIDEBAR_DROP_HIGHLIGHT_CLASS = "bg-primary/15 ring-1 ring-primary/50";
 
+function openPathInNewWindow(path: string) {
+  void windowManager.createWindow({ path }).catch((error) => {
+    console.error("Failed to open folder in new window:", error);
+  });
+}
+
+function handleSidebarItemClick(
+  event: React.MouseEvent,
+  path: string,
+  onNavigate: (path: string) => void,
+  onOpenInNewTab: (path: string) => void
+) {
+  if (event.metaKey || event.ctrlKey) {
+    event.preventDefault();
+    if (event.shiftKey) {
+      openPathInNewWindow(path);
+    } else {
+      onOpenInNewTab(path);
+    }
+    return;
+  }
+  onNavigate(path);
+}
+
 function SidebarLocationRow({
   path,
   active,
   icon: Icon,
   onNavigate,
+  onOpenInNewTab,
   onToggleFavorite,
   isFavorite,
   onRemoveRecent,
@@ -77,6 +104,7 @@ function SidebarLocationRow({
   active: boolean;
   icon: typeof Star;
   onNavigate: (path: string) => void;
+  onOpenInNewTab: (path: string) => void;
   onToggleFavorite?: () => void;
   isFavorite?: boolean;
   onRemoveRecent?: () => void;
@@ -88,6 +116,8 @@ function SidebarLocationRow({
   const isDropTarget = dropProps.dropTargetPath === path;
   const sidebarItemActions: SidebarItemActions = {
     onOpen: () => onNavigate(path),
+    onOpenInNewTab: () => onOpenInNewTab(path),
+    onOpenInNewWindow: () => openPathInNewWindow(path),
     onOpenInTerminal: () => invoke("open_in_terminal", { path }),
     path,
     name: label,
@@ -110,7 +140,13 @@ function SidebarLocationRow({
         <button
           className="flex min-h-[29px] min-w-0 flex-1 items-center gap-2.5 px-2.5 py-1 text-left text-[13px]"
           aria-current={active ? "page" : undefined}
-          onClick={() => onNavigate(path)}
+          onClick={(e) => handleSidebarItemClick(e, path, onNavigate, onOpenInNewTab)}
+          onAuxClick={(e) => {
+            if (e.button === 1) {
+              e.preventDefault();
+              onOpenInNewTab(path);
+            }
+          }}
           title={path}
         >
           <Icon
@@ -174,6 +210,7 @@ function FolderTreeItem({
   currentPath,
   level = 0,
   onNavigate,
+  onOpenInNewTab,
   showHiddenFiles,
   hiddenPaths,
   onHide,
@@ -183,6 +220,7 @@ function FolderTreeItem({
   currentPath: string;
   level?: number;
   onNavigate: (path: string) => void;
+  onOpenInNewTab: (path: string) => void;
   showHiddenFiles: boolean;
   hiddenPaths: string[];
   onHide: (path: string) => void;
@@ -282,6 +320,8 @@ function FolderTreeItem({
 
   const sidebarItemActions: SidebarItemActions = {
     onOpen: () => onNavigate(item.path),
+    onOpenInNewTab: () => onOpenInNewTab(item.path),
+    onOpenInNewWindow: () => openPathInNewWindow(item.path),
     onOpenInTerminal: () => invoke("open_in_terminal", { path: item.path }),
     path: item.path,
     name: item.name,
@@ -300,7 +340,13 @@ function FolderTreeItem({
           aria-current={currentPath === item.path ? "page" : undefined}
           data-active={currentPath === item.path}
           style={{ paddingLeft: `${level * 12 + 8}px` }}
-          onClick={() => onNavigate(item.path)}
+          onClick={(e) => handleSidebarItemClick(e, item.path, onNavigate, onOpenInNewTab)}
+          onAuxClick={(e) => {
+            if (e.button === 1) {
+              e.preventDefault();
+              onOpenInNewTab(item.path);
+            }
+          }}
           onDragOver={(e) => dropProps.onDragOverTarget(e, item.path)}
           onDragLeave={(e) => dropProps.onDragLeaveTarget(e, item.path)}
           onDrop={(e) => dropProps.onDropOnTarget(e, item.path)}
@@ -351,6 +397,7 @@ function FolderTreeItem({
               currentPath={currentPath}
               level={level + 1}
               onNavigate={onNavigate}
+              onOpenInNewTab={onOpenInNewTab}
               showHiddenFiles={showHiddenFiles}
               hiddenPaths={hiddenPaths}
               onHide={onHide}
@@ -363,6 +410,8 @@ function FolderTreeItem({
 
 export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
   const { t } = useTranslation();
+  const { addTab } = useTabs();
+  const handleOpenInNewTab = useCallback((path: string) => addTab(path), [addTab]);
   const setTrashOpen = useTrashDialog((state) => state.setOpen);
   const favorites = useLocations((state) => state.favorites);
   const recentLocations = useLocations((state) => state.recentLocations);
@@ -669,6 +718,8 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
               .map((item) => {
                 const sidebarItemActions: SidebarItemActions = {
                   onOpen: () => onNavigate(item.path),
+                  onOpenInNewTab: () => handleOpenInNewTab(item.path),
+                  onOpenInNewWindow: () => openPathInNewWindow(item.path),
                   onOpenInTerminal: () => invoke("open_in_terminal", { path: item.path }),
                   path: item.path,
                   name: item.name,
@@ -686,7 +737,15 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
                       }`}
                       aria-current={currentPath === item.path ? "page" : undefined}
                       data-active={currentPath === item.path}
-                      onClick={() => onNavigate(item.path)}
+                      onClick={(e) =>
+                        handleSidebarItemClick(e, item.path, onNavigate, handleOpenInNewTab)
+                      }
+                      onAuxClick={(e) => {
+                        if (e.button === 1) {
+                          e.preventDefault();
+                          handleOpenInNewTab(item.path);
+                        }
+                      }}
                       onDragOver={(e) => handleDragOverTarget(e, item.path)}
                       onDragLeave={(e) => handleDragLeaveTarget(e, item.path)}
                       onDrop={(e) => handleDropOnTarget(e, item.path)}
@@ -716,6 +775,7 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
                   active={currentPath === path}
                   icon={Star}
                   onNavigate={onNavigate}
+                  onOpenInNewTab={handleOpenInNewTab}
                   isFavorite
                   onToggleFavorite={() => void toggleFavorite(path)}
                   onRemove={() => void toggleFavorite(path)}
@@ -739,6 +799,7 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
                   active={currentPath === path}
                   icon={Clock3}
                   onNavigate={onNavigate}
+                  onOpenInNewTab={handleOpenInNewTab}
                   onRemoveRecent={() => void removeRecentLocation(path)}
                   onRemove={() => void removeRecentLocation(path)}
                   dropProps={folderDropProps}
@@ -760,6 +821,7 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
                   item={item}
                   currentPath={currentPath}
                   onNavigate={onNavigate}
+                  onOpenInNewTab={handleOpenInNewTab}
                   showHiddenFiles={showHiddenFiles}
                   hiddenPaths={hiddenSidebarPaths}
                   onHide={(path) => void hideSidebarPath(path)}
@@ -779,6 +841,8 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
                   const isEjecting = ejectingVolumePath === volume.path;
                   const sidebarItemActions: SidebarItemActions = {
                     onOpen: () => onNavigate(volume.path),
+                    onOpenInNewTab: () => handleOpenInNewTab(volume.path),
+                    onOpenInNewWindow: () => openPathInNewWindow(volume.path),
                     onOpenInTerminal: () => invoke("open_in_terminal", { path: volume.path }),
                     path: volume.path,
                     name: volume.name,
@@ -804,7 +868,15 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
                         <button
                           className="flex min-h-[29px] min-w-0 flex-1 items-center gap-2.5 px-2.5 py-1 text-left text-[13px]"
                           aria-current={currentPath === volume.path ? "page" : undefined}
-                          onClick={() => onNavigate(volume.path)}
+                          onClick={(e) =>
+                            handleSidebarItemClick(e, volume.path, onNavigate, handleOpenInNewTab)
+                          }
+                          onAuxClick={(e) => {
+                            if (e.button === 1) {
+                              e.preventDefault();
+                              handleOpenInNewTab(volume.path);
+                            }
+                          }}
                           title={volume.path}
                         >
                           <SmartIcon
@@ -846,23 +918,43 @@ export function Sidebar({ onNavigate, currentPath }: SidebarProps) {
             {FINDER_TAG_PRESETS.map((preset) => {
               const tagPath = `${SMART_FOLDER_PREFIX}tag:${preset.id}`;
               const label = t(preset.labelKey);
+              const sidebarItemActions: SidebarItemActions = {
+                onOpen: () => onNavigate(tagPath),
+                onOpenInNewTab: () => handleOpenInNewTab(tagPath),
+                onOpenInNewWindow: () => openPathInNewWindow(tagPath),
+                path: tagPath,
+                name: label,
+              };
               return (
-                <button
+                <AppContextMenu
                   key={preset.id}
-                  type="button"
-                  className="finder-sidebar-row flex w-full items-center gap-2.5 px-2.5 py-1 text-[13px]"
-                  aria-current={currentPath === tagPath ? "page" : undefined}
-                  data-active={currentPath === tagPath}
-                  onClick={() => onNavigate(tagPath)}
-                  title={label}
+                  type="sidebar-item"
+                  sidebarItemActions={sidebarItemActions}
                 >
-                  <span
-                    className="h-2.5 w-2.5 shrink-0 rounded-full shadow-xs ring-1 ring-black/15 dark:ring-white/25"
-                    style={{ backgroundColor: preset.color }}
-                    aria-hidden="true"
-                  />
-                  <span className="truncate">{label}</span>
-                </button>
+                  <button
+                    type="button"
+                    className="finder-sidebar-row flex w-full items-center gap-2.5 px-2.5 py-1 text-[13px]"
+                    aria-current={currentPath === tagPath ? "page" : undefined}
+                    data-active={currentPath === tagPath}
+                    onClick={(e) =>
+                      handleSidebarItemClick(e, tagPath, onNavigate, handleOpenInNewTab)
+                    }
+                    onAuxClick={(e) => {
+                      if (e.button === 1) {
+                        e.preventDefault();
+                        handleOpenInNewTab(tagPath);
+                      }
+                    }}
+                    title={label}
+                  >
+                    <span
+                      className="h-2.5 w-2.5 shrink-0 rounded-full shadow-xs ring-1 ring-black/15 dark:ring-white/25"
+                      style={{ backgroundColor: preset.color }}
+                      aria-hidden="true"
+                    />
+                    <span className="truncate">{label}</span>
+                  </button>
+                </AppContextMenu>
               );
             })}
           </div>

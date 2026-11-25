@@ -192,6 +192,7 @@ export interface EmptyAreaCommandActions {
 export interface FileActions {
   onOpen: (entry: FileEntry) => void;
   onOpenInNewTab?: (entry: FileEntry) => void;
+  onOpenInNewWindow?: (entry: FileEntry) => void;
   onShowPackageContents?: (entry: FileEntry) => void;
   onShowOriginal?: (entry: FileEntry) => void;
   onToggleTag?: (entries: FileEntry[], tag: string) => void;
@@ -243,7 +244,9 @@ export type SortDirection = "asc" | "desc";
 
 export interface SidebarItemActions {
   onOpen: () => void;
-  onOpenInTerminal: () => void;
+  onOpenInNewTab?: () => void;
+  onOpenInNewWindow?: () => void;
+  onOpenInTerminal?: () => void;
   path: string;
   name: string;
   onToggleFavorite?: () => void;
