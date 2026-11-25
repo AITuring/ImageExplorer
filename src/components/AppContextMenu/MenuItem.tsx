@@ -4,7 +4,16 @@ import { ContextMenuItem } from "@/components/ui/context-menu";
 import { MenuItemProps } from "@/types";
 
 export function MenuItem(props: MenuItemProps) {
-  const { icon, fallbackIcon, sysIcon, label, shortcut, onClick, destructive, disabled = false } = props;
+  const {
+    icon,
+    fallbackIcon,
+    sysIcon,
+    label,
+    shortcut,
+    onClick,
+    destructive,
+    disabled = false,
+  } = props;
   const activatedByPointerRef = useRef(false);
   const activateFromPointer = useCallback(
     (event: React.PointerEvent) => {
@@ -12,6 +21,7 @@ export function MenuItem(props: MenuItemProps) {
       if (event.button !== 0) return;
       if (activatedByPointerRef.current) return;
 
+      event.stopPropagation();
       activatedByPointerRef.current = true;
       onClick();
     },

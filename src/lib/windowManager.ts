@@ -3,10 +3,18 @@ import {
   getAllWebviewWindows,
   getCurrentWebviewWindow,
 } from "@tauri-apps/api/webviewWindow";
+import { invoke } from "@tauri-apps/api/core";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { emit, listen, UnlistenFn } from "@tauri-apps/api/event";
 import { nanoid } from "nanoid";
 import type { Tab } from "@/types/tab";
+
+interface NextWindowRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 
 // 窗口间传输 Tab 的事件 payload
 export interface TabTransferPayload {
@@ -127,20 +135,39 @@ class WindowManager {
     appUrl.search = params.toString();
     appUrl.hash = "";
 
+    let resolvedX = options?.x;
+    let resolvedY = options?.y;
+    let resolvedWidth = 1000;
+    let resolvedHeight = 700;
+    if (resolvedX === undefined || resolvedY === undefined) {
+      try {
+        const nextRect = await invoke<NextWindowRect>("get_next_window_rect");
+        resolvedX = resolvedX ?? nextRect.x;
+        resolvedY = resolvedY ?? nextRect.y;
+        resolvedWidth = nextRect.width;
+        resolvedHeight = nextRect.height;
+      } catch (error) {
+        console.warn("[WindowManager] Failed to compute cascaded window bounds:", error);
+      }
+    }
+
     const windowOptions = {
       url: appUrl.toString(),
       title: "ImageExplorer",
-      width: 1000,
-      height: 700,
+      width: resolvedWidth,
+      height: resolvedHeight,
       minWidth: 620,
       minHeight: 600,
       resizable: true,
-      x: options?.x,
-      y: options?.y,
+      x: resolvedX,
+      y: resolvedY,
       transparent: true,
       titleBarStyle: "overlay",
       trafficLightPosition: new LogicalPosition(18, 24),
       hiddenTitle: true,
+      // Give each window a distinct macOS tabbing identifier so macOS never
+      // auto-merges a newly opened window as a hidden tab over the original one.
+      tabbingIdentifier: newWindowId,
       // Keep HTML5 drag/drop available in dynamically-created windows.
       dragDropEnabled: false,
     } as const;
@@ -170,6 +197,7 @@ class WindowManager {
       void listen<{ windowId: string }>("window-ready", (event) => {
         if (event.payload.windowId !== newWindowId || !webview) return;
         cleanup();
+        void webview.setFocus().catch(() => undefined);
         resolve(webview);
       })
         .then((unlisten) => {

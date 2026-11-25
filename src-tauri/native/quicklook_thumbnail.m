@@ -2304,3 +2304,14 @@ char *imageexplorer_drag_pasteboard_paths_json(void) {
         return imageexplorer_copy_utf8(text ?: @"[]");
     }
 }
+
+// Disable macOS system automatic window tabbing so "Open in New Window" always
+// spawns a distinct standalone NSWindow instead of merging as a hidden tab over
+// the original window when macOS "Prefer tabs: Always" is enabled.
+void imageexplorer_disable_auto_window_tabbing(void) {
+    @autoreleasepool {
+        if ([NSWindow respondsToSelector:@selector(setAllowsAutomaticWindowTabbing:)]) {
+            [NSWindow setAllowsAutomaticWindowTabbing:NO];
+        }
+    }
+}

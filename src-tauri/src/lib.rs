@@ -1188,6 +1188,176 @@ fn apply_sqlite_index_event(updater: &IndexUpdater, event: notify::Event) {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NextWindowRect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LogicalRect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+/// Compute a non-covering position and size for a newly opened window relative
+/// to the source window and monitor bounds:
+/// - Places side-by-side when enough horizontal space exists next to the source window.
+/// - Otherwise cascades clearly (`+44px`, `+38px`) and trims size if needed so the
+///   original window remains visibly exposed behind the new window.
+fn compute_next_window_rect(
+    source: LogicalRect,
+    monitor: LogicalRect,
+    existing_origins: &[(f64, f64)],
+) -> NextWindowRect {
+    const MIN_W: f64 = 620.0;
+    const MIN_H: f64 = 600.0;
+    const SIDE_GAP: f64 = 12.0;
+    const CASCADE_X: f64 = 44.0;
+    const CASCADE_Y: f64 = 38.0;
+    const MENU_BAR_TOP_MARGIN: f64 = 28.0;
+
+    let work_left = monitor.x;
+    let work_top = monitor.y + MENU_BAR_TOP_MARGIN;
+    let work_w = monitor.width.max(MIN_W);
+    let work_h = (monitor.height - MENU_BAR_TOP_MARGIN).max(MIN_H);
+    let work_right = work_left + work_w;
+    let work_bottom = work_top + work_h;
+
+    let base_w = source.width.clamp(MIN_W, work_w);
+    let base_h = source.height.clamp(MIN_H, work_h);
+
+    let collides = |cx: f64, cy: f64| {
+        existing_origins
+            .iter()
+            .any(|&(ox, oy)| (ox - cx).abs() < 18.0 && (oy - cy).abs() < 18.0)
+    };
+
+    // 1. Prefer side-by-side placement (right, then left) if room exists without shrinking.
+    let right_x = source.x + source.width + SIDE_GAP;
+    if right_x + base_w <= work_right {
+        let y = source
+            .y
+            .clamp(work_top, (work_bottom - base_h).max(work_top));
+        if !collides(right_x, y) {
+            return NextWindowRect {
+                x: right_x.round(),
+                y: y.round(),
+                width: base_w.round(),
+                height: base_h.round(),
+            };
+        }
+    }
+
+    let left_x = source.x - SIDE_GAP - base_w;
+    if left_x >= work_left {
+        let y = source
+            .y
+            .clamp(work_top, (work_bottom - base_h).max(work_top));
+        if !collides(left_x, y) {
+            return NextWindowRect {
+                x: left_x.round(),
+                y: y.round(),
+                width: base_w.round(),
+                height: base_h.round(),
+            };
+        }
+    }
+
+    // 2. Otherwise cascade with a visible offset, trimming slightly if the source window
+    //    fills nearly the entire monitor so the original window is never completely covered.
+    let cascade_w = base_w.min((work_w - CASCADE_X * 2.0).max(MIN_W));
+    let cascade_h = base_h.min((work_h - CASCADE_Y * 2.0).max(MIN_H));
+    let max_x = (work_right - cascade_w).max(work_left);
+    let max_y = (work_bottom - cascade_h).max(work_top);
+
+    let mut candidate_x = source.x + CASCADE_X;
+    let mut candidate_y = source.y + CASCADE_Y;
+    for _ in 0..8 {
+        if candidate_x > max_x {
+            candidate_x = work_left + CASCADE_X;
+        }
+        if candidate_y > max_y {
+            candidate_y = work_top + CASCADE_Y;
+        }
+        let clamped_x = candidate_x.clamp(work_left, max_x);
+        let clamped_y = candidate_y.clamp(work_top, max_y);
+        if !collides(clamped_x, clamped_y) {
+            return NextWindowRect {
+                x: clamped_x.round(),
+                y: clamped_y.round(),
+                width: cascade_w.round(),
+                height: cascade_h.round(),
+            };
+        }
+        candidate_x += CASCADE_X;
+        candidate_y += CASCADE_Y;
+    }
+
+    NextWindowRect {
+        x: candidate_x.clamp(work_left, max_x).round(),
+        y: candidate_y.clamp(work_top, max_y).round(),
+        width: cascade_w.round(),
+        height: cascade_h.round(),
+    }
+}
+
+#[tauri::command]
+fn get_next_window_rect(app: tauri::AppHandle, window: tauri::Window) -> NextWindowRect {
+    let scale = window.scale_factor().unwrap_or(1.0).max(0.5);
+    let source = match (window.outer_position(), window.outer_size()) {
+        (Ok(pos), Ok(size)) => LogicalRect {
+            x: f64::from(pos.x) / scale,
+            y: f64::from(pos.y) / scale,
+            width: f64::from(size.width) / scale,
+            height: f64::from(size.height) / scale,
+        },
+        _ => LogicalRect {
+            x: 120.0,
+            y: 90.0,
+            width: 1000.0,
+            height: 700.0,
+        },
+    };
+
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .map(|mon| {
+            let m_scale = mon.scale_factor().max(0.5);
+            LogicalRect {
+                x: f64::from(mon.position().x) / m_scale,
+                y: f64::from(mon.position().y) / m_scale,
+                width: f64::from(mon.size().width) / m_scale,
+                height: f64::from(mon.size().height) / m_scale,
+            }
+        })
+        .unwrap_or(LogicalRect {
+            x: 0.0,
+            y: 0.0,
+            width: 1440.0,
+            height: 900.0,
+        });
+
+    let existing_origins: Vec<(f64, f64)> = app
+        .webview_windows()
+        .values()
+        .filter_map(|win| {
+            let w_scale = win.scale_factor().unwrap_or(scale).max(0.5);
+            let pos = win.outer_position().ok()?;
+            Some((f64::from(pos.x) / w_scale, f64::from(pos.y) / w_scale))
+        })
+        .collect();
+
+    compute_next_window_rect(source, monitor, &existing_origins)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let shared_index = create_shared_index();
@@ -1235,13 +1405,21 @@ pub fn run() {
             let window = app.get_webview_window("main").unwrap();
 
             #[cfg(target_os = "macos")]
-            apply_vibrancy(
-                &window,
-                NSVisualEffectMaterial::UnderWindowBackground,
-                None,
-                None,
-            )
-            .expect("Unsupported platform! 'apply_vibrancy' is only supported on macOS");
+            {
+                extern "C" {
+                    fn imageexplorer_disable_auto_window_tabbing();
+                }
+                unsafe {
+                    imageexplorer_disable_auto_window_tabbing();
+                }
+                apply_vibrancy(
+                    &window,
+                    NSVisualEffectMaterial::UnderWindowBackground,
+                    None,
+                    None,
+                )
+                .expect("Unsupported platform! 'apply_vibrancy' is only supported on macOS");
+            }
 
             // 初始化国际化语言设置
             menu::init_locale();
@@ -1393,6 +1571,7 @@ pub fn run() {
             close_native_quick_look,
             get_sf_symbol,
             get_native_drag_file_paths,
+            get_next_window_rect,
             start_native_file_drag,
             read_file_clipboard,
             write_file_clipboard,
@@ -1541,5 +1720,57 @@ mod macos_wake_observer_tests {
         for observer in observers {
             unsafe { notification_center.removeObserver(&observer) };
         }
+    }
+}
+
+#[cfg(test)]
+mod next_window_rect_tests {
+    use super::{compute_next_window_rect, LogicalRect};
+
+    #[test]
+    fn places_new_window_side_by_side_when_half_screen_space_is_available() {
+        let monitor = LogicalRect {
+            x: 0.0,
+            y: 0.0,
+            width: 1440.0,
+            height: 900.0,
+        };
+        let left_half = LogicalRect {
+            x: 0.0,
+            y: 28.0,
+            width: 700.0,
+            height: 860.0,
+        };
+
+        let next = compute_next_window_rect(left_half, monitor, &[(0.0, 28.0)]);
+        assert_eq!(next.x, 712.0);
+        assert_eq!(next.y, 28.0);
+        assert_eq!(next.width, 700.0);
+        assert_eq!(next.height, 860.0);
+    }
+
+    #[test]
+    fn cascades_and_avoids_covering_large_source_window() {
+        let monitor = LogicalRect {
+            x: 0.0,
+            y: 0.0,
+            width: 1440.0,
+            height: 900.0,
+        };
+        let large = LogicalRect {
+            x: 100.0,
+            y: 80.0,
+            width: 1000.0,
+            height: 700.0,
+        };
+
+        let first = compute_next_window_rect(large, monitor, &[(100.0, 80.0)]);
+        assert_eq!(first.x, 144.0);
+        assert_eq!(first.y, 118.0);
+        assert_eq!(first.width, 1000.0);
+
+        let second = compute_next_window_rect(large, monitor, &[(100.0, 80.0), (144.0, 118.0)]);
+        assert_eq!(second.x, 188.0);
+        assert_eq!(second.y, 156.0);
     }
 }
